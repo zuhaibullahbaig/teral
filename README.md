@@ -13,14 +13,14 @@ Teral is usable as a day-to-day file manager. It provides:
 - a dark, dense three-pane shell: sidebar, file view, details/actions panel
 - restrained `TERAL` branding, clickable breadcrumbs and a `Ctrl+L` path entry
 - back / forward / parent navigation with real history
-- a sidebar with XDG user locations, the trash folder, GIO-discovered mounts with capacity meters, and pinned folders that persist
+- a sidebar with XDG user locations, the trash folder, GIO-discovered mounts with capacity meters, and bookmarks you can drag folders onto
 - a polished grid view and a dense list view (Name, Size, Type, Modified) sharing one selection
 - real image thumbnails, and system/MIME icons through GIO for everything else
 - a details panel with type, size, path, modified/created/accessed times, owner, permissions and symlink target
 - actions: Open, Open With, Copy Path, Open Terminal Here, Rename, Move, Copy and Trash
 - copy / cut / paste with recursive folder transfers that run off the GTK main thread and never overwrite an existing file
-- filename search, sorting, folders-first and hidden-file toggles
-- Quick Command: run a shell command with the browsed folder as its working directory, in a real terminal — `vim`, `git rebase -i` and anything else interactive work, and the console can be dragged taller or shorter
+- type-ahead filename search in the toolbar: start typing in the file list and the field opens with a live match count
+- Quick Command: run a shell command with the browsed folder as its working directory, in a real terminal — `vim`, `git rebase -i` and anything else interactive work. Drag the console's title bar to resize it, double-click to expand it, or use the expand button
 - a footer split into the same three columns as the window: Teral's own controls under the sidebar, Quick Command at exactly the width of the file list, and the selection and storage readout under the details panel
 - tabs, each with its own location and history
 - drag and drop: between Teral folders, and to and from other Linux applications
@@ -122,7 +122,7 @@ A `[colors]` table can override any semantic colour individually.
 Two environment variables still work as a fallback when the settings are empty:
 `TERAL_SHELL` and `TERAL_TERMINAL`.
 
-Pinned sidebar folders are stored separately, in `~/.local/share/teral/places.toml`.
+Bookmarked folders are stored separately, in `~/.local/share/teral/places.toml`.
 
 ## Development checks
 

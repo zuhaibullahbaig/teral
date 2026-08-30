@@ -1,59 +1,63 @@
-//! The floating search panel.
+//! Folder search.
 //!
-//! Search slides down from the top of the file area rather than pushing the content
-//! out of the way, and carries its own close button so it never depends on the user
-//! knowing about Escape.
+//! The field lives in the toolbar, next to the view controls and styled like the
+//! breadcrumb, and it opens the moment you start typing in the file list.
 
 use super::App;
 use crate::icons;
 use gtk::prelude::*;
 use std::rc::Rc;
 
-/// Widgets of the floating search panel.
+/// Widgets of the toolbar search field.
 pub struct Search {
     pub root: gtk::Revealer,
     pub entry: gtk::SearchEntry,
     pub matches: gtk::Label,
-    pub close: gtk::Button,
 }
 
 pub fn build() -> Search {
     let entry = gtk::SearchEntry::new();
-    entry.add_css_class("teral-search");
+    entry.add_css_class("teral-search-entry");
     entry.set_hexpand(true);
-    entry.set_width_chars(28);
-    entry.set_placeholder_text(Some("Filter this folder by name"));
+    entry.set_width_chars(16);
+    entry.set_max_width_chars(24);
+    entry.set_placeholder_text(Some("Filter this folder"));
 
     let matches = gtk::Label::new(None);
-    matches.add_css_class("teral-status-item");
+    matches.add_css_class("teral-search-matches");
 
     let close = super::icon_button(icons::ui(icons::names::CLOSE), "Close search (Escape)");
 
-    let panel = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    panel.add_css_class("teral-search-panel");
-    panel.append(&entry);
-    panel.append(&matches);
-    panel.append(&close);
+    let field = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    field.add_css_class("teral-search-field");
+    field.set_valign(gtk::Align::Center);
+    field.append(&entry);
+    field.append(&matches);
+    field.append(&close);
 
     let root = gtk::Revealer::new();
-    root.add_css_class("teral-search-overlay");
-    root.set_child(Some(&panel));
-    root.set_transition_type(gtk::RevealerTransitionType::SlideDown);
-    root.set_transition_duration(160);
+    root.set_child(Some(&field));
+    root.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+    root.set_transition_duration(140);
     root.set_reveal_child(false);
-    root.set_halign(gtk::Align::Center);
-    root.set_valign(gtk::Align::Start);
+    root.set_valign(gtk::Align::Center);
+
+    // The close button is only reachable through this struct's root, so it is wired
+    // here rather than being carried around as another field.
+    close.connect_clicked({
+        let root = root.clone();
+        move |_| root.set_reveal_child(false)
+    });
 
     Search {
         root,
         entry,
         matches,
-        close,
     }
 }
 
 pub fn connect(app: &App) {
-    app.widgets.search_overlay.entry.connect_search_changed({
+    app.widgets.search.entry.connect_search_changed({
         let app = Rc::clone(app);
         move |entry| {
             *app.state.query.borrow_mut() = entry.text().to_string();
@@ -62,7 +66,7 @@ pub fn connect(app: &App) {
     });
 
     // Enter opens the first match, the way a filter box is expected to behave.
-    app.widgets.search_overlay.entry.connect_activate({
+    app.widgets.search.entry.connect_activate({
         let app = Rc::clone(app);
         move |_| {
             if app.state.selection.n_items() > 0 {
@@ -70,11 +74,6 @@ pub fn connect(app: &App) {
                 super::window::activate_selection(&app);
             }
         }
-    });
-
-    app.widgets.search_overlay.close.connect_clicked({
-        let app = Rc::clone(app);
-        move |_| close(&app)
     });
 
     let keys = gtk::EventControllerKey::new();
@@ -89,31 +88,64 @@ pub fn connect(app: &App) {
             }
         }
     });
-    app.widgets.search_overlay.entry.add_controller(keys);
+    app.widgets.search.entry.add_controller(keys);
+
+    // Closing with the field's own button has to clear the filter too.
+    app.widgets.search.root.connect_child_revealed_notify({
+        let app = Rc::clone(app);
+        move |revealer| {
+            if !revealer.reveals_child() {
+                close(&app);
+            }
+        }
+    });
 }
 
-/// Reveal the panel and put the cursor in it.
+/// Reveal the field and put the cursor in it.
 pub fn open(app: &App) {
-    app.widgets.search_overlay.root.set_reveal_child(true);
+    app.widgets.search.root.set_reveal_child(true);
     sync_toggle(app, true);
-    app.widgets.search_overlay.entry.grab_focus();
+    app.widgets.search.entry.grab_focus();
 }
 
-/// Hide the panel and clear whatever filter it applied.
+/// Append a typed character, opening the field first if it is not showing yet.
+///
+/// Focus moves to the entry as soon as the field opens, so the entry itself handles
+/// every character after this one; appending here covers the keystrokes that arrive
+/// while focus is still on its way.
+pub fn type_ahead(app: &App, character: char) {
+    if !is_open(app) {
+        app.widgets.search.root.set_reveal_child(true);
+        sync_toggle(app, true);
+    }
+
+    let entry = &app.widgets.search.entry;
+    let mut text = entry.text().to_string();
+    text.push(character);
+    entry.set_text(&text);
+    entry.grab_focus();
+    entry.set_position(-1);
+}
+
+/// Hide the field and clear whatever filter it applied.
 pub fn close(app: &App) {
-    app.widgets.search_overlay.root.set_reveal_child(false);
+    let was_open = app.widgets.search.root.reveals_child();
+    app.widgets.search.root.set_reveal_child(false);
     sync_toggle(app, false);
 
     if !app.state.query.borrow().is_empty() {
         app.state.query.borrow_mut().clear();
-        app.widgets.search_overlay.entry.set_text("");
+        app.widgets.search.entry.set_text("");
         app.apply_filter();
     }
-    super::window::focus_file_view(app);
+
+    if was_open {
+        super::window::focus_file_view(app);
+    }
 }
 
 pub fn is_open(app: &App) -> bool {
-    app.widgets.search_overlay.root.reveals_child()
+    app.widgets.search.root.reveals_child()
 }
 
 /// Show how many entries the current filter matches.
@@ -121,9 +153,9 @@ pub fn update_matches(app: &App, visible: usize, total: usize) {
     let text = if app.state.query.borrow().is_empty() {
         String::new()
     } else {
-        format!("{visible} of {total}")
+        format!("{visible}/{total}")
     };
-    app.widgets.search_overlay.matches.set_text(&text);
+    app.widgets.search.matches.set_text(&text);
 }
 
 fn sync_toggle(app: &App, active: bool) {

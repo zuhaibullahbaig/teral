@@ -50,27 +50,37 @@ headerbar.teral-toolbar windowcontrols button.close:hover {
 
 .teral-brand {
   color: @teral_text_bright;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 800;
 }
 
+/* GTK gives buttons a generous minimum size. Teral's toolbar controls are icon-only,
+ * so those minimums are cleared and the size is set here instead: the plate should hug
+ * the icon rather than stretch to the height of the row it sits in. */
 .teral-icon-button > button,
 menubutton.teral-icon-button > button {
   background: none;
   background-image: none;
   border: none;
   box-shadow: none;
-  border-radius: 8px;
+  border-radius: 7px;
+  margin: 0;
   padding: 0;
   min-width: 0;
   min-height: 0;
   color: inherit;
 }
 
+.teral-icon-button image {
+  margin: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
 .teral-icon-button {
   min-width: 24px;
-  min-height: 22px;
-  padding: 0 4px;
+  min-height: 24px;
+  padding: 0;
   margin: 0;
   border-radius: 7px;
   border: 1px solid transparent;
@@ -101,14 +111,14 @@ menubutton.teral-icon-button > button {
   border: 1px solid @teral_border;
   border-radius: 8px;
   margin: 0;
-  padding: 1px;
+  padding: 2px;
 }
 
 .teral-button-group .teral-icon-button {
   border-radius: 6px;
-  min-height: 20px;
-  min-width: 22px;
-  padding: 0 4px;
+  min-height: 22px;
+  min-width: 26px;
+  padding: 0;
 }
 
 /* ---------------------------------------------------------- breadcrumbs ---- */
@@ -164,32 +174,11 @@ entry.teral-location {
 
 /* --------------------------------------------------------------- search ---- */
 
-searchbar.teral-searchbar > revealer > box {
-  background-color: @teral_surface;
-  border-bottom: 1px solid @teral_border;
-  padding: 6px 14px;
-}
-
-entry.teral-search {
-  background-color: @teral_elevated;
-  border: 1px solid @teral_border;
-  border-radius: 8px;
-  box-shadow: none;
-  color: @teral_text;
-  font-size: 12px;
-  min-height: 28px;
-}
-
-entry.teral-search:focus-within,
 entry.teral-input:focus-within,
 entry.teral-location:focus-within {
   border-color: alpha(@teral_accent, 0.6);
   box-shadow: none;
   outline: none;
-}
-
-entry.teral-search > text > placeholder {
-  color: @teral_muted;
 }
 
 /* -------------------------------------------------------------- sidebar ---- */
@@ -529,16 +518,44 @@ menubutton.teral-action > button {
 
 /* --------------------------------------------------------------- search ---- */
 
-.teral-search-overlay {
-  margin-top: 62px;
-}
-
-.teral-search-panel {
+/* The search field is a sibling of the breadcrumb and wears the same pill. */
+.teral-search-field {
   background-color: @teral_elevated;
   border: 1px solid @teral_border;
-  border-radius: 12px;
-  box-shadow: 0 16px 38px alpha(#000000, 0.45);
-  padding: 7px 8px 7px 12px;
+  border-radius: 999px;
+  margin: 0 8px;
+  min-height: 28px;
+  padding: 0 4px 0 10px;
+}
+
+.teral-search-field:focus-within {
+  border-color: alpha(@teral_accent, 0.6);
+}
+
+entry.teral-search-entry {
+  background: none;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  color: @teral_text;
+  font-size: 12px;
+  min-height: 24px;
+  padding: 0;
+}
+
+entry.teral-search-entry > image {
+  color: @teral_muted;
+  margin-right: 4px;
+}
+
+entry.teral-search-entry > text > placeholder {
+  color: @teral_muted;
+}
+
+.teral-search-matches {
+  color: @teral_muted;
+  font-size: 10.5px;
+  padding: 0 2px;
 }
 
 .teral-pin-target {
@@ -606,10 +623,6 @@ button.teral-tab-close {
 button.teral-tab-close:hover {
   background-color: alpha(@teral_danger, 0.25);
   opacity: 1;
-}
-
-.teral-brand-box {
-  padding: 0;
 }
 
 /* -------------------------------------------------------------- settings ---- */
@@ -774,8 +787,15 @@ scale.teral-zoom slider {
 }
 
 .teral-console-header {
-  padding: 6px 14px;
+  background-color: @teral_surface_alt;
   border-bottom: 1px solid alpha(@teral_border, 0.7);
+  border-top: 1px solid @teral_border;
+  min-height: 30px;
+  padding: 4px 10px;
+}
+
+.teral-console-header:hover {
+  background-color: shade(@teral_surface_alt, 1.15);
 }
 
 vte-terminal.teral-terminal {
@@ -783,14 +803,21 @@ vte-terminal.teral-terminal {
 }
 
 .teral-console-grip {
-  color: alpha(@teral_muted, 0.7);
-  font-size: 11px;
-  padding: 0 4px;
+  color: alpha(@teral_muted, 0.8);
+  font-size: 13px;
+  letter-spacing: -2px;
+  padding: 0 2px;
 }
 
+/* A one-pixel drag handle is unusable, so the handle is a real target and the whole
+ * console title bar drags as well. */
 paned.teral-file-paned > separator {
   background-color: @teral_border;
-  min-height: 1px;
+  min-height: 5px;
+}
+
+paned.teral-file-paned > separator:hover {
+  background-color: @teral_accent;
 }
 
 /* --------------------------------------------------- popovers and menus ---- */

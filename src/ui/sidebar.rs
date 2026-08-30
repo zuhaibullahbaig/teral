@@ -36,11 +36,11 @@ pub fn build(width: i32) -> Sidebar {
     content.append(&devices);
 
     let pinned_section = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    pinned_section.append(&section_title("PLACES"));
+    pinned_section.append(&section_title("BOOKMARKS"));
     pinned_section.append(&pinned);
     content.append(&pinned_section);
 
-    let pin_drop = gtk::Label::new(Some("Drop a folder here to pin it"));
+    let pin_drop = gtk::Label::new(Some("Drop a folder here to bookmark it"));
     pin_drop.add_css_class("teral-pin-target");
     pin_drop.set_wrap(true);
     pin_drop.set_justify(gtk::Justification::Center);
@@ -133,11 +133,11 @@ fn connect_pin_target(app: &App) {
             }
 
             if pinned == 0 {
-                app.set_message("Only folders can be pinned", false);
+                app.set_message("Only folders can be bookmarked", false);
                 return false;
             }
             app.set_message(
-                &format!("Pinned {}", crate::files::item_count_label(pinned)),
+                &format!("Bookmarked {}", crate::files::item_count_label(pinned)),
                 false,
             );
             true
@@ -353,7 +353,7 @@ fn attach_context_menu(app: &App, button: &gtk::Button, path: PathBuf) {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_width_request(190);
 
-    let pin = super::header::menu_item(crate::icons::ui(crate::icons::names::PIN), "Pin");
+    let pin = super::header::menu_item(crate::icons::ui(crate::icons::names::PIN), "Bookmark");
     let terminal = super::header::menu_item(
         crate::icons::ui(crate::icons::names::TERMINAL),
         "Open Terminal Here",
@@ -393,7 +393,11 @@ fn attach_context_menu(app: &App, button: &gtk::Button, path: PathBuf) {
             if let Some(row) = pin.child().and_downcast::<gtk::Box>()
                 && let Some(label) = row.last_child().and_downcast::<gtk::Label>()
             {
-                label.set_text(if pinned { "Unpin" } else { "Pin" });
+                label.set_text(if pinned {
+                    "Remove Bookmark"
+                } else {
+                    "Bookmark"
+                });
             }
             popover.popup();
         }

@@ -11,7 +11,6 @@ use std::rc::Rc;
 /// Widgets that make up the top bar.
 pub struct Header {
     pub bar: gtk::HeaderBar,
-    pub brand_mark: gtk::DrawingArea,
     pub back: gtk::Button,
     pub forward: gtk::Button,
     pub up: gtk::Button,
@@ -25,20 +24,14 @@ pub struct Header {
     pub menu_button: gtk::MenuButton,
 }
 
-pub fn build() -> Header {
+pub fn build(search: &gtk::Revealer) -> Header {
     let bar = gtk::HeaderBar::new();
     bar.add_css_class("teral-toolbar");
     bar.set_show_title_buttons(true);
 
-    let brand = super::brand::build(
-        crate::theme::ThemeConfig::default().color(crate::theme::ColorRole::Accent),
-    );
-    brand.set_margin_start(2);
-    brand.set_margin_end(12);
-    let brand_mark = brand
-        .first_child()
-        .and_downcast::<gtk::DrawingArea>()
-        .expect("the brand always starts with its mark");
+    let brand = super::brand::build();
+    brand.set_margin_start(4);
+    brand.set_margin_end(14);
 
     let back = icon_button(icons::ui(icons::names::BACK), "Back (Alt+Left)");
     let forward = icon_button(icons::ui(icons::names::FORWARD), "Forward (Alt+Right)");
@@ -75,8 +68,9 @@ pub fn build() -> Header {
     grid_toggle.set_active(true);
     list_toggle.set_group(Some(&grid_toggle));
 
-    let view_group = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    let view_group = gtk::Box::new(gtk::Orientation::Horizontal, 1);
     view_group.add_css_class("teral-button-group");
+    view_group.set_valign(gtk::Align::Center);
     view_group.append(&grid_toggle);
     view_group.append(&list_toggle);
 
@@ -93,13 +87,13 @@ pub fn build() -> Header {
     bar.pack_end(&sort_button);
     bar.pack_end(&view_group);
     bar.pack_end(&search_button);
+    bar.pack_end(search);
 
     // The window title is carried by the breadcrumbs, not by a second heading.
     bar.set_title_widget(Some(&gtk::Label::new(None)));
 
     Header {
         bar,
-        brand_mark,
         back,
         forward,
         up,
@@ -358,7 +352,7 @@ fn folder_popover(app: &App) -> gtk::Popover {
     let new_folder = menu_item(icons::ui(icons::names::NEW_FOLDER), "New Folder");
     let paste = menu_item(icons::ui(icons::names::PASTE), "Paste");
     let terminal = menu_item(icons::ui(icons::names::TERMINAL), "Open Terminal Here");
-    let pin = menu_item(icons::ui(icons::names::PIN), "Pin This Folder");
+    let pin = menu_item(icons::ui(icons::names::PIN), "Bookmark This Folder");
     let refresh = menu_item(icons::ui(icons::names::REFRESH), "Refresh");
     let empty_trash = menu_item(icons::ui(icons::names::TRASH), "Empty Trash");
     let shortcuts = menu_item(icons::ui(icons::names::HELP), "Keyboard Shortcuts");
@@ -406,9 +400,9 @@ fn folder_popover(app: &App) -> gtk::Popover {
                 && let Some(label) = row.last_child().and_downcast::<gtk::Label>()
             {
                 label.set_text(if pinned {
-                    "Unpin This Folder"
+                    "Remove Bookmark"
                 } else {
-                    "Pin This Folder"
+                    "Bookmark This Folder"
                 });
             }
         }
@@ -456,6 +450,7 @@ fn icon_menu_button(icon_name: &str, tooltip: &str) -> gtk::MenuButton {
     button.add_css_class("teral-icon-button");
     button.set_has_frame(false);
     button.set_tooltip_text(Some(tooltip));
+    button.set_valign(gtk::Align::Center);
     button
 }
 

@@ -35,7 +35,6 @@ pub struct Widgets {
     pub sort_button: gtk::MenuButton,
     pub menu_button: gtk::MenuButton,
     pub hidden_check: RefCell<Option<gtk::CheckButton>>,
-    pub brand_mark: gtk::DrawingArea,
 
     pub tabs: tabs::Tabs,
 
@@ -45,7 +44,7 @@ pub struct Widgets {
 
     pub content: gtk::Box,
     pub file_paned: gtk::Paned,
-    pub search_overlay: search::Search,
+    pub search: search::Search,
     pub view_stack: gtk::Stack,
     pub grid: gtk::GridView,
     pub list: gtk::ColumnView,
@@ -81,7 +80,8 @@ pub fn build_window(
     let store = gio::ListStore::new::<FileEntry>();
     let selection = gtk::MultiSelection::new(Some(store.clone()));
 
-    let head = header::build();
+    let search_field = search::build();
+    let head = header::build(&search_field.root);
     let side = sidebar::build(theme.sidebar_width());
     let detail = details::build(theme.details_width());
     let status = statusbar::build(
@@ -168,8 +168,6 @@ pub fn build_window(
     file_paned.set_start_child(Some(&view_stack));
     file_paned.set_end_child(Some(&console.root));
 
-    let search_overlay = search::build();
-
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.add_css_class("teral-content");
     content.set_hexpand(true);
@@ -177,16 +175,12 @@ pub fn build_window(
     content.append(&content_header);
     content.append(&file_paned);
 
-    let content_overlay = gtk::Overlay::new();
-    content_overlay.set_hexpand(true);
-    content_overlay.set_child(Some(&content));
-    content_overlay.add_overlay(&search_overlay.root);
     context_menu.set_parent(&content);
 
     let panes = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     panes.set_vexpand(true);
     panes.append(&side.root);
-    panes.append(&content_overlay);
+    panes.append(&content);
     panes.append(&detail.root);
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -218,14 +212,13 @@ pub fn build_window(
         sort_button: head.sort_button,
         menu_button: head.menu_button,
         hidden_check: RefCell::new(None),
-        brand_mark: head.brand_mark,
         tabs: tab_bar,
         folder_title,
         folder_subtitle,
         new_folder,
         content,
         file_paned,
-        search_overlay,
+        search: search_field,
         view_stack,
         grid,
         list,
@@ -479,7 +472,21 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
                 app.clear_message();
             }
         }
-        _ => return glib::Propagation::Proceed,
+        // Typing a printable character with nothing else focused starts a search, the
+        // way type-ahead has always worked in file managers.
+        _ => {
+            if control || alt {
+                return glib::Propagation::Proceed;
+            }
+            let Some(character) = key.to_unicode().filter(|c| !c.is_control()) else {
+                return glib::Propagation::Proceed;
+            };
+            // Once the entry has focus it handles its own typing.
+            if app.widgets.search.entry.has_focus() {
+                return glib::Propagation::Proceed;
+            }
+            search::type_ahead(app, character);
+        }
     }
 
     glib::Propagation::Stop
@@ -1039,9 +1046,9 @@ fn context_menu_content(app: &App) -> gtk::Box {
                 header::menu_item(
                     icons::ui(icons::names::PIN),
                     if app.is_pinned(entry.path()) {
-                        "Unpin"
+                        "Remove Bookmark"
                     } else {
-                        "Pin"
+                        "Bookmark"
                     },
                 ),
                 ContextAction::Pin,

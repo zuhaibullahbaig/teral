@@ -22,9 +22,11 @@ pub struct StatusBar {
 /// The Quick Command console: a real terminal, resizable by dragging its top edge.
 pub struct Console {
     pub root: gtk::Box,
+    pub header: gtk::Box,
     pub title: gtk::Label,
     pub terminal: vte::Terminal,
     pub stop: gtk::Button,
+    pub expand: gtk::ToggleButton,
     pub close: gtk::Button,
 }
 
@@ -39,9 +41,8 @@ pub fn build_console() -> Console {
     title.add_css_class("teral-status-item");
     title.add_css_class("strong");
 
-    let grip = gtk::Label::new(Some("⠿"));
+    let grip = gtk::Label::new(Some("⣿"));
     grip.add_css_class("teral-console-grip");
-    grip.set_tooltip_text(Some("Drag to resize the console"));
 
     let stop = super::icon_button(
         crate::icons::ui(crate::icons::names::STOP),
@@ -49,16 +50,24 @@ pub fn build_console() -> Console {
     );
     stop.set_visible(false);
 
+    let expand = super::icon_toggle(
+        crate::icons::ui(crate::icons::names::EXPAND),
+        "Expand the console to fill the window",
+    );
+
     let close = super::icon_button(
         crate::icons::ui(crate::icons::names::CLOSE),
-        "Hide the console (Escape)",
+        "Hide the console (Ctrl+`)",
     );
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     header.add_css_class("teral-console-header");
+    header.set_tooltip_text(Some("Drag this bar to resize, or double-click to expand"));
+    header.set_cursor_from_name(Some("ns-resize"));
     header.append(&grip);
     header.append(&title);
     header.append(&stop);
+    header.append(&expand);
     header.append(&close);
 
     let terminal = command::build_terminal();
@@ -77,9 +86,11 @@ pub fn build_console() -> Console {
 
     Console {
         root,
+        header,
         title,
         terminal,
         stop,
+        expand,
         close,
     }
 }
@@ -234,6 +245,28 @@ pub fn connect(app: &App) {
         move |_| hide_console(&app)
     });
 
+    app.widgets.console.expand.connect_toggled({
+        let app = Rc::clone(app);
+        move |button| {
+            if app.state.updating.get() {
+                return;
+            }
+            let paned = &app.widgets.file_paned;
+            if button.is_active() {
+                let height = paned.height() - paned.position();
+                if height > 80 {
+                    app.state.console_height.set(height);
+                }
+                paned.set_position(120);
+            } else {
+                let height = app.state.console_height.get().max(160);
+                paned.set_position((paned.height() - height).max(120));
+            }
+        }
+    });
+
+    connect_console_resize(app);
+
     // A finished command leaves its output on screen; the folder is reloaded because
     // commands frequently change what is in it.
     app.widgets.console.terminal.connect_child_exited({
@@ -270,6 +303,68 @@ pub fn connect(app: &App) {
             app.apply_config(config, true);
         }
     });
+}
+
+/// Dragging anywhere along the console's title bar resizes it.
+///
+/// The paned handle alone is a one-pixel target that nobody finds; the whole header is
+/// a much larger one, and a double-click toggles the expanded state.
+fn connect_console_resize(app: &App) {
+    let drag = gtk::GestureDrag::new();
+    let start = std::rc::Rc::new(std::cell::Cell::new(0));
+
+    drag.connect_drag_begin({
+        let app = Rc::clone(app);
+        let start = std::rc::Rc::clone(&start);
+        move |_, _, _| start.set(app.widgets.file_paned.position())
+    });
+
+    drag.connect_drag_update({
+        let app = Rc::clone(app);
+        let start = std::rc::Rc::clone(&start);
+        move |_, _, offset| {
+            let paned = &app.widgets.file_paned;
+            let target = (start.get() + offset.round() as i32).clamp(80, paned.height() - 80);
+            paned.set_position(target);
+        }
+    });
+
+    drag.connect_drag_end({
+        let app = Rc::clone(app);
+        move |_, _, _| {
+            let paned = &app.widgets.file_paned;
+            let height = paned.height() - paned.position();
+            if height > 80 {
+                app.state.console_height.set(height);
+            }
+            sync_expand_toggle(&app);
+        }
+    });
+
+    app.widgets.console.header.add_controller(drag);
+
+    let double_click = gtk::GestureClick::new();
+    double_click.connect_pressed({
+        let app = Rc::clone(app);
+        move |_, clicks, _, _| {
+            if clicks == 2 {
+                let expand = &app.widgets.console.expand;
+                expand.set_active(!expand.is_active());
+            }
+        }
+    });
+    app.widgets.console.header.add_controller(double_click);
+}
+
+/// Keep the expand toggle honest after a manual drag.
+fn sync_expand_toggle(app: &App) {
+    let paned = &app.widgets.file_paned;
+    let expanded = paned.position() <= 160;
+    if expanded != app.widgets.console.expand.is_active() {
+        app.state.updating.set(true);
+        app.widgets.console.expand.set_active(expanded);
+        app.state.updating.set(false);
+    }
 }
 
 /// Show the console, restoring the height it had last time.

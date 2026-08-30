@@ -98,9 +98,6 @@ pub fn present_shortcuts(app: &App) {
 
 /// Show what Teral is, and which version this is.
 pub fn present_about(app: &App) {
-    let mark = super::brand::build(app.theme.borrow().color(crate::theme::ColorRole::Accent));
-    mark.set_halign(gtk::Align::Center);
-
     let name = gtk::Label::new(Some("Teral"));
     name.add_css_class("teral-dialog-title");
 
@@ -130,7 +127,7 @@ pub fn present_about(app: &App) {
     for (label, path) in [
         ("Settings", crate::config::config_path()),
         (
-            "Pinned places",
+            "Bookmarks",
             crate::theme::data_home().join("teral/places.toml"),
         ),
     ] {
@@ -147,7 +144,6 @@ pub fn present_about(app: &App) {
     content.set_margin_bottom(28);
     content.set_margin_start(28);
     content.set_margin_end(28);
-    content.append(&mark);
     content.append(&name);
     content.append(&version);
     content.append(&description);

@@ -246,7 +246,7 @@ impl AppInner {
 
         if changed_directory {
             self.state.query.borrow_mut().clear();
-            self.widgets.search_overlay.entry.set_text("");
+            self.widgets.search.entry.set_text("");
             search::close(self);
             self.state.selection.unselect_all();
             for scroller in [&self.widgets.grid_scroller, &self.widgets.list_scroller] {
@@ -575,7 +575,6 @@ impl AppInner {
         crate::command::style_terminal(&self.widgets.console.terminal, &theme);
         *self.theme.borrow_mut() = theme;
         *self.config.borrow_mut() = config;
-        brand::restyle(self);
 
         self.schedule_theme_settle();
 
@@ -605,7 +604,6 @@ impl AppInner {
             crate::style::apply(&theme);
             crate::command::style_terminal(&app.widgets.console.terminal, &theme);
             *app.theme.borrow_mut() = theme;
-            brand::restyle(&app);
         });
     }
 
@@ -690,11 +688,17 @@ pub fn section_title(text: &str) -> gtk::Label {
 }
 
 /// A flat, compact icon button.
+///
+/// Centring matters: a button left at the default `Fill` alignment grows to the full
+/// height of whatever row it sits in, which is what makes toolbar icons look like they
+/// are floating inside oversized plates.
 pub fn icon_button(icon_name: &str, tooltip: &str) -> gtk::Button {
     let button = gtk::Button::from_icon_name(icon_name);
     button.add_css_class("teral-icon-button");
     button.set_tooltip_text(Some(tooltip));
     button.set_has_frame(false);
+    button.set_valign(gtk::Align::Center);
+    button.set_halign(gtk::Align::Center);
     button
 }
 
@@ -705,5 +709,7 @@ pub fn icon_toggle(icon_name: &str, tooltip: &str) -> gtk::ToggleButton {
     button.add_css_class("teral-icon-button");
     button.set_tooltip_text(Some(tooltip));
     button.set_has_frame(false);
+    button.set_valign(gtk::Align::Center);
+    button.set_halign(gtk::Align::Center);
     button
 }
