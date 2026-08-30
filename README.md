@@ -20,13 +20,13 @@ Teral is usable as a day-to-day file manager. It provides:
 - actions: Open, Open With, Copy Path, Open Terminal Here, Rename, Move, Copy and Trash
 - copy / cut / paste with recursive folder transfers that run off the GTK main thread and never overwrite an existing file
 - filename search, sorting, folders-first and hidden-file toggles
-- Quick Command: run a shell command with the browsed folder as its working directory, asynchronously, with its output in a collapsible console
+- Quick Command: run a shell command with the browsed folder as its working directory, in a real terminal — `vim`, `git rebase -i` and anything else interactive work, and the console can be dragged taller or shorter
 - a footer split into the same three columns as the window: Teral's own controls under the sidebar, Quick Command at exactly the width of the file list, and the selection and storage readout under the details panel
 - tabs, each with its own location and history
 - drag and drop: between Teral folders, and to and from other Linux applications
 - live directory monitoring, so changes made elsewhere appear on their own
 - trash browsing, restore to the original location, and Empty Trash
-- a Settings window with three theme modes, an accent colour, density and command settings
+- a Settings window with three theme modes, an accent colour, density and command settings, plus Shortcuts and About windows
 - a layered TOML theme system that live-reloads when its files change
 
 Richer previews (PDF, video, text), a command palette and network locations are not implemented yet.
@@ -46,6 +46,8 @@ Ctrl+V              Paste
 Ctrl+Shift+N        New folder
 Ctrl+Shift+T        Open a terminal here
 Ctrl+K              Focus Quick Command
+Ctrl+`              Show or hide the command console
+F1                  Keyboard shortcuts
 Ctrl+D              Duplicate
 Ctrl+T / Ctrl+W     New tab / close tab
 Ctrl+Tab            Next tab (add Shift for previous)
@@ -55,7 +57,9 @@ Ctrl+0              Reset the grid zoom
 F2                  Rename
 Delete              Move to trash
 F5 / Ctrl+R         Refresh
-Escape              Cancel a transfer, or hide the command console
+Shift+Delete        Delete permanently
+Ctrl+= / Ctrl+-     Larger / smaller icons
+Escape              Close search, cancel a transfer, or hide the console
 ```
 
 ## Ubuntu development setup
@@ -64,8 +68,11 @@ Install the native GTK4 development dependencies:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential pkg-config libgtk-4-dev
+sudo apt install -y build-essential pkg-config libgtk-4-dev libvte-2.91-gtk4-dev
 ```
+
+`libvte-2.91-gtk4-dev` is what gives Quick Command a real pseudo-terminal, so
+interactive programs can be used from inside Teral.
 
 Install Rust with rustup if Rust is not already installed, then restart your shell or source Cargo's environment.
 

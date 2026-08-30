@@ -8,6 +8,45 @@ use gtk::glib;
 use gtk::prelude::*;
 use std::rc::Rc;
 
+/// A Teral-styled window that the compositor will place over Teral's own.
+///
+/// GTK4 has no window-positioning API; a modal, transient window is what tells the
+/// desktop to centre it on its parent instead of dropping it in a corner.
+pub fn window(
+    app: &App,
+    title: &str,
+    width: i32,
+    height: i32,
+    child: &impl IsA<gtk::Widget>,
+) -> gtk::Window {
+    let window = gtk::Window::builder()
+        .transient_for(&app.widgets.window)
+        .modal(true)
+        .destroy_with_parent(true)
+        .title(title)
+        .default_width(width)
+        .default_height(height)
+        .child(child)
+        .build();
+    window.add_css_class("teral-dialog");
+
+    let escape = gtk::EventControllerKey::new();
+    escape.connect_key_pressed({
+        let window = window.clone();
+        move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                window.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        }
+    });
+    window.add_controller(escape);
+
+    window
+}
+
 /// Ask for a single line of text. `confirm` runs only when the user accepts.
 pub fn prompt(
     app: &App,
@@ -50,15 +89,8 @@ pub fn prompt(
     content.append(&entry);
     content.append(&buttons);
 
-    let window = gtk::Window::builder()
-        .transient_for(&app.widgets.window)
-        .modal(true)
-        .resizable(false)
-        .default_width(380)
-        .title(title)
-        .child(&content)
-        .build();
-    window.add_css_class("teral-dialog");
+    let window = window(app, title, 400, -1, &content);
+    window.set_resizable(false);
 
     let confirm = Rc::new(confirm);
 
@@ -85,20 +117,6 @@ pub fn prompt(
         let window = window.clone();
         move |_| window.close()
     });
-
-    let escape = gtk::EventControllerKey::new();
-    escape.connect_key_pressed({
-        let window = window.clone();
-        move |_, key, _, _| {
-            if key == gtk::gdk::Key::Escape {
-                window.close();
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
-            }
-        }
-    });
-    window.add_controller(escape);
 
     window.present();
     entry.grab_focus();
@@ -141,15 +159,8 @@ pub fn confirm(
     content.append(&text);
     content.append(&buttons);
 
-    let window = gtk::Window::builder()
-        .transient_for(&app.widgets.window)
-        .modal(true)
-        .resizable(false)
-        .default_width(400)
-        .title(title)
-        .child(&content)
-        .build();
-    window.add_css_class("teral-dialog");
+    let window = window(app, title, 420, -1, &content);
+    window.set_resizable(false);
 
     accept.connect_clicked({
         let window = window.clone();

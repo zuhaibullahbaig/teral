@@ -23,8 +23,8 @@ headerbar.teral-toolbar {
   background-image: none;
   border-bottom: 1px solid @teral_border;
   box-shadow: none;
-  min-height: 44px;
-  padding: 4px 12px;
+  min-height: 54px;
+  padding: 8px 14px;
 }
 
 headerbar.teral-toolbar windowcontrols button {
@@ -49,9 +49,9 @@ headerbar.teral-toolbar windowcontrols button.close:hover {
 }
 
 .teral-brand {
-  color: @teral_text;
-  font-size: 12px;
-  font-weight: 700;
+  color: @teral_text_bright;
+  font-size: 12.5px;
+  font-weight: 800;
 }
 
 .teral-icon-button > button,
@@ -68,11 +68,11 @@ menubutton.teral-icon-button > button {
 }
 
 .teral-icon-button {
-  min-width: 26px;
-  min-height: 24px;
-  padding: 1px 4px;
+  min-width: 24px;
+  min-height: 22px;
+  padding: 0 4px;
   margin: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   border: 1px solid transparent;
   background: none;
   background-image: none;
@@ -106,8 +106,9 @@ menubutton.teral-icon-button > button {
 
 .teral-button-group .teral-icon-button {
   border-radius: 6px;
-  min-height: 22px;
-  padding: 0 5px;
+  min-height: 20px;
+  min-width: 22px;
+  padding: 0 4px;
 }
 
 /* ---------------------------------------------------------- breadcrumbs ---- */
@@ -179,8 +180,16 @@ entry.teral-search {
   min-height: 28px;
 }
 
-entry.teral-search:focus-within {
-  border-color: alpha(@teral_accent, 0.55);
+entry.teral-search:focus-within,
+entry.teral-input:focus-within,
+entry.teral-location:focus-within {
+  border-color: alpha(@teral_accent, 0.6);
+  box-shadow: none;
+  outline: none;
+}
+
+entry.teral-search > text > placeholder {
+  color: @teral_muted;
 }
 
 /* -------------------------------------------------------------- sidebar ---- */
@@ -312,21 +321,14 @@ gridview.teral-grid > child:selected .teral-item-name {
 }
 
 .teral-tile {
-  background-color: @teral_elevated;
-  border: 1px solid @teral_border;
-}
-
-.teral-tile.directory {
-  background-image: linear-gradient(
-    to bottom,
-    alpha(@teral_accent, 0.06),
-    alpha(@teral_accent, 0.01)
-  );
+  background: none;
+  border: 1px solid transparent;
 }
 
 .teral-tile.image {
   padding: 0;
   background-color: shade(@teral_bg, 0.7);
+  border-color: @teral_border;
 }
 
 gridview.teral-grid > child.drop-target,
@@ -525,6 +527,35 @@ menubutton.teral-action > button {
   color: @teral_muted;
 }
 
+/* --------------------------------------------------------------- search ---- */
+
+.teral-search-overlay {
+  margin-top: 62px;
+}
+
+.teral-search-panel {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  border-radius: 12px;
+  box-shadow: 0 16px 38px alpha(#000000, 0.45);
+  padding: 7px 8px 7px 12px;
+}
+
+.teral-pin-target {
+  border: 1px dashed alpha(@teral_muted, 0.45);
+  border-radius: 9px;
+  color: @teral_muted;
+  font-size: 10.5px;
+  margin: 4px 6px 0 6px;
+  padding: 10px 8px;
+}
+
+.teral-shortcut-key {
+  color: @teral_accent;
+  font-family: monospace;
+  font-size: 11.5px;
+}
+
 /* ----------------------------------------------------------------- tabs ---- */
 
 .teral-tab-bar {
@@ -575,6 +606,10 @@ button.teral-tab-close {
 button.teral-tab-close:hover {
   background-color: alpha(@teral_danger, 0.25);
   opacity: 1;
+}
+
+.teral-brand-box {
+  padding: 0;
 }
 
 /* -------------------------------------------------------------- settings ---- */
@@ -743,12 +778,19 @@ scale.teral-zoom slider {
   border-bottom: 1px solid alpha(@teral_border, 0.7);
 }
 
-textview.teral-console-output,
-textview.teral-console-output text {
-  background-color: @teral_bg;
-  color: @teral_text;
-  font-family: monospace;
-  font-size: 11.5px;
+vte-terminal.teral-terminal {
+  padding: 8px 12px;
+}
+
+.teral-console-grip {
+  color: alpha(@teral_muted, 0.7);
+  font-size: 11px;
+  padding: 0 4px;
+}
+
+paned.teral-file-paned > separator {
+  background-color: @teral_border;
+  min-height: 1px;
 }
 
 /* --------------------------------------------------- popovers and menus ---- */

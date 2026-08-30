@@ -83,6 +83,9 @@ pub mod names {
         "preferences-system-symbolic",
         "applications-system-symbolic",
     ];
+    pub const HELP: &[&str] = &["help-browser-symbolic", "dialog-question-symbolic"];
+    pub const ABOUT: &[&str] = &["help-about-symbolic", "dialog-information-symbolic"];
+    pub const DELETE: &[&str] = &["edit-delete-symbolic", "user-trash-symbolic"];
     pub const PANEL: &[&str] = &[
         "sidebar-show-right-symbolic",
         "view-dual-symbolic",

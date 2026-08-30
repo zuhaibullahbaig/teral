@@ -1,8 +1,8 @@
 //! Window assembly, application actions and keyboard behaviour.
 
 use super::{
-    App, AppInner, State, Tab, ViewMode, details, dialogs, fileview, header, settings, sidebar,
-    statusbar, tabs,
+    App, AppInner, State, Tab, ViewMode, details, dialogs, fileview, header, help, search,
+    settings, sidebar, statusbar, tabs,
 };
 use crate::config::{Config, ViewPreference};
 use crate::files::ops::{self, CancelFlag, Clipboard, TransferKind};
@@ -35,9 +35,8 @@ pub struct Widgets {
     pub sort_button: gtk::MenuButton,
     pub menu_button: gtk::MenuButton,
     pub hidden_check: RefCell<Option<gtk::CheckButton>>,
+    pub brand_mark: gtk::DrawingArea,
 
-    pub search_bar: gtk::SearchBar,
-    pub search_entry: gtk::SearchEntry,
     pub tabs: tabs::Tabs,
 
     pub folder_title: gtk::Label,
@@ -45,6 +44,8 @@ pub struct Widgets {
     pub new_folder: gtk::Button,
 
     pub content: gtk::Box,
+    pub file_paned: gtk::Paned,
+    pub search_overlay: search::Search,
     pub view_stack: gtk::Stack,
     pub grid: gtk::GridView,
     pub list: gtk::ColumnView,
@@ -55,7 +56,7 @@ pub struct Widgets {
     pub places_box: gtk::Box,
     pub devices_box: gtk::Box,
     pub pinned_box: gtk::Box,
-    pub pinned_section: gtk::Box,
+    pub pin_drop: gtk::Label,
 
     pub details: details::Details,
 
@@ -90,16 +91,6 @@ pub fn build_window(
     );
     let console = statusbar::build_console();
     let tab_bar = tabs::build();
-
-    let search_entry = gtk::SearchEntry::new();
-    search_entry.add_css_class("teral-search");
-    search_entry.set_hexpand(true);
-    search_entry.set_placeholder_text(Some("Filter this folder by name"));
-
-    let search_bar = gtk::SearchBar::new();
-    search_bar.add_css_class("teral-searchbar");
-    search_bar.set_child(Some(&search_entry));
-    search_bar.set_show_close_button(false);
 
     let folder_title = gtk::Label::new(None);
     folder_title.set_xalign(0.0);
@@ -163,20 +154,39 @@ pub fn build_window(
     context_menu.set_has_arrow(false);
     context_menu.set_halign(gtk::Align::Start);
 
+    // The console shares the file column through a paned split, so its top edge can be
+    // dragged to make an interactive command taller or shorter.
+    console.root.set_visible(false);
+
+    let file_paned = gtk::Paned::new(gtk::Orientation::Vertical);
+    file_paned.add_css_class("teral-file-paned");
+    file_paned.set_vexpand(true);
+    file_paned.set_resize_start_child(true);
+    file_paned.set_resize_end_child(true);
+    file_paned.set_shrink_start_child(false);
+    file_paned.set_shrink_end_child(false);
+    file_paned.set_start_child(Some(&view_stack));
+    file_paned.set_end_child(Some(&console.root));
+
+    let search_overlay = search::build();
+
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.add_css_class("teral-content");
     content.set_hexpand(true);
     content.append(&tab_bar.root);
     content.append(&content_header);
-    content.append(&search_bar);
-    content.append(&view_stack);
-    content.append(&console.root);
+    content.append(&file_paned);
+
+    let content_overlay = gtk::Overlay::new();
+    content_overlay.set_hexpand(true);
+    content_overlay.set_child(Some(&content));
+    content_overlay.add_overlay(&search_overlay.root);
     context_menu.set_parent(&content);
 
     let panes = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     panes.set_vexpand(true);
     panes.append(&side.root);
-    panes.append(&content);
+    panes.append(&content_overlay);
     panes.append(&detail.root);
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -194,8 +204,6 @@ pub fn build_window(
     window.add_css_class("teral-window");
     window.set_titlebar(Some(&head.bar));
 
-    search_bar.set_key_capture_widget(Some(&window));
-
     let widgets = Widgets {
         window: window.clone(),
         back: head.back,
@@ -210,13 +218,14 @@ pub fn build_window(
         sort_button: head.sort_button,
         menu_button: head.menu_button,
         hidden_check: RefCell::new(None),
-        search_bar,
-        search_entry,
+        brand_mark: head.brand_mark,
         tabs: tab_bar,
         folder_title,
         folder_subtitle,
         new_folder,
         content,
+        file_paned,
+        search_overlay,
         view_stack,
         grid,
         list,
@@ -226,7 +235,7 @@ pub fn build_window(
         places_box: side.places,
         devices_box: side.devices,
         pinned_box: side.pinned,
-        pinned_section: side.pinned_section,
+        pin_drop: side.pin_drop,
         details: detail,
         console,
         command_entry: status.command_entry,
@@ -264,7 +273,7 @@ pub fn build_window(
             ViewPreference::Grid => ViewMode::Grid,
             ViewPreference::List => ViewMode::List,
         }),
-        running_command: RefCell::new(None),
+        running_command: Cell::new(false),
         running_transfer: RefCell::new(None),
         updating: Cell::new(false),
         tabs: RefCell::new(vec![Tab::new(start.clone())]),
@@ -272,6 +281,7 @@ pub fn build_window(
         directory_monitor: RefCell::new(None),
         refresh_queued: Cell::new(false),
         config_monitors: RefCell::new(Vec::new()),
+        console_height: Cell::new(statusbar::CONSOLE_HEIGHT),
     };
 
     let app: App = Rc::new(AppInner {
@@ -282,6 +292,7 @@ pub fn build_window(
     });
 
     header::connect(&app);
+    search::connect(&app);
     sidebar::connect(&app);
     fileview::connect(&app);
     details::connect(&app);
@@ -334,34 +345,47 @@ fn connect_window(app: &App) {
         move |_| new_folder(&app)
     });
 
-    app.widgets.search_entry.connect_search_changed({
-        let app = Rc::clone(app);
-        move |entry| {
-            *app.state.query.borrow_mut() = entry.text().to_string();
-            app.apply_filter();
-        }
-    });
-
-    app.widgets.search_bar.connect_search_mode_enabled_notify({
-        let app = Rc::clone(app);
-        move |bar| {
-            app.state.updating.set(true);
-            app.widgets.search_button.set_active(bar.is_search_mode());
-            app.state.updating.set(false);
-            if !bar.is_search_mode() && !app.state.query.borrow().is_empty() {
-                app.state.query.borrow_mut().clear();
-                app.widgets.search_entry.set_text("");
-                app.apply_filter();
-            }
-        }
-    });
-
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed({
         let app = Rc::clone(app);
         move |_, key, _, modifiers| on_key(&app, key, modifiers)
     });
     app.widgets.window.add_controller(keys);
+
+    // The console runs a real terminal, which swallows almost every key so that
+    // interactive programs work. One shortcut therefore has to be caught before the
+    // terminal sees it, otherwise there is no keyboard way back out.
+    let escape_hatch = gtk::EventControllerKey::new();
+    escape_hatch.set_propagation_phase(gtk::PropagationPhase::Capture);
+    escape_hatch.connect_key_pressed({
+        let app = Rc::clone(app);
+        move |_, key, _, modifiers| {
+            if key == gdk::Key::grave && modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+                toggle_console(&app);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        }
+    });
+    app.widgets.window.add_controller(escape_hatch);
+
+    // Clicking empty space clears the selection, the way every file manager behaves.
+    let clear = gtk::GestureClick::new();
+    clear.set_button(gdk::BUTTON_PRIMARY);
+    clear.set_propagation_phase(gtk::PropagationPhase::Bubble);
+    clear.connect_released({
+        let app = Rc::clone(app);
+        move |gesture, _, x, y| {
+            let Some(view) = gesture.widget() else {
+                return;
+            };
+            if !hit_an_item(&view, x, y) {
+                app.state.selection.unselect_all();
+            }
+        }
+    });
+    app.widgets.view_stack.add_controller(clear);
 
     // Right-clicking empty space acts on the current folder.
     let gesture = gtk::GestureClick::new();
@@ -404,10 +428,7 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         gdk::Key::Right if alt => app.go_forward(),
         gdk::Key::BackSpace => app.go_up(),
         gdk::Key::l | gdk::Key::L if control => header::show_location(app),
-        gdk::Key::f | gdk::Key::F if control => {
-            app.widgets.search_bar.set_search_mode(true);
-            app.widgets.search_entry.grab_focus();
-        }
+        gdk::Key::f | gdk::Key::F if control => search::open(app),
         gdk::Key::h | gdk::Key::H if control => toggle_hidden(app),
         gdk::Key::k | gdk::Key::K if control => {
             app.widgets.command_entry.grab_focus();
@@ -428,6 +449,9 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         gdk::Key::Tab | gdk::Key::ISO_Left_Tab if control => app.cycle_tab(!shift),
         gdk::Key::d | gdk::Key::D if control => duplicate_selection(app),
         gdk::Key::comma if control => settings::present(app),
+        gdk::Key::F1 => help::present_shortcuts(app),
+        gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add if control => app.step_zoom(8),
+        gdk::Key::minus | gdk::Key::KP_Subtract if control => app.step_zoom(-8),
         gdk::Key::i | gdk::Key::I if control => {
             let toggle = &app.widgets.details_toggle;
             toggle.set_active(!toggle.is_active());
@@ -435,8 +459,10 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         gdk::Key::r | gdk::Key::R if control => app.reload(),
         gdk::Key::F5 => app.reload(),
         gdk::Key::F2 => rename_selection(app),
+        gdk::Key::Delete if shift => delete_permanently(app),
         gdk::Key::Delete => trash_selection(app),
         gdk::Key::_0 if control => app.reset_zoom(),
+        gdk::Key::Escape if search::is_open(app) => search::close(app),
         gdk::Key::Escape => {
             let cancelled = app
                 .state
@@ -447,8 +473,9 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
                 .is_some();
             if cancelled {
                 app.set_message("Cancelling the transfer…", false);
+            } else if statusbar::console_visible(app) {
+                statusbar::hide_console(app);
             } else {
-                app.widgets.console.root.set_reveal_child(false);
                 app.clear_message();
             }
         }
@@ -456,6 +483,40 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
     }
 
     glib::Propagation::Stop
+}
+
+/// Show or hide the Quick Command console, moving focus with it.
+pub fn toggle_console(app: &App) {
+    if statusbar::console_visible(app) {
+        statusbar::hide_console(app);
+        focus_file_view(app);
+    } else {
+        statusbar::show_console(app);
+        app.widgets.console.terminal.grab_focus();
+    }
+}
+
+/// Whether the point `x`, `y` inside `view` landed on a file rather than on the
+/// background. Items carry a marker class, and GTK's own row widgets are recognised by
+/// type, so a click on any part of a list row still counts as hitting that row.
+fn hit_an_item(view: &gtk::Widget, x: f64, y: f64) -> bool {
+    let mut widget = view.pick(x, y, gtk::PickFlags::DEFAULT);
+
+    while let Some(current) = widget {
+        if current.has_css_class("teral-item") {
+            return true;
+        }
+        let type_name = current.type_().name().to_owned();
+        if type_name.contains("ListItemWidget") || type_name.contains("ColumnViewRowWidget") {
+            return true;
+        }
+        if &current == view {
+            return false;
+        }
+        widget = current.parent();
+    }
+
+    false
 }
 
 /// Move focus back to whichever file view is showing.
@@ -769,6 +830,65 @@ fn run_transfer(app: &App, kind: TransferKind, sources: Vec<PathBuf>, destinatio
     });
 }
 
+/// Open whatever is selected, following folders and launching files.
+pub fn activate_selection(app: &App) {
+    let Some(entry) = app.selected_entries().into_iter().next() else {
+        return;
+    };
+    if entry.is_directory() {
+        app.navigate(entry.path());
+    } else {
+        open_entry(app, &entry);
+    }
+}
+
+/// Delete the selection without going through the trash.
+pub fn delete_permanently(app: &App) {
+    let entries = app.selected_entries();
+    if entries.is_empty() {
+        app.set_message("Select something first", false);
+        return;
+    }
+
+    let paths: Vec<PathBuf> = entries
+        .iter()
+        .map(|entry| entry.path().to_path_buf())
+        .collect();
+
+    let summary = if paths.len() == 1 {
+        entries[0].display_name().to_owned()
+    } else {
+        crate::files::item_count_label(paths.len())
+    };
+
+    let app_for_action = Rc::clone(app);
+    dialogs::confirm(
+        app,
+        "Delete Permanently",
+        &format!("{summary} will be deleted permanently. This cannot be undone."),
+        "Delete Permanently",
+        move || {
+            let app = Rc::clone(&app_for_action);
+            let paths = paths.clone();
+            glib::spawn_future_local(async move {
+                let report = ops::delete_permanently(paths).await;
+                if report.failures.is_empty() {
+                    app.set_message(
+                        &format!(
+                            "Deleted {}",
+                            crate::files::item_count_label(report.succeeded)
+                        ),
+                        false,
+                    );
+                } else {
+                    app.show_error(&report.failures.join("; "));
+                }
+                app.reload();
+            });
+        },
+    );
+}
+
 /// Copy the selection beside itself.
 pub fn duplicate_selection(app: &App) {
     let paths: Vec<PathBuf> = app
@@ -869,6 +989,8 @@ pub fn run_menu_action(app: &App, action: header::MenuAction) {
         }
         header::MenuAction::Refresh => app.reload(),
         header::MenuAction::EmptyTrash => empty_trash(app),
+        header::MenuAction::Shortcuts => help::present_shortcuts(app),
+        header::MenuAction::About => help::present_about(app),
     }
 }
 
@@ -940,14 +1062,18 @@ fn context_menu_content(app: &App) -> gtk::Box {
         ));
     }
 
-    if !selected.is_empty() && ops::is_in_trash(&app.current_dir()) {
+    let in_trash = ops::is_in_trash(&app.current_dir());
+
+    if !selected.is_empty() && in_trash {
         items.push((
             header::menu_item(icons::ui(icons::names::RESTORE), "Restore"),
             ContextAction::Restore,
         ));
-    }
-
-    if !selected.is_empty() {
+        items.push((
+            header::menu_item(icons::ui(icons::names::DELETE), "Delete Permanently"),
+            ContextAction::Delete,
+        ));
+    } else if !selected.is_empty() {
         items.push((
             header::menu_item(icons::ui(icons::names::COPY), "Duplicate"),
             ContextAction::Duplicate,
@@ -997,6 +1123,7 @@ enum ContextAction {
     Open,
     Duplicate,
     Restore,
+    Delete,
     TerminalHere,
     Pin,
     Rename,
@@ -1044,6 +1171,7 @@ fn run_context_action(app: &App, action: ContextAction) {
         }
         ContextAction::Duplicate => duplicate_selection(app),
         ContextAction::Restore => restore_selection(app),
+        ContextAction::Delete => delete_permanently(app),
         ContextAction::Copy => stage_transfer(app, TransferKind::Copy),
         ContextAction::Cut => stage_transfer(app, TransferKind::Move),
         ContextAction::Trash => trash_selection(app),

@@ -1,9 +1,10 @@
-//! The bottom bar: Quick Command, selection status, free space and grid zoom.
+//! The bottom bar and the Quick Command console.
 
 use super::App;
-use crate::command::{self, RunningCommand};
+use crate::command;
 use gtk::prelude::*;
 use std::rc::Rc;
+use vte::prelude::*;
 
 /// Widgets of the bottom bar and the Quick Command console above it.
 pub struct StatusBar {
@@ -18,70 +19,67 @@ pub struct StatusBar {
     pub details_toggle: gtk::ToggleButton,
 }
 
-/// The collapsible Quick Command output area.
+/// The Quick Command console: a real terminal, resizable by dragging its top edge.
 pub struct Console {
-    pub root: gtk::Revealer,
+    pub root: gtk::Box,
     pub title: gtk::Label,
-    pub output: gtk::TextView,
-    pub cancel: gtk::Button,
+    pub terminal: vte::Terminal,
+    pub stop: gtk::Button,
     pub close: gtk::Button,
 }
+
+/// Height the console opens at, in pixels.
+pub const CONSOLE_HEIGHT: i32 = 260;
 
 pub fn build_console() -> Console {
     let title = gtk::Label::new(None);
     title.set_xalign(0.0);
     title.set_hexpand(true);
-    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     title.add_css_class("teral-status-item");
     title.add_css_class("strong");
 
-    let cancel = super::icon_button(
+    let grip = gtk::Label::new(Some("⠿"));
+    grip.add_css_class("teral-console-grip");
+    grip.set_tooltip_text(Some("Drag to resize the console"));
+
+    let stop = super::icon_button(
         crate::icons::ui(crate::icons::names::STOP),
         "Stop the running command",
     );
-    cancel.set_visible(false);
+    stop.set_visible(false);
+
     let close = super::icon_button(
         crate::icons::ui(crate::icons::names::CLOSE),
-        "Hide command output",
+        "Hide the console (Escape)",
     );
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     header.add_css_class("teral-console-header");
+    header.append(&grip);
     header.append(&title);
-    header.append(&cancel);
+    header.append(&stop);
     header.append(&close);
 
-    let output = gtk::TextView::new();
-    output.add_css_class("teral-console-output");
-    output.set_editable(false);
-    output.set_monospace(true);
-    output.set_left_margin(12);
-    output.set_right_margin(12);
-    output.set_top_margin(8);
-    output.set_bottom_margin(8);
-    output.set_wrap_mode(gtk::WrapMode::WordChar);
+    let terminal = command::build_terminal();
 
     let scroller = gtk::ScrolledWindow::builder()
-        .child(&output)
-        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .child(&terminal)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
         .build();
-    scroller.set_size_request(-1, 168);
+    scroller.add_css_class("teral-console-scroller");
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.add_css_class("teral-console");
-    content.append(&header);
-    content.append(&scroller);
-
-    let root = gtk::Revealer::new();
-    root.set_child(Some(&content));
-    root.set_transition_type(gtk::RevealerTransitionType::SlideUp);
-    root.set_reveal_child(false);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.add_css_class("teral-console");
+    root.append(&header);
+    root.append(&scroller);
 
     Console {
         root,
         title,
-        output,
-        cancel,
+        terminal,
+        stop,
         close,
     }
 }
@@ -216,20 +214,6 @@ pub fn connect(app: &App) {
         }
     });
 
-    app.widgets.console.cancel.connect_clicked({
-        let app = Rc::clone(app);
-        move |_| {
-            if let Some(running) = app.state.running_command.borrow().as_ref() {
-                running.cancel();
-            }
-        }
-    });
-
-    app.widgets.console.close.connect_clicked({
-        let app = Rc::clone(app);
-        move |_| app.widgets.console.root.set_reveal_child(false)
-    });
-
     app.widgets.settings.connect_clicked({
         let app = Rc::clone(app);
         move |_| super::settings::present(&app)
@@ -238,6 +222,32 @@ pub fn connect(app: &App) {
     app.widgets.details_toggle.connect_toggled({
         let app = Rc::clone(app);
         move |button| app.widgets.details.root.set_visible(button.is_active())
+    });
+
+    app.widgets.console.stop.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| stop_command(&app)
+    });
+
+    app.widgets.console.close.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| hide_console(&app)
+    });
+
+    // A finished command leaves its output on screen; the folder is reloaded because
+    // commands frequently change what is in it.
+    app.widgets.console.terminal.connect_child_exited({
+        let app = Rc::clone(app);
+        move |_, status| {
+            app.state.running_command.set(false);
+            app.widgets.console.stop.set_visible(false);
+            if status == 0 {
+                app.set_message("Command finished", false);
+            } else {
+                app.show_error(&format!("Command exited with status {status}"));
+            }
+            app.reload();
+        }
     });
 
     app.widgets.zoom.connect_value_changed({
@@ -262,58 +272,70 @@ pub fn connect(app: &App) {
     });
 }
 
+/// Show the console, restoring the height it had last time.
+pub fn show_console(app: &App) {
+    if app.widgets.console.root.get_visible() {
+        return;
+    }
+
+    let paned = &app.widgets.file_paned;
+    let height = app.state.console_height.get().max(120);
+    paned.set_position((paned.height() - height).max(120));
+    app.widgets.console.root.set_visible(true);
+}
+
+/// Hide the console, remembering how tall the user made it.
+pub fn hide_console(app: &App) {
+    let paned = &app.widgets.file_paned;
+    if app.widgets.console.root.get_visible() {
+        let height = paned.height() - paned.position();
+        if height > 80 {
+            app.state.console_height.set(height);
+        }
+    }
+    app.widgets.console.root.set_visible(false);
+}
+
+/// Whether the console is currently on screen.
+pub fn console_visible(app: &App) -> bool {
+    app.widgets.console.root.get_visible()
+}
+
+/// Stop whatever Quick Command is running.
+pub fn stop_command(app: &App) {
+    // Ctrl+C in the child's own terminal is the least surprising way to interrupt it.
+    app.widgets.console.terminal.feed_child(&[0x03]);
+}
+
 /// Run a Quick Command in the directory currently being browsed.
 pub fn run_command(app: &App, text: &str) {
-    if app.state.running_command.borrow().is_some() {
+    if app.state.running_command.get() {
         app.show_error("A Quick Command is already running");
         return;
     }
 
     let directory = app.current_dir();
-    let running = match RunningCommand::spawn(text, &directory) {
-        Ok(running) => running,
-        Err(error) => {
-            app.show_error(&format!("Could not run the command: {}", error.message()));
-            return;
-        }
-    };
-
     let console = &app.widgets.console;
+
     console
         .title
-        .set_text(&format!("$ {text}   ·   {}", directory.display()));
-    console.output.buffer().set_text("");
-    console.cancel.set_visible(true);
-    console.root.set_reveal_child(true);
+        .set_text(&command::summarise(text, &directory));
+    console.terminal.reset(true, true);
+    console.stop.set_visible(true);
+    show_console(app);
     app.clear_message();
+    app.state.running_command.set(true);
 
-    *app.state.running_command.borrow_mut() = Some(running.clone());
-
+    let spawn = command::run(&console.terminal, text, &directory);
     let app = Rc::clone(app);
-    let text = text.to_owned();
     gtk::glib::spawn_future_local(async move {
-        let result = running.wait().await;
-        app.state.running_command.borrow_mut().take();
-        app.widgets.console.cancel.set_visible(false);
-
-        match result {
-            Ok(output) => {
-                let body = command::tidy_output(&output.text);
-                let body = if body.is_empty() {
-                    format!("(no output)\n\nexit status {}", output.exit_status)
-                } else {
-                    body
-                };
-                app.widgets.console.output.buffer().set_text(&body);
-                if output.succeeded() {
-                    app.set_message(&format!("{text} finished"), false);
-                } else {
-                    app.show_error(&format!("{text} exited with status {}", output.exit_status));
-                }
-                // Commands frequently change the folder they ran in.
-                app.reload();
-            }
-            Err(error) => app.show_error(&format!("Command failed: {}", error.message())),
+        if let Err(error) = spawn.await {
+            app.state.running_command.set(false);
+            app.widgets.console.stop.set_visible(false);
+            app.show_error(&format!("Could not run the command: {}", error.message()));
+        } else {
+            // Typing goes to the child, not to the file list.
+            app.widgets.console.terminal.grab_focus();
         }
     });
 }

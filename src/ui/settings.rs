@@ -70,15 +70,7 @@ fn build(app: &App) -> gtk::Window {
     root.append(&scroller);
     root.append(&footer);
 
-    let window = gtk::Window::builder()
-        .transient_for(&app.widgets.window)
-        .modal(false)
-        .title("Teral Settings")
-        .default_width(520)
-        .default_height(660)
-        .child(&root)
-        .build();
-    window.add_css_class("teral-dialog");
+    let window = super::dialogs::window(app, "Teral Settings", 540, 680, &root);
 
     close.connect_clicked({
         let window = window.clone();
@@ -96,20 +88,6 @@ fn build(app: &App) -> gtk::Window {
             present(&app);
         }
     });
-
-    let escape = gtk::EventControllerKey::new();
-    escape.connect_key_pressed({
-        let window = window.clone();
-        move |_, key, _, _| {
-            if key == gdk::Key::Escape {
-                window.close();
-                gtk::glib::Propagation::Stop
-            } else {
-                gtk::glib::Propagation::Proceed
-            }
-        }
-    });
-    window.add_controller(escape);
 
     window
 }

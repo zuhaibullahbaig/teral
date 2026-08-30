@@ -4,17 +4,19 @@
 //! shares, and the operations the widgets in the submodules call into. The submodules
 //! only build and update widgets.
 
+pub mod brand;
 pub mod details;
 pub mod dialogs;
 pub mod fileview;
 pub mod header;
+pub mod help;
+pub mod search;
 pub mod settings;
 pub mod sidebar;
 pub mod statusbar;
 pub mod tabs;
 pub mod window;
 
-use crate::command::RunningCommand;
 use crate::config::Config;
 use crate::files::ops::{CancelFlag, Clipboard};
 use crate::files::scan::{self, Sorting};
@@ -65,7 +67,8 @@ pub struct State {
     pub clipboard: RefCell<Option<Clipboard>>,
     pub icon_size: Cell<i32>,
     pub view_mode: Cell<ViewMode>,
-    pub running_command: RefCell<Option<RunningCommand>>,
+    /// True while a Quick Command is attached to the console terminal.
+    pub running_command: Cell<bool>,
     pub running_transfer: RefCell<Option<CancelFlag>>,
     /// Guards against feedback loops while widgets are being synchronised.
     pub updating: Cell<bool>,
@@ -77,6 +80,8 @@ pub struct State {
     pub refresh_queued: Cell<bool>,
     /// Kept alive so configuration and theme changes keep being delivered.
     pub config_monitors: RefCell<Vec<gio::FileMonitor>>,
+    /// Height the console had when it was last visible.
+    pub console_height: Cell<i32>,
 }
 
 /// One browsing tab: a location and its own history.
@@ -241,8 +246,8 @@ impl AppInner {
 
         if changed_directory {
             self.state.query.borrow_mut().clear();
-            self.widgets.search_entry.set_text("");
-            self.widgets.search_bar.set_search_mode(false);
+            self.widgets.search_overlay.entry.set_text("");
+            search::close(self);
             self.state.selection.unselect_all();
             for scroller in [&self.widgets.grid_scroller, &self.widgets.list_scroller] {
                 scroller.vadjustment().set_value(0.0);
@@ -369,7 +374,7 @@ impl AppInner {
         tabs::rebuild(self);
     }
 
-    pub fn update_counts(&self) {
+    pub fn update_counts(self: &App) {
         let total = self.state.all.borrow().len();
         let visible = self.state.store.n_items() as usize;
 
@@ -379,6 +384,7 @@ impl AppInner {
             format!("{visible} of {}", crate::files::item_count_label(total))
         };
         self.widgets.folder_subtitle.set_text(&text);
+        search::update_matches(self, visible, total);
     }
 
     pub fn update_status(&self) {
@@ -566,8 +572,12 @@ impl AppInner {
         crate::style::apply(&theme);
 
         let icon_size = theme.grid_icon_size();
+        crate::command::style_terminal(&self.widgets.console.terminal, &theme);
         *self.theme.borrow_mut() = theme;
         *self.config.borrow_mut() = config;
+        brand::restyle(self);
+
+        self.schedule_theme_settle();
 
         if icon_size != self.state.icon_size.get() {
             self.state.icon_size.set(icon_size);
@@ -576,6 +586,27 @@ impl AppInner {
             self.state.updating.set(false);
             fileview::refresh_grid_factory(self);
         }
+    }
+
+    /// Re-resolve the palette after GTK has finished switching its own theme.
+    ///
+    /// Turning "Follow the system" on flips GTK's light/dark preference, and GTK only
+    /// swaps its named colours once that has settled; resolving twice means Teral picks
+    /// up the desktop's real colours on the first switch instead of the second.
+    pub fn schedule_theme_settle(self: &App) {
+        if self.config.borrow().mode != crate::config::ThemeMode::System {
+            return;
+        }
+
+        let app = Rc::clone(self);
+        glib::idle_add_local_once(move || {
+            let config = app.config.borrow().clone();
+            let theme = ThemeConfig::resolve(&config);
+            crate::style::apply(&theme);
+            crate::command::style_terminal(&app.widgets.console.terminal, &theme);
+            *app.theme.borrow_mut() = theme;
+            brand::restyle(&app);
+        });
     }
 
     /// Re-read the configuration file and any environment theme, then restyle.
@@ -611,6 +642,13 @@ impl AppInner {
             crate::config::ViewPreference::List => ViewMode::List,
         });
         self.apply_filter();
+    }
+
+    /// Step the grid icon size, keeping it inside the range Teral will draw.
+    pub fn step_zoom(self: &App, delta: i32) {
+        let size = (self.state.icon_size.get() + delta)
+            .clamp(crate::theme::MIN_ICON_SIZE, crate::theme::MAX_ICON_SIZE);
+        self.widgets.zoom.set_value(f64::from(size));
     }
 
     pub fn set_view_mode(self: &App, mode: ViewMode) {

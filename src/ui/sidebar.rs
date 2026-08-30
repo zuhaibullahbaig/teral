@@ -15,7 +15,7 @@ pub struct Sidebar {
     pub places: gtk::Box,
     pub devices: gtk::Box,
     pub pinned: gtk::Box,
-    pub pinned_section: gtk::Box,
+    pub pin_drop: gtk::Label,
 }
 
 pub fn build(width: i32) -> Sidebar {
@@ -38,8 +38,13 @@ pub fn build(width: i32) -> Sidebar {
     let pinned_section = gtk::Box::new(gtk::Orientation::Vertical, 0);
     pinned_section.append(&section_title("PLACES"));
     pinned_section.append(&pinned);
-    pinned_section.set_visible(false);
     content.append(&pinned_section);
+
+    let pin_drop = gtk::Label::new(Some("Drop a folder here to pin it"));
+    pin_drop.add_css_class("teral-pin-target");
+    pin_drop.set_wrap(true);
+    pin_drop.set_justify(gtk::Justification::Center);
+    pinned_section.append(&pin_drop);
 
     let scroller = gtk::ScrolledWindow::builder()
         .child(&content)
@@ -59,7 +64,7 @@ pub fn build(width: i32) -> Sidebar {
         places,
         devices,
         pinned,
-        pinned_section,
+        pin_drop,
     }
 }
 
@@ -71,6 +76,7 @@ fn section_box() -> gtk::Box {
 
 /// Populate every sidebar section. Safe to call again when mounts change.
 pub fn connect(app: &App) {
+    connect_pin_target(app);
     rebuild_places(app);
     rebuild_devices(app);
     rebuild_pinned(app);
@@ -101,12 +107,64 @@ fn rebuild_devices(app: &App) {
     }
 }
 
-/// Rebuild the pinned section, hiding it entirely when nothing is pinned.
+/// Dropping a folder on the PLACES area pins it instead of moving it.
+fn connect_pin_target(app: &App) {
+    let target = gtk::DropTarget::new(
+        gtk::gdk::FileList::static_type(),
+        gtk::gdk::DragAction::COPY,
+    );
+    let label = app.widgets.pin_drop.clone();
+
+    target.connect_drop({
+        let app = Rc::clone(app);
+        let label = label.clone();
+        move |_, value, _, _| {
+            label.remove_css_class("drop-target");
+            let Ok(files) = value.get::<gtk::gdk::FileList>() else {
+                return false;
+            };
+
+            let mut pinned = 0usize;
+            for path in files.files().iter().filter_map(gtk::gio::File::path) {
+                if path.is_dir() && !app.is_pinned(&path) {
+                    app.toggle_pin(&path);
+                    pinned += 1;
+                }
+            }
+
+            if pinned == 0 {
+                app.set_message("Only folders can be pinned", false);
+                return false;
+            }
+            app.set_message(
+                &format!("Pinned {}", crate::files::item_count_label(pinned)),
+                false,
+            );
+            true
+        }
+    });
+
+    target.connect_enter({
+        let label = label.clone();
+        move |_, _, _| {
+            label.add_css_class("drop-target");
+            gtk::gdk::DragAction::COPY
+        }
+    });
+    target.connect_leave({
+        let label = label.clone();
+        move |_| label.remove_css_class("drop-target")
+    });
+
+    label.add_controller(target);
+}
+
+/// Rebuild the pinned section, hiding the hint once folders are pinned.
 pub fn rebuild_pinned(app: &App) {
     clear(&app.widgets.pinned_box);
 
     let pinned = app.state.pinned.borrow().clone();
-    app.widgets.pinned_section.set_visible(!pinned.is_empty());
+    app.widgets.pin_drop.set_visible(pinned.is_empty());
 
     for path in pinned {
         let label = places::display_label(&path);

@@ -160,6 +160,7 @@ fn build_grid_item(app: &App, item: &gtk::ListItem) -> gtk::Widget {
     subtitle.set_max_width_chars(1);
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    root.add_css_class("teral-item");
     root.set_halign(gtk::Align::Center);
     root.set_size_request(item_width, -1);
     root.append(&overlay);
@@ -339,6 +340,7 @@ fn name_column_factory(app: &App) -> gtk::SignalListItemFactory {
             return;
         };
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
+        row.add_css_class("teral-item");
         let icon = gtk::Image::new();
         icon.set_pixel_size(16);
         let label = gtk::Label::new(None);

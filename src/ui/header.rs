@@ -1,6 +1,6 @@
 //! Top navigation: branding, history, breadcrumbs, search and view controls.
 
-use super::{App, ViewMode, icon_button, icon_toggle, tracked_label};
+use super::{App, ViewMode, icon_button, icon_toggle};
 use crate::files::SortKey;
 use crate::icons;
 use gtk::glib;
@@ -11,6 +11,7 @@ use std::rc::Rc;
 /// Widgets that make up the top bar.
 pub struct Header {
     pub bar: gtk::HeaderBar,
+    pub brand_mark: gtk::DrawingArea,
     pub back: gtk::Button,
     pub forward: gtk::Button,
     pub up: gtk::Button,
@@ -29,10 +30,15 @@ pub fn build() -> Header {
     bar.add_css_class("teral-toolbar");
     bar.set_show_title_buttons(true);
 
-    let brand = tracked_label("TERAL", 3);
-    brand.add_css_class("teral-brand");
-    brand.set_margin_start(4);
-    brand.set_margin_end(14);
+    let brand = super::brand::build(
+        crate::theme::ThemeConfig::default().color(crate::theme::ColorRole::Accent),
+    );
+    brand.set_margin_start(2);
+    brand.set_margin_end(12);
+    let brand_mark = brand
+        .first_child()
+        .and_downcast::<gtk::DrawingArea>()
+        .expect("the brand always starts with its mark");
 
     let back = icon_button(icons::ui(icons::names::BACK), "Back (Alt+Left)");
     let forward = icon_button(icons::ui(icons::names::FORWARD), "Forward (Alt+Right)");
@@ -93,6 +99,7 @@ pub fn build() -> Header {
 
     Header {
         bar,
+        brand_mark,
         back,
         forward,
         up,
@@ -157,9 +164,10 @@ pub fn connect(app: &App) {
             if app.state.updating.get() {
                 return;
             }
-            app.widgets.search_bar.set_search_mode(button.is_active());
             if button.is_active() {
-                app.widgets.search_entry.grab_focus();
+                super::search::open(&app);
+            } else {
+                super::search::close(&app);
             }
         }
     });
@@ -353,6 +361,8 @@ fn folder_popover(app: &App) -> gtk::Popover {
     let pin = menu_item(icons::ui(icons::names::PIN), "Pin This Folder");
     let refresh = menu_item(icons::ui(icons::names::REFRESH), "Refresh");
     let empty_trash = menu_item(icons::ui(icons::names::TRASH), "Empty Trash");
+    let shortcuts = menu_item(icons::ui(icons::names::HELP), "Keyboard Shortcuts");
+    let about = menu_item(icons::ui(icons::names::ABOUT), "About Teral");
 
     for (item, action) in [
         (&new_folder, MenuAction::NewFolder),
@@ -361,6 +371,8 @@ fn folder_popover(app: &App) -> gtk::Popover {
         (&pin, MenuAction::TogglePin),
         (&refresh, MenuAction::Refresh),
         (&empty_trash, MenuAction::EmptyTrash),
+        (&shortcuts, MenuAction::Shortcuts),
+        (&about, MenuAction::About),
     ] {
         let app = Rc::clone(app);
         let popover = popover.clone();
@@ -377,6 +389,9 @@ fn folder_popover(app: &App) -> gtk::Popover {
     content.append(&pin);
     content.append(&refresh);
     content.append(&empty_trash);
+    content.append(&separator());
+    content.append(&shortcuts);
+    content.append(&about);
 
     // Reflect the current clipboard and pin state whenever the menu opens.
     popover.connect_show({
@@ -412,6 +427,8 @@ pub enum MenuAction {
     TogglePin,
     Refresh,
     EmptyTrash,
+    Shortcuts,
+    About,
 }
 
 pub fn menu_item(icon_name: &str, label: &str) -> gtk::Button {

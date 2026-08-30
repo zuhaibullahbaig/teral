@@ -390,6 +390,42 @@ fn restore_one(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Delete entries without going through the trash.
+pub async fn delete_permanently(paths: Vec<PathBuf>) -> TransferReport {
+    gio::spawn_blocking(move || {
+        let mut report = TransferReport::default();
+        for path in paths {
+            match remove_with_trash_record(&path) {
+                Ok(()) => report.succeeded += 1,
+                Err(error) => report
+                    .failures
+                    .push(format!("{}: {error}", display_name(&path))),
+            }
+        }
+        report
+    })
+    .await
+    .unwrap_or_else(|_| TransferReport {
+        failures: vec!["the delete worker stopped unexpectedly".to_owned()],
+        ..TransferReport::default()
+    })
+}
+
+/// Remove an entry, cleaning up its trash record when it lives in the trash.
+fn remove_with_trash_record(path: &Path) -> io::Result<()> {
+    remove_recursively(path)?;
+
+    if is_in_trash(path)
+        && let Some(name) = path.file_name()
+    {
+        let mut info_name = OsString::from(name);
+        info_name.push(".trashinfo");
+        let _ = fs::remove_file(trash_root().join("info").join(info_name));
+    }
+
+    Ok(())
+}
+
 /// Permanently delete everything in the trash.
 pub async fn empty_trash() -> TransferReport {
     gio::spawn_blocking(move || {

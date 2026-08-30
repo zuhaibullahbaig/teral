@@ -266,6 +266,25 @@ fn meta_row(key: &str) -> MetaRow {
     MetaRow { root, value }
 }
 
+/// Replace the caption under an action button.
+fn relabel(button: &gtk::Button, text: &str) {
+    if let Some(content) = button.child().and_downcast::<gtk::Box>()
+        && let Some(label) = content.last_child().and_downcast::<gtk::Label>()
+    {
+        label.set_text(text);
+    }
+    button.set_tooltip_text(Some(text));
+}
+
+/// Replace the icon above an action button's caption.
+fn set_action_icon(button: &gtk::Button, icon_name: &str) {
+    if let Some(content) = button.child().and_downcast::<gtk::Box>()
+        && let Some(image) = content.first_child().and_downcast::<gtk::Image>()
+    {
+        image.set_icon_name(Some(icon_name));
+    }
+}
+
 fn separator() -> gtk::Separator {
     let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
     separator.add_css_class("teral-separator");
@@ -326,14 +345,28 @@ pub fn connect(app: &App) {
         move |_| super::window::stage_transfer(&app, crate::files::ops::TransferKind::Copy)
     });
 
+    // In the trash, Move becomes Restore and Trash becomes a permanent delete: moving
+    // something that is already deleted, or trashing it twice, means nothing.
     actions.cut.connect_clicked({
         let app = Rc::clone(app);
-        move |_| super::window::stage_transfer(&app, crate::files::ops::TransferKind::Move)
+        move |_| {
+            if crate::files::ops::is_in_trash(&app.current_dir()) {
+                super::window::restore_selection(&app);
+            } else {
+                super::window::stage_transfer(&app, crate::files::ops::TransferKind::Move);
+            }
+        }
     });
 
     actions.trash.connect_clicked({
         let app = Rc::clone(app);
-        move |_| super::window::trash_selection(&app)
+        move |_| {
+            if crate::files::ops::is_in_trash(&app.current_dir()) {
+                super::window::delete_permanently(&app);
+            } else {
+                super::window::trash_selection(&app);
+            }
+        }
     });
 }
 
@@ -412,6 +445,28 @@ pub fn update(app: &App) {
     }
 
     let actions = &details.actions;
+    let in_trash = crate::files::ops::is_in_trash(&app.current_dir());
+
+    relabel(&actions.cut, if in_trash { "Restore" } else { "Move" });
+    relabel(&actions.trash, if in_trash { "Delete" } else { "Trash" });
+    set_action_icon(
+        &actions.cut,
+        if in_trash {
+            icons::ui(names::RESTORE)
+        } else {
+            icons::ui(names::CUT)
+        },
+    );
+    set_action_icon(
+        &actions.trash,
+        if in_trash {
+            icons::ui(names::DELETE)
+        } else {
+            icons::ui(names::TRASH)
+        },
+    );
+    actions.copy.set_sensitive(!in_trash);
+
     let applications = crate::files::ops::applications_for(data.content_type.as_deref());
     let can_open_with = !entry.is_directory() && !applications.is_empty();
     actions.open_with.set_sensitive(can_open_with);

@@ -1,84 +1,94 @@
 //! Quick Command: run a shell command with the browsed directory as its working
-//! directory.
+//! directory, in a real terminal.
 //!
-//! Only commands the user types are ever executed, the process is spawned
-//! asynchronously so the UI cannot freeze, and Teral never escalates privileges.
+//! The command runs on a pseudo-terminal inside Teral's console, so interactive
+//! programs — `vim`, `git rebase -i`, `htop`, anything that expects a TTY — work and
+//! can be typed into. Only commands the user types are ever executed, the process is
+//! spawned asynchronously so the UI cannot freeze, and Teral never escalates
+//! privileges.
 
-use gtk::gio;
 use gtk::glib;
+use gtk::prelude::*;
 use std::path::Path;
+use vte::prelude::*;
 
-/// Result of a finished Quick Command.
-#[derive(Debug)]
-pub struct CommandOutput {
-    pub text: String,
-    pub exit_status: i32,
+/// Build the terminal widget used by the console.
+pub fn build_terminal() -> vte::Terminal {
+    let terminal = vte::Terminal::new();
+    terminal.add_css_class("teral-terminal");
+    terminal.set_scrollback_lines(10_000);
+    terminal.set_scroll_on_output(true);
+    terminal.set_scroll_on_keystroke(true);
+    terminal.set_mouse_autohide(true);
+    terminal.set_hexpand(true);
+    terminal.set_vexpand(true);
+    terminal
 }
 
-impl CommandOutput {
-    pub fn succeeded(&self) -> bool {
-        self.exit_status == 0
-    }
+/// Apply Teral's palette to the terminal so it matches the rest of the window.
+pub fn style_terminal(terminal: &vte::Terminal, theme: &crate::theme::ThemeConfig) {
+    use crate::theme::ColorRole;
+
+    let color = |role: ColorRole| {
+        theme
+            .color(role)
+            .parse::<gtk::gdk::RGBA>()
+            .unwrap_or(gtk::gdk::RGBA::BLACK)
+    };
+
+    terminal.set_color_background(&color(ColorRole::Background));
+    terminal.set_color_foreground(&color(ColorRole::Text));
+    terminal.set_color_cursor(Some(&color(ColorRole::Accent)));
 }
 
-/// A running Quick Command.
-#[derive(Debug, Clone)]
-pub struct RunningCommand {
-    process: gio::Subprocess,
-}
+/// Start `command` on a pseudo-terminal rooted at `directory`.
+///
+/// The returned future resolves once the child has been spawned; the terminal's
+/// `child-exited` signal reports when it finishes.
+pub fn run(
+    terminal: &vte::Terminal,
+    command: &str,
+    directory: &Path,
+) -> impl std::future::Future<Output = Result<glib::Pid, glib::Error>> + use<> {
+    let shell = shell();
+    let directory = directory.to_string_lossy().into_owned();
+    let command = command.to_owned();
 
-impl RunningCommand {
-    /// Spawn `command` through the configured shell inside `directory`.
-    pub fn spawn(command: &str, directory: &Path) -> Result<Self, glib::Error> {
-        let launcher = gio::SubprocessLauncher::new(
-            gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_MERGE,
-        );
-        launcher.set_cwd(directory);
-
-        let shell = shell();
-        let process = launcher.spawn(&[shell.as_ref(), "-c".as_ref(), command.as_ref()])?;
-        Ok(Self { process })
-    }
-
-    /// Wait for the command to finish and collect its merged output.
-    pub async fn wait(&self) -> Result<CommandOutput, glib::Error> {
-        let (stdout, _stderr) = self.process.communicate_future(None).await?;
-
-        let text = stdout
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_default();
-
-        Ok(CommandOutput {
-            text,
-            exit_status: self.process.exit_status(),
-        })
-    }
-
-    /// Stop a long-running command.
-    pub fn cancel(&self) {
-        self.process.force_exit();
-    }
+    terminal.spawn_future(
+        vte::PtyFlags::DEFAULT,
+        Some(&directory),
+        &[&shell, "-c", &command],
+        &[],
+        glib::SpawnFlags::DEFAULT,
+        || {},
+        -1,
+    )
 }
 
 /// The shell used for Quick Command.
 ///
 /// Teral's own setting wins, then `TERAL_SHELL`, then the user's `SHELL`, then
 /// `/bin/sh`.
-fn shell() -> std::ffi::OsString {
+pub fn shell() -> String {
     let configured = crate::config::current().shell;
     if !configured.trim().is_empty() {
-        return std::ffi::OsString::from(configured.trim());
+        return configured.trim().to_owned();
     }
 
-    std::env::var_os("TERAL_SHELL")
+    std::env::var("TERAL_SHELL")
+        .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var_os("SHELL").filter(|value| !value.is_empty()))
-        .unwrap_or_else(|| std::ffi::OsString::from("/bin/sh"))
+        .or_else(|| {
+            std::env::var("SHELL")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "/bin/sh".to_owned())
 }
 
-/// Trim trailing blank lines so the console does not grow empty space.
-pub fn tidy_output(text: &str) -> String {
-    text.trim_end_matches(['\n', '\r']).to_owned()
+/// A short, readable label for a command, for the console header.
+pub fn summarise(command: &str, directory: &Path) -> String {
+    format!("$ {}   ·   {}", command.trim(), directory.display())
 }
 
 #[cfg(test)]
@@ -86,13 +96,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_is_trimmed_at_the_end_only() {
-        assert_eq!(tidy_output("  a\nb\n\n\n"), "  a\nb");
-        assert_eq!(tidy_output(""), "");
+    fn a_shell_is_always_available() {
+        assert!(!shell().is_empty());
     }
 
     #[test]
-    fn a_shell_is_always_available() {
-        assert!(!shell().is_empty());
+    fn summaries_show_the_command_and_its_folder() {
+        let summary = summarise("  git status  ", Path::new("/tmp"));
+        assert!(summary.starts_with("$ git status"));
+        assert!(summary.ends_with("/tmp"));
     }
 }
