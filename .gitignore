@@ -1,0 +1,25 @@
+# Rust
+/target/
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local development / agent workflow files
+/AGENT_INSTRUCTIONS.md
+/TERAL_PRODUCT_SPEC.md
+/IMPLEMENTATION_PLAN.md
+
+# Local-only configuration overrides
+/teral.local.toml
+
+# Logs / temporary files
+*.log
+*.tmp

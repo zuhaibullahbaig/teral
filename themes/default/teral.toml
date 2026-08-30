@@ -1,0 +1,15 @@
+version = 1
+name = "Teral Default"
+
+# Colors are intentionally omitted in the default theme.
+# GTK therefore remains responsible for the desktop's normal system colors.
+# Teral or environment-specific themes can override any color below.
+
+[layout]
+window_width = 1320
+window_height = 820
+sidebar_width = 220
+details_width = 320
+spacing = 12
+radius = 10
+row_height = 44
