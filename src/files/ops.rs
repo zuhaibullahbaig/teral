@@ -253,6 +253,195 @@ fn unique_destination(directory: &Path, name: &OsStr) -> io::Result<PathBuf> {
     ))
 }
 
+/// True when both paths live on the same filesystem, so a move can be a rename.
+pub fn same_filesystem(source: &Path, destination: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let source = source
+        .parent()
+        .and_then(|parent| fs::metadata(parent).ok())
+        .map(|metadata| metadata.dev());
+    let destination = fs::metadata(destination)
+        .ok()
+        .map(|metadata| metadata.dev());
+
+    matches!((source, destination), (Some(a), Some(b)) if a == b)
+}
+
+/// Copy entries beside themselves under a free name.
+pub async fn duplicate(paths: Vec<PathBuf>) -> TransferReport {
+    let cancel = CancelFlag::new();
+    gio::spawn_blocking(move || {
+        let mut report = TransferReport::default();
+        for source in paths {
+            let Some(parent) = source.parent().map(Path::to_path_buf) else {
+                report.failures.push(format!(
+                    "{}: it has no parent folder",
+                    display_name(&source)
+                ));
+                continue;
+            };
+
+            match duplicate_one(&source, &parent, &cancel) {
+                Ok(()) => report.succeeded += 1,
+                Err(error) => report
+                    .failures
+                    .push(format!("{}: {error}", display_name(&source))),
+            }
+        }
+        report
+    })
+    .await
+    .unwrap_or_else(|_| TransferReport {
+        failures: vec!["the copy worker stopped unexpectedly".to_owned()],
+        ..TransferReport::default()
+    })
+}
+
+fn duplicate_one(source: &Path, parent: &Path, cancel: &CancelFlag) -> io::Result<()> {
+    let Some(name) = source.file_name() else {
+        return Err(io::Error::other("the source has no file name"));
+    };
+    let target = unique_destination(parent, name)?;
+    copy_recursively(source, &target, cancel)
+}
+
+// -------------------------------------------------------------------- trash ----
+
+/// The FreeDesktop trash directory for the home filesystem.
+pub fn trash_root() -> PathBuf {
+    crate::theme::data_home().join("Trash")
+}
+
+/// True when `path` is inside the trash, so restore and emptying make sense.
+pub fn is_in_trash(path: &Path) -> bool {
+    path.starts_with(trash_root().join("files"))
+}
+
+/// Restore trashed entries to the locations recorded in their `.trashinfo` files.
+pub async fn restore_from_trash(paths: Vec<PathBuf>) -> TransferReport {
+    gio::spawn_blocking(move || {
+        let mut report = TransferReport::default();
+        for path in paths {
+            match restore_one(&path) {
+                Ok(()) => report.succeeded += 1,
+                Err(error) => report
+                    .failures
+                    .push(format!("{}: {error}", display_name(&path))),
+            }
+        }
+        report
+    })
+    .await
+    .unwrap_or_else(|_| TransferReport {
+        failures: vec!["the restore worker stopped unexpectedly".to_owned()],
+        ..TransferReport::default()
+    })
+}
+
+fn restore_one(path: &Path) -> io::Result<()> {
+    let Some(name) = path.file_name() else {
+        return Err(io::Error::other("the entry has no file name"));
+    };
+
+    let mut info_name = OsString::from(name);
+    info_name.push(".trashinfo");
+    let info_path = trash_root().join("info").join(&info_name);
+
+    let info = fs::read_to_string(&info_path)
+        .map_err(|error| io::Error::other(format!("its trash record is unreadable: {error}")))?;
+
+    let original = info
+        .lines()
+        .find_map(|line| line.strip_prefix("Path="))
+        .map(percent_decode)
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::other("its trash record has no original path"))?;
+
+    // A relative Path= is relative to the trash directory's filesystem root.
+    let original = if original.is_absolute() {
+        original
+    } else {
+        crate::theme::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/"))
+            .join(original)
+    };
+
+    let Some(parent) = original.parent() else {
+        return Err(io::Error::other("its original folder is unknown"));
+    };
+    fs::create_dir_all(parent)?;
+
+    let target = if original.symlink_metadata().is_ok() {
+        let name = original
+            .file_name()
+            .ok_or_else(|| io::Error::other("its original name is unknown"))?;
+        unique_destination(parent, name)?
+    } else {
+        original
+    };
+
+    if fs::rename(path, &target).is_err() {
+        copy_recursively(path, &target, &CancelFlag::new())?;
+        remove_recursively(path)?;
+    }
+
+    let _ = fs::remove_file(&info_path);
+    Ok(())
+}
+
+/// Permanently delete everything in the trash.
+pub async fn empty_trash() -> TransferReport {
+    gio::spawn_blocking(move || {
+        let root = trash_root();
+        let mut report = TransferReport::default();
+
+        for directory in ["files", "info"] {
+            let directory = root.join(directory);
+            let Ok(entries) = fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                match remove_recursively(&entry.path()) {
+                    Ok(()) => report.succeeded += 1,
+                    Err(error) => report
+                        .failures
+                        .push(format!("{}: {error}", display_name(&entry.path()))),
+                }
+            }
+        }
+
+        report
+    })
+    .await
+    .unwrap_or_else(|_| TransferReport {
+        failures: vec!["the delete worker stopped unexpectedly".to_owned()],
+        ..TransferReport::default()
+    })
+}
+
+/// Decode the percent-encoding the trash specification uses for `Path=`.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
+            if let Some(byte) = hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                decoded.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
 /// Launch an entry with the desktop's default application.
 pub fn open(path: &Path) -> Result<(), glib::Error> {
     let uri = gio::File::for_path(path).uri();
@@ -280,12 +469,18 @@ pub fn open_with(application: &gio::AppInfo, path: &Path) -> Result<(), glib::Er
 
 /// Open the user's terminal emulator in `directory`.
 ///
-/// The command comes from `TERAL_TERMINAL` when set, otherwise from the first terminal
-/// found on `PATH`, so the behaviour stays configurable without a Teral-only registry.
+/// Teral's own setting wins, then `TERAL_TERMINAL`, then the first terminal found on
+/// `PATH`, so the behaviour stays configurable without a Teral-only registry.
 pub fn open_terminal(directory: &Path) -> Result<(), String> {
-    let configured = std::env::var_os("TERAL_TERMINAL")
+    let setting = crate::config::current().terminal;
+    let configured = Some(setting.trim().to_owned())
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("TERAL_TERMINAL")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        });
 
     const CANDIDATES: [&str; 10] = [
         "ghostty",
@@ -403,6 +598,32 @@ mod tests {
         assert_eq!(report.succeeded, 1);
         assert!(!source.exists());
         assert!(destination.join("source/file.txt").exists());
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn trash_paths_are_percent_decoded() {
+        assert_eq!(
+            percent_decode("/home/a/My%20File.txt"),
+            "/home/a/My File.txt"
+        );
+        assert_eq!(percent_decode("/home/a/100%"), "/home/a/100%");
+        assert_eq!(percent_decode("/home/a/plain"), "/home/a/plain");
+    }
+
+    #[test]
+    fn duplicating_keeps_the_original() {
+        let dir = scratch("duplicate");
+        let source = dir.join("report.txt");
+        fs::write(&source, b"payload").expect("write");
+
+        let report = duplicate_one(&source, &dir, &CancelFlag::new());
+        assert!(report.is_ok(), "{report:?}");
+        assert!(source.exists());
+        assert_eq!(
+            fs::read(dir.join("report (copy).txt")).expect("duplicate"),
+            b"payload"
+        );
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 

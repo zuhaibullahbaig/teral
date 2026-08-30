@@ -65,7 +65,7 @@ pub fn build(width: i32) -> Details {
     header.append(&title);
 
     let icon = gtk::Image::new();
-    icon.set_pixel_size(64);
+    icon.set_pixel_size(52);
     icon.set_hexpand(true);
     icon.set_vexpand(true);
 
@@ -78,6 +78,10 @@ pub fn build(width: i32) -> Details {
     let preview = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     preview.add_css_class("teral-preview");
     preview.set_overflow(gtk::Overflow::Hidden);
+    // A fixed, modest height: the metadata and actions below matter more than a
+    // large picture, so the preview never takes over the panel.
+    preview.set_size_request(-1, 116);
+    preview.set_vexpand(false);
     preview.append(&icon);
     preview.append(&picture);
 

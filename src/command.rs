@@ -62,8 +62,14 @@ impl RunningCommand {
 
 /// The shell used for Quick Command.
 ///
-/// `TERAL_SHELL` wins, then the user's `SHELL`, then `/bin/sh`.
+/// Teral's own setting wins, then `TERAL_SHELL`, then the user's `SHELL`, then
+/// `/bin/sh`.
 fn shell() -> std::ffi::OsString {
+    let configured = crate::config::current().shell;
+    if !configured.trim().is_empty() {
+        return std::ffi::OsString::from(configured.trim());
+    }
+
     std::env::var_os("TERAL_SHELL")
         .filter(|value| !value.is_empty())
         .or_else(|| std::env::var_os("SHELL").filter(|value| !value.is_empty()))

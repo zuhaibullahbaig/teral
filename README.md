@@ -8,7 +8,7 @@ Teral is one application and one codebase. Desktop-specific behavior is handled 
 
 ## Current state
 
-Teral is a working visual prototype. It browses real directories and provides:
+Teral is usable as a day-to-day file manager. It provides:
 
 - a dark, dense three-pane shell: sidebar, file view, details/actions panel
 - restrained `TERAL` branding, clickable breadcrumbs and a `Ctrl+L` path entry
@@ -22,9 +22,14 @@ Teral is a working visual prototype. It browses real directories and provides:
 - filename search, sorting, folders-first and hidden-file toggles
 - Quick Command: run a shell command with the browsed folder as its working directory, asynchronously, with its output in a collapsible console
 - a status bar with selection count and size, free space, and a grid zoom control
-- a layered TOML theme system with automatic Omarchy palette discovery
+- tabs, each with its own location and history
+- drag and drop: between Teral folders, and to and from other Linux applications
+- live directory monitoring, so changes made elsewhere appear on their own
+- trash browsing, restore to the original location, and Empty Trash
+- a Settings window with three theme modes, an accent colour, density and command settings
+- a layered TOML theme system that live-reloads when its files change
 
-Tabs, drag and drop, trash restore, live directory monitoring and richer previews are deliberately not implemented yet.
+Richer previews (PDF, video, text), a command palette and network locations are not implemented yet.
 
 ## Keyboard
 
@@ -41,6 +46,10 @@ Ctrl+V              Paste
 Ctrl+Shift+N        New folder
 Ctrl+Shift+T        Open a terminal here
 Ctrl+K              Focus Quick Command
+Ctrl+D              Duplicate
+Ctrl+T / Ctrl+W     New tab / close tab
+Ctrl+Tab            Next tab (add Shift for previous)
+Ctrl+,              Settings
 Ctrl+0              Reset the grid zoom
 F2                  Rename
 Delete              Move to trash
@@ -73,14 +82,39 @@ pkg-config --modversion gtk4
 
 ## Configuration
 
-Two environment variables tune the shell integration without a settings file:
+Everything lives in one file, `~/.config/teral/teral.toml`. Teral's Settings window
+(Ctrl+,) writes exactly that file, so the GUI and hand-editing never disagree, and
+Teral restyles itself as soon as the file changes.
 
-```text
-TERAL_SHELL       shell used by Quick Command (defaults to $SHELL, then /bin/sh)
-TERAL_TERMINAL    terminal used by Open Terminal Here (otherwise auto-detected)
+```toml
+version = 1
+
+[appearance]
+mode = "teral"        # "teral", "system" or "omarchy"
+accent = "#e0a63c"    # optional, overrides the palette's accent
+
+[layout]
+grid_icon_size = 64
+row_height = 30
+
+[files]
+show_hidden = false
+folders_first = true
+sort = "name"
+descending = false
+view = "grid"
+
+[commands]
+shell = ""            # empty: $SHELL, then /bin/sh
+terminal = ""         # empty: detected from PATH
 ```
 
-Pinned sidebar folders are stored in `~/.local/share/teral/places.toml`.
+A `[colors]` table can override any semantic colour individually.
+
+Two environment variables still work as a fallback when the settings are empty:
+`TERAL_SHELL` and `TERAL_TERMINAL`.
+
+Pinned sidebar folders are stored separately, in `~/.local/share/teral/places.toml`.
 
 ## Development checks
 
@@ -92,21 +126,34 @@ That runs formatting checks, Clippy with warnings treated as errors, and tests.
 
 ## Theming
 
-Teral ships with `themes/default/teral.toml` and `themes/default/teral.css`.
+Teral ships with `themes/default/teral.toml`, `themes/default/teral-light.toml` and
+`themes/default/teral.css`.
 
-The TOML file carries Teral's semantic palette and layout numbers. The CSS file is written entirely against those semantic values and against stable `.teral-*` classes, so a theme only has to supply colors — never GTK widget-tree selectors.
+The TOML files carry Teral's semantic palettes and layout numbers. The CSS file is written entirely against those semantic values and against stable `.teral-*` classes, so a theme only has to supply colors — never GTK widget-tree selectors.
 
 Themes are resolved in layers, each one overriding only the keys it sets:
 
 ```text
-built-in Teral defaults
+built-in Teral palette (dark, or light when the desktop asks for light)
         ↓
-Omarchy active theme (teral.toml, otherwise derived from colors.toml)
+the environment, according to the chosen mode
         ↓
 ~/.config/teral/teral.toml
 ```
 
-On Omarchy, Teral looks for the active theme under the XDG state location Omarchy uses. If the active theme contains `teral.toml`, Teral applies it. Otherwise Teral derives its palette from that theme's `colors.toml`, so switching Omarchy themes restyles Teral even when the theme author has never heard of Teral.
+`mode = "teral"` uses Teral's own dark palette everywhere.
+
+`mode = "system"` asks the FreeDesktop appearance portal for the desktop's light/dark
+preference and accent colour, falling back to GTK's own settings on desktops without a
+portal, and picks Teral's matching palette.
+
+`mode = "omarchy"` looks for the active theme under the XDG state location Omarchy uses.
+If the active theme contains `teral.toml`, Teral applies it. Otherwise Teral derives its
+palette from that theme's `colors.toml`, so switching Omarchy themes restyles Teral even
+when the theme author has never heard of Teral.
+
+Teral watches both its own configuration file and the active Omarchy theme, so changing
+either restyles a running Teral without a restart.
 
 Invalid colors and out-of-range layout values are discarded or clamped, so a broken theme can never make Teral unusable.
 

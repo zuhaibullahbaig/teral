@@ -2,28 +2,48 @@
 //!
 //! The stylesheet is written against stable semantic classes (`.teral-*`) and against
 //! GTK `@define-color` names derived from [`ColorRole`]. Theme authors therefore only
-//! need to supply colors and a handful of layout numbers; they never have to target
+//! need to supply colours and a handful of layout numbers; they never have to target
 //! GTK's internal widget tree.
+//!
+//! One provider is installed for the whole process and reloaded in place, so applying a
+//! new theme takes effect immediately without restarting Teral.
 
 use crate::theme::{ColorRole, ThemeConfig};
 use gtk::CssProvider;
 use gtk::gdk::Display;
+use std::cell::RefCell;
 
 /// The static part of the stylesheet. Everything colour-related resolves through the
 /// `@teral_*` names emitted by [`color_definitions`].
 const SHEET: &str = include_str!("../themes/default/teral.css");
 
-/// Install Teral's stylesheet on the default display.
+thread_local! {
+    static PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
+}
+
+/// Install or refresh Teral's stylesheet on the default display.
 pub fn apply(theme: &ThemeConfig) {
-    let provider = CssProvider::new();
+    let provider = PROVIDER.with_borrow_mut(|slot| {
+        slot.get_or_insert_with(|| {
+            let provider = CssProvider::new();
+            if let Some(display) = Display::default() {
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+            provider
+        })
+        .clone()
+    });
+
     provider.load_from_string(&stylesheet(theme));
 
-    if let Some(display) = Display::default() {
-        gtk::style_context_add_provider_for_display(
-            &display,
-            &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+    // Keep GTK's own widgets (file choosers, tooltips, menus) on the same side of the
+    // light/dark line as Teral, so nothing renders as a bright rectangle.
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(theme.dark);
     }
 }
 
@@ -49,16 +69,15 @@ fn color_definitions(theme: &ThemeConfig) -> String {
 
 fn metrics(theme: &ThemeConfig) -> String {
     let radius = theme.radius();
+    let inner = radius.saturating_sub(1).max(0);
     let row_height = theme.row_height();
 
     format!(
         ".teral-tile {{ border-radius: {radius}px; }}\n\
          .teral-preview {{ border-radius: {radius}px; }}\n\
-         .teral-action {{ border-radius: {}px; }}\n\
-         .teral-command {{ border-radius: {}px; }}\n\
-         columnview.teral-list row cell {{ min-height: {row_height}px; }}\n",
-        radius.saturating_sub(1).max(0),
-        radius.saturating_sub(1).max(0),
+         .teral-action {{ border-radius: {inner}px; }}\n\
+         .teral-command-bar {{ border-radius: {inner}px; }}\n\
+         columnview.teral-list > listview > row > cell {{ min-height: {row_height}px; }}\n",
     )
 }
 

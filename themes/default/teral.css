@@ -23,8 +23,8 @@ headerbar.teral-toolbar {
   background-image: none;
   border-bottom: 1px solid @teral_border;
   box-shadow: none;
-  min-height: 46px;
-  padding: 0 10px;
+  min-height: 54px;
+  padding: 8px 12px;
 }
 
 headerbar.teral-toolbar windowcontrols button {
@@ -109,7 +109,9 @@ menubutton.teral-icon-button > button {
   background-color: @teral_elevated;
   border: 1px solid @teral_border;
   border-radius: 999px;
-  padding: 2px 10px;
+  margin: 4px 6px;
+  min-height: 30px;
+  padding: 0 12px;
 }
 
 .teral-crumb {
@@ -147,8 +149,9 @@ entry.teral-location {
   color: @teral_text;
   font-family: monospace;
   font-size: 12px;
-  min-height: 26px;
-  padding: 0 12px;
+  margin: 4px 6px;
+  min-height: 30px;
+  padding: 0 14px;
 }
 
 /* --------------------------------------------------------------- search ---- */
@@ -316,7 +319,13 @@ gridview.teral-grid > child:selected .teral-item-name {
 
 .teral-tile.image {
   padding: 0;
-  background-color: #000000;
+  background-color: shade(@teral_bg, 0.7);
+}
+
+gridview.teral-grid > child.drop-target,
+.teral-place.drop-target {
+  background-color: alpha(@teral_accent, 0.2);
+  border-color: @teral_accent;
 }
 
 .teral-item-name {
@@ -508,12 +517,116 @@ menubutton.teral-action > button {
   color: @teral_muted;
 }
 
+/* ----------------------------------------------------------------- tabs ---- */
+
+.teral-tab-bar {
+  background-color: @teral_surface;
+  border-bottom: 1px solid @teral_border;
+  padding: 5px 10px;
+}
+
+.teral-tab {
+  background: none;
+  background-image: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  box-shadow: none;
+  color: @teral_muted;
+  min-height: 0;
+  padding: 4px 8px;
+}
+
+.teral-tab:hover {
+  background-color: @teral_surface_alt;
+  color: @teral_text;
+}
+
+.teral-tab.active {
+  background-color: alpha(@teral_accent, 0.13);
+  border-color: alpha(@teral_accent, 0.4);
+  color: @teral_accent;
+}
+
+.teral-tab-label {
+  font-size: 12px;
+}
+
+button.teral-tab-close {
+  background: none;
+  background-image: none;
+  border: none;
+  border-radius: 6px;
+  box-shadow: none;
+  color: inherit;
+  min-height: 16px;
+  min-width: 16px;
+  padding: 0;
+  opacity: 0.6;
+}
+
+button.teral-tab-close:hover {
+  background-color: alpha(@teral_danger, 0.25);
+  opacity: 1;
+}
+
+/* -------------------------------------------------------------- settings ---- */
+
+.teral-settings {
+  padding: 4px 0 12px 0;
+}
+
+.teral-settings-section {
+  border-bottom: 1px solid alpha(@teral_border, 0.8);
+  padding: 16px 20px 18px 20px;
+}
+
+.teral-setting-row {
+  padding: 2px 0;
+}
+
+.teral-setting-hint {
+  color: @teral_muted;
+  font-size: 10.5px;
+}
+
+.teral-settings-footer {
+  background-color: @teral_surface;
+  border-top: 1px solid @teral_border;
+  padding: 12px 16px;
+}
+
+.teral-settings switch {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  box-shadow: none;
+}
+
+.teral-settings switch:checked {
+  background-color: @teral_accent;
+  border-color: @teral_accent;
+}
+
+.teral-settings dropdown > button {
+  background-color: @teral_elevated;
+  background-image: none;
+  border: 1px solid @teral_border;
+  border-radius: 8px;
+  box-shadow: none;
+  color: @teral_text;
+  min-height: 28px;
+}
+
+.teral-settings colorswatch,
+.teral-settings colorswatch > overlay {
+  border-radius: 8px;
+}
+
 /* --------------------------------------------------- status / commands ---- */
 
 .teral-status-bar {
   background-color: @teral_surface;
   border-top: 1px solid @teral_border;
-  padding: 7px 14px;
+  padding: 8px 14px;
 }
 
 .teral-command-bar {

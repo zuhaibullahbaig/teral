@@ -2,19 +2,25 @@
 //!
 //! Layers, lowest priority first:
 //!
-//! 1. the built-in Teral theme compiled into the binary
-//! 2. the active Omarchy theme (`teral.toml`, otherwise derived from `colors.toml`)
-//! 3. the user override at `~/.config/teral/teral.toml`
+//! 1. a built-in Teral palette (dark, or light when the desktop asks for light)
+//! 2. the desktop's own appearance, when the user picked "Follow the system"
+//! 3. the active Omarchy theme, when the user picked "Follow Omarchy"
+//! 4. the user's own colour and layout overrides
 //!
 //! Every field is optional at every layer, so partial overrides inherit safely and a
 //! broken theme can never leave Teral without a usable appearance.
 
+use crate::config::{Config, ThemeMode};
+use gtk::gio;
+use gtk::gio::prelude::*;
+use gtk::glib;
 use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_THEME: &str = include_str!("../themes/default/teral.toml");
+const DARK_THEME: &str = include_str!("../themes/default/teral.toml");
+const LIGHT_THEME: &str = include_str!("../themes/default/teral-light.toml");
 
 /// Theme format version understood by this build of Teral.
 pub const THEME_FORMAT_VERSION: u32 = 1;
@@ -27,6 +33,9 @@ pub struct ThemeConfig {
     pub colors: ThemeColors,
     #[serde(default)]
     pub layout: ThemeLayout,
+    /// True when the resolved palette is a dark one, so GTK can be told to match.
+    #[serde(skip)]
+    pub dark: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -76,38 +85,37 @@ struct OmarchyColors {
 }
 
 impl ThemeConfig {
-    /// Resolve the effective theme from every available layer.
-    pub fn load() -> Self {
-        let mut theme = toml::from_str::<Self>(DEFAULT_THEME)
-            .expect("the built-in Teral theme must be valid TOML");
+    /// Resolve the effective theme for a configuration.
+    pub fn resolve(config: &Config) -> Self {
+        let prefer_dark = match config.mode {
+            ThemeMode::System => system_prefers_dark(),
+            _ => true,
+        };
 
-        if let Some(omarchy_theme_dir) = omarchy_active_theme_dir() {
-            let teral_theme = omarchy_theme_dir.join("teral.toml");
-            let colors_theme = omarchy_theme_dir.join("colors.toml");
+        let source = if prefer_dark { DARK_THEME } else { LIGHT_THEME };
+        let mut theme =
+            toml::from_str::<Self>(source).expect("the built-in Teral themes must be valid TOML");
+        theme.dark = prefer_dark;
 
-            if teral_theme.is_file() {
-                match read_theme(&teral_theme) {
-                    Ok(overlay) => theme.overlay(overlay),
-                    Err(error) => {
-                        eprintln!("Teral: could not load {}: {error}", teral_theme.display());
-                        if let Some(derived) = derive_omarchy_theme(&colors_theme) {
-                            theme.overlay(derived);
-                        }
-                    }
+        match config.mode {
+            ThemeMode::Teral => {}
+            ThemeMode::System => {
+                if let Some(accent) = system_accent() {
+                    theme.colors.accent = Some(accent);
                 }
-            } else if let Some(derived) = derive_omarchy_theme(&colors_theme) {
-                theme.overlay(derived);
+            }
+            ThemeMode::Omarchy => {
+                if let Some(overlay) = omarchy_overlay() {
+                    theme.overlay(overlay);
+                }
             }
         }
 
-        let user_theme = config_home().join("teral/teral.toml");
-        if user_theme.is_file() {
-            match read_theme(&user_theme) {
-                Ok(overlay) => theme.overlay(overlay),
-                Err(error) => {
-                    eprintln!("Teral: could not load {}: {error}", user_theme.display());
-                }
-            }
+        // The user's own overrides always win.
+        theme.colors.overlay(config.colors.clone());
+        theme.layout.overlay(config.layout.clone());
+        if let Some(accent) = config.accent.clone() {
+            theme.colors.accent = Some(accent);
         }
 
         theme.sanitize();
@@ -155,10 +163,10 @@ impl ThemeConfig {
     }
 
     pub fn grid_icon_size(&self) -> i32 {
-        self.layout.grid_icon_size.unwrap_or(48)
+        self.layout.grid_icon_size.unwrap_or(64)
     }
 
-    /// A color resolved through the theme layers, falling back to the built-in value.
+    /// A colour resolved through the theme layers, falling back to the built-in value.
     pub fn color(&self, role: ColorRole) -> &str {
         let configured = match role {
             ColorRole::Background => self.colors.background.as_deref(),
@@ -180,7 +188,7 @@ impl ThemeConfig {
     }
 }
 
-/// Semantic color roles exposed to the stylesheet and to theme authors.
+/// Semantic colour roles exposed to the stylesheet and to theme authors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorRole {
     Background,
@@ -272,7 +280,8 @@ impl ThemeColors {
         overlay_option(&mut self.success, other.success);
     }
 
-    fn sanitize(&mut self) {
+    /// Drop any value that is not a colour Teral can render.
+    pub fn sanitize(&mut self) {
         for color in [
             &mut self.background,
             &mut self.surface,
@@ -293,6 +302,28 @@ impl ThemeColors {
             }
         }
     }
+
+    /// The colours that are actually set, ready to be written back to TOML.
+    pub fn entries(&self) -> Vec<(&'static str, String)> {
+        [
+            ("background", &self.background),
+            ("surface", &self.surface),
+            ("surface_alt", &self.surface_alt),
+            ("elevated", &self.elevated),
+            ("border", &self.border),
+            ("text", &self.text),
+            ("text_bright", &self.text_bright),
+            ("text_muted", &self.text_muted),
+            ("accent", &self.accent),
+            ("selection", &self.selection),
+            ("danger", &self.danger),
+            ("warning", &self.warning),
+            ("success", &self.success),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.clone().map(|value| (key, value)))
+        .collect()
+    }
 }
 
 impl ThemeLayout {
@@ -307,7 +338,8 @@ impl ThemeLayout {
         overlay_option(&mut self.grid_icon_size, other.grid_icon_size);
     }
 
-    fn sanitize(&mut self) {
+    /// Clamp every value into a range Teral can actually lay out.
+    pub fn sanitize(&mut self) {
         clamp_option(&mut self.window_width, 720, 3840);
         clamp_option(&mut self.window_height, 480, 2160);
         clamp_option(&mut self.sidebar_width, 180, 420);
@@ -315,9 +347,30 @@ impl ThemeLayout {
         clamp_option(&mut self.spacing, 0, 32);
         clamp_option(&mut self.radius, 0, 24);
         clamp_option(&mut self.row_height, 22, 64);
-        clamp_option(&mut self.grid_icon_size, 32, 128);
+        clamp_option(&mut self.grid_icon_size, MIN_ICON_SIZE, MAX_ICON_SIZE);
+    }
+
+    /// The layout values that are actually set, ready to be written back to TOML.
+    pub fn entries(&self) -> Vec<(&'static str, i32)> {
+        [
+            ("window_width", self.window_width),
+            ("window_height", self.window_height),
+            ("sidebar_width", self.sidebar_width),
+            ("details_width", self.details_width),
+            ("spacing", self.spacing),
+            ("radius", self.radius),
+            ("row_height", self.row_height),
+            ("grid_icon_size", self.grid_icon_size),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key, value)))
+        .collect()
     }
 }
+
+/// Smallest and largest grid icon Teral will draw.
+pub const MIN_ICON_SIZE: i32 = 32;
+pub const MAX_ICON_SIZE: i32 = 160;
 
 fn read_theme(path: &Path) -> Result<ThemeConfig, String> {
     let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
@@ -333,6 +386,22 @@ fn read_theme(path: &Path) -> Result<ThemeConfig, String> {
     }
 
     Ok(theme)
+}
+
+/// The Omarchy overlay: the active theme's `teral.toml`, or its palette.
+fn omarchy_overlay() -> Option<ThemeConfig> {
+    let directory = omarchy_active_theme_dir()?;
+    let teral_theme = directory.join("teral.toml");
+    let colors_theme = directory.join("colors.toml");
+
+    if teral_theme.is_file() {
+        match read_theme(&teral_theme) {
+            Ok(overlay) => return Some(overlay),
+            Err(error) => eprintln!("Teral: could not load {}: {error}", teral_theme.display()),
+        }
+    }
+
+    derive_omarchy_theme(&colors_theme)
 }
 
 fn derive_omarchy_theme(colors_path: &Path) -> Option<ThemeConfig> {
@@ -363,15 +432,79 @@ fn derive_omarchy_theme(colors_path: &Path) -> Option<ThemeConfig> {
             success: colors.green,
         },
         layout: ThemeLayout::default(),
+        dark: true,
     })
 }
 
-fn omarchy_active_theme_dir() -> Option<PathBuf> {
+/// The directory holding Omarchy's active theme, when Teral is running under Omarchy.
+pub fn omarchy_active_theme_dir() -> Option<PathBuf> {
     let path = state_home().join("omarchy/current/theme");
     path.is_dir().then_some(path)
 }
 
-fn config_home() -> PathBuf {
+// ------------------------------------------------------- desktop integration ----
+
+/// Ask the desktop whether it prefers a dark appearance.
+///
+/// The FreeDesktop appearance portal is the cross-desktop answer; GTK's own settings
+/// are the fallback for desktops that do not run a portal.
+pub fn system_prefers_dark() -> bool {
+    if let Some(value) = portal_setting("color-scheme").and_then(|value| value.get::<u32>()) {
+        // 1 = prefer dark, 2 = prefer light, 0 = no preference.
+        match value {
+            1 => return true,
+            2 => return false,
+            _ => {}
+        }
+    }
+
+    gtk::Settings::default().is_some_and(|settings| {
+        settings.is_gtk_application_prefer_dark_theme()
+            || settings
+                .gtk_theme_name()
+                .is_some_and(|name| name.to_lowercase().contains("dark"))
+    })
+}
+
+/// The desktop's accent colour, when it publishes one.
+fn system_accent() -> Option<String> {
+    let value = portal_setting("accent-color")?;
+    let (red, green, blue) = value.get::<(f64, f64, f64)>()?;
+    Some(format!(
+        "#{:02x}{:02x}{:02x}",
+        channel(red),
+        channel(green),
+        channel(blue)
+    ))
+}
+
+fn channel(value: f64) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Read one `org.freedesktop.appearance` setting through the desktop portal.
+fn portal_setting(key: &str) -> Option<glib::Variant> {
+    let connection = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok()?;
+    let reply = connection
+        .call_sync(
+            Some("org.freedesktop.portal.Desktop"),
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Settings",
+            "ReadOne",
+            Some(&("org.freedesktop.appearance", key).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            400,
+            gio::Cancellable::NONE,
+        )
+        .ok()?;
+
+    reply.child_value(0).get::<glib::Variant>()
+}
+
+// -------------------------------------------------------------------- paths ----
+
+pub fn config_home() -> PathBuf {
     env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".config")))
@@ -409,7 +542,8 @@ fn clamp_option(value: &mut Option<i32>, min: i32, max: i32) {
     }
 }
 
-fn valid_color(value: &str) -> bool {
+/// True for the `#rrggbb` and `#rrggbbaa` forms Teral themes may use.
+pub fn valid_color(value: &str) -> bool {
     let Some(hex) = value.strip_prefix('#') else {
         return false;
     };
@@ -422,25 +556,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn built_in_theme_parses() {
-        let theme = toml::from_str::<ThemeConfig>(DEFAULT_THEME).expect("built-in theme parses");
-        assert_eq!(theme.version, Some(THEME_FORMAT_VERSION));
+    fn both_built_in_themes_parse() {
+        for source in [DARK_THEME, LIGHT_THEME] {
+            let theme = toml::from_str::<ThemeConfig>(source).expect("built-in theme parses");
+            assert_eq!(theme.version, Some(THEME_FORMAT_VERSION));
+        }
     }
 
     #[test]
-    fn every_color_role_resolves() {
-        let mut theme = toml::from_str::<ThemeConfig>(DEFAULT_THEME).expect("built-in theme");
-        theme.sanitize();
-        for role in ColorRole::ALL {
-            assert!(valid_color(theme.color(role)), "{role:?} must be a color");
+    fn every_color_role_resolves_in_both_palettes() {
+        for source in [DARK_THEME, LIGHT_THEME] {
+            let mut theme = toml::from_str::<ThemeConfig>(source).expect("built-in theme");
+            theme.sanitize();
+            for role in ColorRole::ALL {
+                assert!(valid_color(theme.color(role)), "{role:?} must be a colour");
+            }
         }
+    }
+
+    #[test]
+    fn user_overrides_beat_the_built_in_palette() {
+        let config = Config {
+            accent: Some("#123456".to_owned()),
+            ..Config::default()
+        };
+        let theme = ThemeConfig::resolve(&config);
+        assert_eq!(theme.color(ColorRole::Accent), "#123456");
     }
 
     #[test]
     fn invalid_colors_fall_back_instead_of_breaking() {
         let mut theme = ThemeConfig {
             colors: ThemeColors {
-                accent: Some("not-a-color".to_owned()),
+                accent: Some("not-a-colour".to_owned()),
                 ..ThemeColors::default()
             },
             ..ThemeConfig::default()
@@ -450,33 +598,23 @@ mod tests {
     }
 
     #[test]
-    fn overlays_only_replace_provided_fields() {
-        let mut base = toml::from_str::<ThemeConfig>(DEFAULT_THEME).expect("built-in theme");
-        let base_background = base.color(ColorRole::Background).to_owned();
-
-        base.overlay(ThemeConfig {
-            colors: ThemeColors {
-                accent: Some("#123456".to_owned()),
-                ..ThemeColors::default()
-            },
-            ..ThemeConfig::default()
-        });
-        base.sanitize();
-
-        assert_eq!(base.color(ColorRole::Accent), "#123456");
-        assert_eq!(base.color(ColorRole::Background), base_background);
-    }
-
-    #[test]
     fn layout_values_are_clamped() {
-        let mut theme = ThemeConfig {
+        let config = Config {
             layout: ThemeLayout {
                 sidebar_width: Some(4000),
                 ..ThemeLayout::default()
             },
-            ..ThemeConfig::default()
+            ..Config::default()
         };
-        theme.sanitize();
-        assert_eq!(theme.sidebar_width(), 420);
+        assert_eq!(ThemeConfig::resolve(&config).sidebar_width(), 420);
+    }
+
+    #[test]
+    fn layout_entries_only_list_values_that_are_set() {
+        let layout = ThemeLayout {
+            grid_icon_size: Some(72),
+            ..ThemeLayout::default()
+        };
+        assert_eq!(layout.entries(), vec![("grid_icon_size", 72)]);
     }
 }

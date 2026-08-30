@@ -1,8 +1,10 @@
 //! Window assembly, application actions and keyboard behaviour.
 
 use super::{
-    App, AppInner, State, ViewMode, details, dialogs, fileview, header, sidebar, statusbar,
+    App, AppInner, State, Tab, ViewMode, details, dialogs, fileview, header, settings, sidebar,
+    statusbar, tabs,
 };
+use crate::config::{Config, ViewPreference};
 use crate::files::ops::{self, CancelFlag, Clipboard, TransferKind};
 use crate::files::{FileEntry, Sorting};
 use crate::icons;
@@ -36,6 +38,7 @@ pub struct Widgets {
 
     pub search_bar: gtk::SearchBar,
     pub search_entry: gtk::SearchEntry,
+    pub tabs: tabs::Tabs,
 
     pub folder_title: gtk::Label,
     pub folder_subtitle: gtk::Label,
@@ -63,10 +66,16 @@ pub struct Widgets {
     pub status_free: gtk::Label,
     pub status_message: gtk::Label,
     pub zoom: gtk::Scale,
+    pub settings: gtk::Button,
+    pub settings_window: RefCell<Option<gtk::Window>>,
 }
 
 /// Build the main window and start browsing the user's home directory.
-pub fn build_window(application: &gtk::Application, theme: ThemeConfig) -> gtk::ApplicationWindow {
+pub fn build_window(
+    application: &gtk::Application,
+    config: Config,
+    theme: ThemeConfig,
+) -> gtk::ApplicationWindow {
     let store = gio::ListStore::new::<FileEntry>();
     let selection = gtk::MultiSelection::new(Some(store.clone()));
 
@@ -75,6 +84,7 @@ pub fn build_window(application: &gtk::Application, theme: ThemeConfig) -> gtk::
     let detail = details::build(theme.details_width());
     let status = statusbar::build(theme.grid_icon_size(), theme.spacing());
     let console = statusbar::build_console();
+    let tab_bar = tabs::build();
 
     let search_entry = gtk::SearchEntry::new();
     search_entry.add_css_class("teral-search");
@@ -151,6 +161,7 @@ pub fn build_window(application: &gtk::Application, theme: ThemeConfig) -> gtk::
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.add_css_class("teral-content");
     content.set_hexpand(true);
+    content.append(&tab_bar.root);
     content.append(&content_header);
     content.append(&search_bar);
     content.append(&view_stack);
@@ -196,6 +207,7 @@ pub fn build_window(application: &gtk::Application, theme: ThemeConfig) -> gtk::
         hidden_check: RefCell::new(None),
         search_bar,
         search_entry,
+        tabs: tab_bar,
         folder_title,
         folder_subtitle,
         new_folder,
@@ -218,7 +230,11 @@ pub fn build_window(application: &gtk::Application, theme: ThemeConfig) -> gtk::
         status_free: status.free,
         status_message: status.message,
         zoom: status.zoom,
+        settings: status.settings,
+        settings_window: RefCell::new(None),
     };
+
+    let start = home_dir().unwrap_or_else(|| PathBuf::from("/"));
 
     let state = State {
         current: RefCell::new(PathBuf::from("/")),
@@ -227,23 +243,36 @@ pub fn build_window(application: &gtk::Application, theme: ThemeConfig) -> gtk::
         all: RefCell::new(Vec::new()),
         store,
         selection,
-        sorting: Cell::new(Sorting::default()),
-        show_hidden: Cell::new(false),
+        sorting: Cell::new(Sorting {
+            key: config.sort,
+            descending: config.descending,
+            folders_first: config.folders_first,
+        }),
+        show_hidden: Cell::new(config.show_hidden),
         query: RefCell::new(String::new()),
         generation: Cell::new(0),
         pinned: RefCell::new(places::load_pinned()),
         clipboard: RefCell::new(None),
         icon_size: Cell::new(theme.grid_icon_size()),
-        view_mode: Cell::new(ViewMode::Grid),
+        view_mode: Cell::new(match config.view {
+            ViewPreference::Grid => ViewMode::Grid,
+            ViewPreference::List => ViewMode::List,
+        }),
         running_command: RefCell::new(None),
         running_transfer: RefCell::new(None),
         updating: Cell::new(false),
+        tabs: RefCell::new(vec![Tab::new(start.clone())]),
+        active_tab: Cell::new(0),
+        directory_monitor: RefCell::new(None),
+        refresh_queued: Cell::new(false),
+        config_monitors: RefCell::new(Vec::new()),
     };
 
     let app: App = Rc::new(AppInner {
         state,
         widgets,
-        theme,
+        config: RefCell::new(config),
+        theme: RefCell::new(theme),
     });
 
     header::connect(&app);
@@ -251,12 +280,46 @@ pub fn build_window(application: &gtk::Application, theme: ThemeConfig) -> gtk::
     fileview::connect(&app);
     details::connect(&app);
     statusbar::connect(&app);
+    tabs::connect(&app);
     connect_window(&app);
+    watch_configuration(&app);
 
-    let start = home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    if app.state.view_mode.get() == ViewMode::List {
+        app.widgets.list_toggle.set_active(true);
+    }
     app.load(&start, None);
 
     window
+}
+
+/// Re-apply the theme when the configuration file or the active Omarchy theme changes,
+/// so switching desktop themes restyles a running Teral.
+fn watch_configuration(app: &App) {
+    let mut watched = vec![crate::config::config_path()];
+    if let Some(directory) = crate::theme::omarchy_active_theme_dir() {
+        watched.push(directory);
+    }
+
+    for path in watched {
+        let file = gio::File::for_path(&path);
+        let monitor = if path.is_dir() {
+            file.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
+        } else {
+            file.monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
+        };
+
+        let Ok(monitor) = monitor else { continue };
+        monitor.connect_changed({
+            let app = Rc::clone(app);
+            move |_, _, _, _| {
+                // The Settings window owns the file while it is open; do not fight it.
+                if app.widgets.settings_window.borrow().is_none() {
+                    app.reload_theme();
+                }
+            }
+        });
+        app.state.config_monitors.borrow_mut().push(monitor);
+    }
 }
 
 fn connect_window(app: &App) {
@@ -306,6 +369,23 @@ fn connect_window(app: &App) {
         }
     });
     app.widgets.view_stack.add_controller(gesture);
+
+    // Dropping on empty space puts files into the folder being browsed.
+    let drop = gtk::DropTarget::new(
+        gdk::FileList::static_type(),
+        gdk::DragAction::COPY | gdk::DragAction::MOVE,
+    );
+    drop.connect_drop({
+        let app = Rc::clone(app);
+        move |_, value, _, _| {
+            let Ok(files) = value.get::<gdk::FileList>() else {
+                return false;
+            };
+            let destination = app.current_dir();
+            drop_files(&app, &files, &destination)
+        }
+    });
+    app.widgets.view_stack.add_controller(drop);
 }
 
 fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
@@ -334,6 +414,14 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
             let directory = app.current_dir();
             open_terminal(app, &directory);
         }
+        gdk::Key::t | gdk::Key::T if control => {
+            let current = app.current_dir();
+            app.open_tab(current);
+        }
+        gdk::Key::w | gdk::Key::W if control => app.close_tab(app.state.active_tab.get()),
+        gdk::Key::Tab | gdk::Key::ISO_Left_Tab if control => app.cycle_tab(!shift),
+        gdk::Key::d | gdk::Key::D if control => duplicate_selection(app),
+        gdk::Key::comma if control => settings::present(app),
         gdk::Key::r | gdk::Key::R if control => app.reload(),
         gdk::Key::F5 => app.reload(),
         gdk::Key::F2 => rename_selection(app),
@@ -604,6 +692,158 @@ pub fn trash_selection(app: &App) {
     );
 }
 
+/// Handle files dropped onto a folder or onto the current folder's background.
+///
+/// Dropping inside the same filesystem moves, the way desktops normally behave;
+/// dropping across filesystems copies, so nothing is lost if the source goes away.
+pub fn drop_files(app: &App, files: &gdk::FileList, destination: &Path) -> bool {
+    let sources: Vec<PathBuf> = files
+        .files()
+        .iter()
+        .filter_map(gio::File::path)
+        .filter(|path| path.parent() != Some(destination))
+        .collect();
+
+    if sources.is_empty() {
+        return false;
+    }
+
+    let kind = if ops::same_filesystem(&sources[0], destination) {
+        TransferKind::Move
+    } else {
+        TransferKind::Copy
+    };
+
+    run_transfer(app, kind, sources, destination.to_path_buf());
+    true
+}
+
+/// Copy or move `sources` into `destination`, reporting progress in the status bar.
+fn run_transfer(app: &App, kind: TransferKind, sources: Vec<PathBuf>, destination: PathBuf) {
+    if app.state.running_transfer.borrow().is_some() {
+        app.show_error("Another transfer is still running");
+        return;
+    }
+
+    let cancel = CancelFlag::new();
+    *app.state.running_transfer.borrow_mut() = Some(cancel.clone());
+
+    let count = sources.len();
+    app.set_message(
+        &format!(
+            "{} {}… (Esc to cancel)",
+            kind.verb(),
+            crate::files::item_count_label(count)
+        ),
+        false,
+    );
+
+    let app = Rc::clone(app);
+    glib::spawn_future_local(async move {
+        let report = ops::transfer(kind, sources, destination, cancel).await;
+        app.state.running_transfer.borrow_mut().take();
+
+        if report.failures.is_empty() {
+            app.set_message(
+                &format!(
+                    "{} {}",
+                    kind.past_tense(),
+                    crate::files::item_count_label(report.succeeded)
+                ),
+                false,
+            );
+        } else {
+            app.show_error(&report.failures.join("; "));
+        }
+        app.reload();
+    });
+}
+
+/// Copy the selection beside itself.
+pub fn duplicate_selection(app: &App) {
+    let paths: Vec<PathBuf> = app
+        .selected_entries()
+        .iter()
+        .map(|entry| entry.path().to_path_buf())
+        .collect();
+
+    if paths.is_empty() {
+        app.set_message("Select something first", false);
+        return;
+    }
+
+    let app = Rc::clone(app);
+    glib::spawn_future_local(async move {
+        let report = ops::duplicate(paths).await;
+        if report.failures.is_empty() {
+            app.set_message(
+                &format!(
+                    "Duplicated {}",
+                    crate::files::item_count_label(report.succeeded)
+                ),
+                false,
+            );
+        } else {
+            app.show_error(&report.failures.join("; "));
+        }
+        app.reload();
+    });
+}
+
+/// Put trashed entries back where they came from.
+pub fn restore_selection(app: &App) {
+    let paths: Vec<PathBuf> = app
+        .selected_entries()
+        .iter()
+        .map(|entry| entry.path().to_path_buf())
+        .collect();
+
+    if paths.is_empty() {
+        app.set_message("Select something to restore", false);
+        return;
+    }
+
+    let app = Rc::clone(app);
+    glib::spawn_future_local(async move {
+        let report = ops::restore_from_trash(paths).await;
+        if report.failures.is_empty() {
+            app.set_message(
+                &format!(
+                    "Restored {}",
+                    crate::files::item_count_label(report.succeeded)
+                ),
+                false,
+            );
+        } else {
+            app.show_error(&report.failures.join("; "));
+        }
+        app.reload();
+    });
+}
+
+/// Permanently delete everything in the trash, after confirmation.
+pub fn empty_trash(app: &App) {
+    let app_for_action = Rc::clone(app);
+    dialogs::confirm(
+        app,
+        "Empty Trash",
+        "Everything in the trash will be deleted permanently. This cannot be undone.",
+        "Delete Permanently",
+        move || {
+            let app = Rc::clone(&app_for_action);
+            glib::spawn_future_local(async move {
+                let report = ops::empty_trash().await;
+                if report.failures.is_empty() {
+                    app.set_message("Trash emptied", false);
+                } else {
+                    app.show_error(&report.failures.join("; "));
+                }
+                app.reload();
+            });
+        },
+    );
+}
+
 /// Run an entry from the folder menu.
 pub fn run_menu_action(app: &App, action: header::MenuAction) {
     match action {
@@ -618,6 +858,8 @@ pub fn run_menu_action(app: &App, action: header::MenuAction) {
             app.toggle_pin(&current);
         }
         header::MenuAction::Refresh => app.reload(),
+        header::MenuAction::Settings => settings::present(app),
+        header::MenuAction::EmptyTrash => empty_trash(app),
     }
 }
 
@@ -689,7 +931,18 @@ fn context_menu_content(app: &App) -> gtk::Box {
         ));
     }
 
+    if !selected.is_empty() && ops::is_in_trash(&app.current_dir()) {
+        items.push((
+            header::menu_item(icons::ui(icons::names::RESTORE), "Restore"),
+            ContextAction::Restore,
+        ));
+    }
+
     if !selected.is_empty() {
+        items.push((
+            header::menu_item(icons::ui(icons::names::COPY), "Duplicate"),
+            ContextAction::Duplicate,
+        ));
         items.push((
             header::menu_item(icons::ui(icons::names::COPY), "Copy"),
             ContextAction::Copy,
@@ -733,6 +986,8 @@ fn context_menu_content(app: &App) -> gtk::Box {
 #[derive(Debug, Clone, Copy)]
 enum ContextAction {
     Open,
+    Duplicate,
+    Restore,
     TerminalHere,
     Pin,
     Rename,
@@ -778,6 +1033,8 @@ fn run_context_action(app: &App, action: ContextAction) {
                 app.set_message("Path copied to the clipboard", false);
             }
         }
+        ContextAction::Duplicate => duplicate_selection(app),
+        ContextAction::Restore => restore_selection(app),
         ContextAction::Copy => stage_transfer(app, TransferKind::Copy),
         ContextAction::Cut => stage_transfer(app, TransferKind::Move),
         ContextAction::Trash => trash_selection(app),

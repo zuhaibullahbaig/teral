@@ -7,13 +7,14 @@ use std::rc::Rc;
 
 /// Widgets of the bottom bar and the Quick Command console above it.
 pub struct StatusBar {
-    pub root: gtk::Box,
+    pub root: gtk::CenterBox,
     pub command_entry: gtk::Entry,
     pub selection: gtk::Label,
     pub size: gtk::Label,
     pub free: gtk::Label,
     pub message: gtk::Label,
     pub zoom: gtk::Scale,
+    pub settings: gtk::Button,
 }
 
 /// The collapsible Quick Command output area.
@@ -97,12 +98,14 @@ pub fn build(icon_size: i32, spacing: i32) -> StatusBar {
     let command_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     command_bar.add_css_class("teral-command-bar");
     command_bar.set_hexpand(true);
+    command_bar.set_valign(gtk::Align::Center);
+    command_bar.set_size_request(360, -1);
     command_bar.append(&prompt);
     command_bar.append(&command_entry);
 
     let message = gtk::Label::new(None);
     message.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    message.set_max_width_chars(48);
+    message.set_max_width_chars(34);
     message.add_css_class("teral-status-item");
 
     let selection = status_label();
@@ -110,27 +113,41 @@ pub fn build(icon_size: i32, spacing: i32) -> StatusBar {
     let size = status_label();
     let free = status_label();
 
-    let zoom = gtk::Scale::with_range(gtk::Orientation::Horizontal, 32.0, 96.0, 8.0);
+    let zoom = gtk::Scale::with_range(
+        gtk::Orientation::Horizontal,
+        f64::from(crate::theme::MIN_ICON_SIZE),
+        f64::from(crate::theme::MAX_ICON_SIZE),
+        8.0,
+    );
     zoom.add_css_class("teral-zoom");
     zoom.set_draw_value(false);
     zoom.set_value(f64::from(icon_size));
-    zoom.set_size_request(96, -1);
-    zoom.set_tooltip_text(Some("Grid icon size"));
+    zoom.set_size_request(104, -1);
+    zoom.set_valign(gtk::Align::Center);
+    zoom.set_tooltip_text(Some("Icon size (Ctrl+0 resets)"));
 
-    // The command bar and this spacer share the free space, keeping the field to
-    // roughly half the width the way the Teral layout expects.
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
+    let settings = super::icon_button(
+        crate::icons::ui(crate::icons::names::SETTINGS),
+        "Settings (Ctrl+,)",
+    );
 
-    let root = gtk::Box::new(gtk::Orientation::Horizontal, spacing + 4);
+    let start = gtk::Box::new(gtk::Orientation::Horizontal, spacing + 2);
+    start.set_valign(gtk::Align::Center);
+    start.append(&message);
+    start.append(&selection);
+    start.append(&size);
+    start.append(&free);
+
+    let end = gtk::Box::new(gtk::Orientation::Horizontal, spacing);
+    end.set_valign(gtk::Align::Center);
+    end.append(&zoom);
+    end.append(&settings);
+
+    let root = gtk::CenterBox::new();
     root.add_css_class("teral-status-bar");
-    root.append(&command_bar);
-    root.append(&spacer);
-    root.append(&message);
-    root.append(&selection);
-    root.append(&size);
-    root.append(&free);
-    root.append(&zoom);
+    root.set_start_widget(Some(&start));
+    root.set_center_widget(Some(&command_bar));
+    root.set_end_widget(Some(&end));
 
     StatusBar {
         root,
@@ -140,6 +157,7 @@ pub fn build(icon_size: i32, spacing: i32) -> StatusBar {
         free,
         message,
         zoom,
+        settings,
     }
 }
 
@@ -176,6 +194,11 @@ pub fn connect(app: &App) {
         move |_| app.widgets.console.root.set_reveal_child(false)
     });
 
+    app.widgets.settings.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| super::settings::present(&app)
+    });
+
     app.widgets.zoom.connect_value_changed({
         let app = Rc::clone(app);
         move |scale| {
@@ -183,9 +206,17 @@ pub fn connect(app: &App) {
             if size == app.state.icon_size.get() {
                 return;
             }
+            if app.state.updating.get() {
+                return;
+            }
             app.state.icon_size.set(size);
             // Rebuilding the factory recreates every cell at the new size.
             super::fileview::refresh_grid_factory(&app);
+
+            // Remember the choice the same way the Settings window would.
+            let mut config = app.config.borrow().clone();
+            config.layout.grid_icon_size = Some(size);
+            app.apply_config(config, true);
         }
     });
 }

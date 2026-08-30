@@ -78,6 +78,16 @@ pub mod names {
     pub const STOP: &[&str] = &["process-stop-symbolic", "window-close-symbolic"];
     pub const CLOSE: &[&str] = &["window-close-symbolic"];
     pub const DRIVE: &[&str] = &["drive-harddisk-symbolic"];
+    pub const SETTINGS: &[&str] = &[
+        "emblem-system-symbolic",
+        "preferences-system-symbolic",
+        "applications-system-symbolic",
+    ];
+    pub const RESTORE: &[&str] = &[
+        "edit-undo-symbolic",
+        "document-revert-symbolic",
+        "go-up-symbolic",
+    ];
 }
 
 /// Resolve the first candidate the active icon theme can actually draw.

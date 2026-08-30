@@ -1,0 +1,31 @@
+version = 1
+name = "Teral Daylight"
+
+# Teral's light palette. It is used when "Follow the system" is selected and the
+# desktop asks for a light appearance, so Teral keeps its own structure and density
+# while matching what the rest of the session is doing.
+
+[colors]
+background = "#f4f3f0"
+surface = "#fbfaf8"
+surface_alt = "#e8e6e0"
+elevated = "#ffffff"
+border = "#dcd9d2"
+text = "#26241f"
+text_bright = "#0d0c0a"
+text_muted = "#726d64"
+accent = "#a4700c"
+selection = "#f2e5c6"
+danger = "#b03a2b"
+warning = "#a4700c"
+success = "#2f7d36"
+
+[layout]
+window_width = 1360
+window_height = 840
+sidebar_width = 238
+details_width = 316
+spacing = 12
+radius = 10
+row_height = 30
+grid_icon_size = 64

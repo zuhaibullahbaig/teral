@@ -8,11 +8,14 @@ pub mod details;
 pub mod dialogs;
 pub mod fileview;
 pub mod header;
+pub mod settings;
 pub mod sidebar;
 pub mod statusbar;
+pub mod tabs;
 pub mod window;
 
 use crate::command::RunningCommand;
+use crate::config::Config;
 use crate::files::ops::{CancelFlag, Clipboard};
 use crate::files::scan::{self, Sorting};
 use crate::files::{EntryData, FileEntry};
@@ -66,13 +69,42 @@ pub struct State {
     pub running_transfer: RefCell<Option<CancelFlag>>,
     /// Guards against feedback loops while widgets are being synchronised.
     pub updating: Cell<bool>,
+    /// Open tabs, and which one is showing.
+    pub tabs: RefCell<Vec<Tab>>,
+    pub active_tab: Cell<usize>,
+    /// Watches the directory on screen so external changes appear on their own.
+    pub directory_monitor: RefCell<Option<gio::FileMonitor>>,
+    pub refresh_queued: Cell<bool>,
+    /// Kept alive so configuration and theme changes keep being delivered.
+    pub config_monitors: RefCell<Vec<gio::FileMonitor>>,
+}
+
+/// One browsing tab: a location and its own history.
+#[derive(Debug, Clone)]
+pub struct Tab {
+    pub path: PathBuf,
+    pub back: Vec<PathBuf>,
+    pub forward: Vec<PathBuf>,
+}
+
+impl Tab {
+    pub fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            back: Vec::new(),
+            forward: Vec::new(),
+        }
+    }
 }
 
 /// The application object. Widgets hold an `App` and call back into it.
 pub struct AppInner {
     pub state: State,
     pub widgets: window::Widgets,
-    pub theme: ThemeConfig,
+    /// The configuration and resolved theme currently applied, both replaceable at
+    /// runtime by the Settings window or by an edit to the configuration file.
+    pub config: RefCell<Config>,
+    pub theme: RefCell<ThemeConfig>,
 }
 
 pub type App = Rc<AppInner>;
@@ -194,8 +226,18 @@ impl AppInner {
         }
 
         let changed_directory = *self.state.current.borrow() != path;
-        *self.state.current.borrow_mut() = path;
+        *self.state.current.borrow_mut() = path.clone();
         *self.state.all.borrow_mut() = entries;
+
+        if let Some(tab) = self
+            .state
+            .tabs
+            .borrow_mut()
+            .get_mut(self.state.active_tab.get())
+        {
+            tab.path = path.clone();
+        }
+        self.watch_directory(&path);
 
         if changed_directory {
             self.state.query.borrow_mut().clear();
@@ -324,6 +366,7 @@ impl AppInner {
             .set_sensitive(!self.state.forward.borrow().is_empty());
         self.widgets.up.set_sensitive(current.parent().is_some());
         sidebar::mark_active(self, &current);
+        tabs::rebuild(self);
     }
 
     pub fn update_counts(&self) {
@@ -402,8 +445,172 @@ impl AppInner {
 
     /// Restore the grid icon size configured by the active theme.
     pub fn reset_zoom(self: &App) {
-        let size = self.theme.grid_icon_size();
+        let size = self.theme.borrow().grid_icon_size();
         self.widgets.zoom.set_value(f64::from(size));
+    }
+
+    /// Watch the directory on screen so changes made elsewhere show up by themselves.
+    fn watch_directory(self: &App, path: &Path) {
+        let monitor = gio::File::for_path(path)
+            .monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE);
+
+        let monitor = match monitor {
+            Ok(monitor) => monitor,
+            Err(_) => {
+                // Some filesystems cannot be watched; browsing still works without it.
+                self.state.directory_monitor.borrow_mut().take();
+                return;
+            }
+        };
+
+        let app = Rc::clone(self);
+        monitor.connect_changed(move |_, _, _, _| app.queue_refresh());
+        *self.state.directory_monitor.borrow_mut() = Some(monitor);
+    }
+
+    /// Coalesce a burst of filesystem events into a single reload.
+    fn queue_refresh(self: &App) {
+        if self.state.refresh_queued.replace(true) {
+            return;
+        }
+
+        let app = Rc::clone(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+            app.state.refresh_queued.set(false);
+            // A running transfer will reload on its own when it finishes.
+            if app.state.running_transfer.borrow().is_none() {
+                app.reload();
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------ tabs ----
+
+    /// Store the live history back into the active tab before leaving it.
+    fn sync_active_tab(&self) {
+        let index = self.state.active_tab.get();
+        if let Some(tab) = self.state.tabs.borrow_mut().get_mut(index) {
+            tab.path = self.current_dir();
+            tab.back = self.state.back.borrow().clone();
+            tab.forward = self.state.forward.borrow().clone();
+        }
+    }
+
+    /// Open a new tab showing `path` and switch to it.
+    pub fn open_tab(self: &App, path: PathBuf) {
+        self.sync_active_tab();
+        self.state.tabs.borrow_mut().push(Tab::new(path.clone()));
+        let index = self.state.tabs.borrow().len() - 1;
+        self.activate_tab(index);
+    }
+
+    /// Close a tab, keeping at least one open.
+    pub fn close_tab(self: &App, index: usize) {
+        if self.state.tabs.borrow().len() <= 1 {
+            return;
+        }
+
+        self.sync_active_tab();
+        self.state.tabs.borrow_mut().remove(index);
+
+        let active = self.state.active_tab.get();
+        let next = if active > index || active >= self.state.tabs.borrow().len() {
+            active.saturating_sub(1)
+        } else {
+            active
+        };
+        self.activate_tab(next);
+    }
+
+    /// Show the tab at `index`.
+    pub fn activate_tab(self: &App, index: usize) {
+        let Some(tab) = self.state.tabs.borrow().get(index).cloned() else {
+            return;
+        };
+
+        if index != self.state.active_tab.get() {
+            self.sync_active_tab();
+        }
+        self.state.active_tab.set(index);
+        *self.state.back.borrow_mut() = tab.back;
+        *self.state.forward.borrow_mut() = tab.forward;
+        self.load(&tab.path, None);
+        tabs::rebuild(self);
+    }
+
+    /// Move to the next tab, wrapping around.
+    pub fn cycle_tab(self: &App, forward: bool) {
+        let count = self.state.tabs.borrow().len();
+        if count < 2 {
+            return;
+        }
+        let active = self.state.active_tab.get();
+        let next = if forward {
+            (active + 1) % count
+        } else {
+            (active + count - 1) % count
+        };
+        self.activate_tab(next);
+    }
+
+    // ----------------------------------------------------------------- theme ----
+
+    /// Apply a new configuration: persist it, re-resolve the theme and restyle.
+    pub fn apply_config(self: &App, config: Config, persist: bool) {
+        if persist && let Err(error) = config.save() {
+            self.show_error(&format!("Could not save settings: {error}"));
+        }
+
+        crate::config::set_current(config.clone());
+        let theme = ThemeConfig::resolve(&config);
+        crate::style::apply(&theme);
+
+        let icon_size = theme.grid_icon_size();
+        *self.theme.borrow_mut() = theme;
+        *self.config.borrow_mut() = config;
+
+        if icon_size != self.state.icon_size.get() {
+            self.state.icon_size.set(icon_size);
+            self.state.updating.set(true);
+            self.widgets.zoom.set_value(f64::from(icon_size));
+            self.state.updating.set(false);
+            fileview::refresh_grid_factory(self);
+        }
+    }
+
+    /// Re-read the configuration file and any environment theme, then restyle.
+    pub fn reload_theme(self: &App) {
+        let config = Config::load();
+        self.apply_config(config, false);
+        self.apply_preferences();
+    }
+
+    /// Push the configuration's file preferences into the live browsing state.
+    pub fn apply_preferences(self: &App) {
+        let config = self.config.borrow().clone();
+
+        self.state.show_hidden.set(config.show_hidden);
+        self.state.sorting.set(Sorting {
+            key: config.sort,
+            descending: config.descending,
+            folders_first: config.folders_first,
+        });
+
+        self.state.updating.set(true);
+        if let Some(check) = self.widgets.hidden_check.borrow().as_ref() {
+            check.set_active(config.show_hidden);
+        }
+        match config.view {
+            crate::config::ViewPreference::Grid => self.widgets.grid_toggle.set_active(true),
+            crate::config::ViewPreference::List => self.widgets.list_toggle.set_active(true),
+        }
+        self.state.updating.set(false);
+
+        self.set_view_mode(match config.view {
+            crate::config::ViewPreference::Grid => ViewMode::Grid,
+            crate::config::ViewPreference::List => ViewMode::List,
+        });
+        self.apply_filter();
     }
 
     pub fn set_view_mode(self: &App, mode: ViewMode) {

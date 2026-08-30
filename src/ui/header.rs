@@ -352,6 +352,8 @@ fn folder_popover(app: &App) -> gtk::Popover {
     let terminal = menu_item(icons::ui(icons::names::TERMINAL), "Open Terminal Here");
     let pin = menu_item(icons::ui(icons::names::PIN), "Pin This Folder");
     let refresh = menu_item(icons::ui(icons::names::REFRESH), "Refresh");
+    let empty_trash = menu_item(icons::ui(icons::names::TRASH), "Empty Trash");
+    let settings = menu_item(icons::ui(icons::names::SETTINGS), "Settings");
 
     for (item, action) in [
         (&new_folder, MenuAction::NewFolder),
@@ -359,6 +361,8 @@ fn folder_popover(app: &App) -> gtk::Popover {
         (&terminal, MenuAction::Terminal),
         (&pin, MenuAction::TogglePin),
         (&refresh, MenuAction::Refresh),
+        (&empty_trash, MenuAction::EmptyTrash),
+        (&settings, MenuAction::Settings),
     ] {
         let app = Rc::clone(app);
         let popover = popover.clone();
@@ -374,6 +378,9 @@ fn folder_popover(app: &App) -> gtk::Popover {
     content.append(&terminal);
     content.append(&pin);
     content.append(&refresh);
+    content.append(&empty_trash);
+    content.append(&separator());
+    content.append(&settings);
 
     // Reflect the current clipboard and pin state whenever the menu opens.
     popover.connect_show({
@@ -382,6 +389,7 @@ fn folder_popover(app: &App) -> gtk::Popover {
         let pin = pin.clone();
         move |_| {
             paste.set_sensitive(app.state.clipboard.borrow().is_some());
+            empty_trash.set_visible(crate::files::ops::is_in_trash(&app.current_dir()));
             let pinned = app.is_pinned(&app.current_dir());
             if let Some(row) = pin.child().and_downcast::<gtk::Box>()
                 && let Some(label) = row.last_child().and_downcast::<gtk::Label>()
@@ -407,6 +415,8 @@ pub enum MenuAction {
     Terminal,
     TogglePin,
     Refresh,
+    EmptyTrash,
+    Settings,
 }
 
 pub fn menu_item(icon_name: &str, label: &str) -> gtk::Button {

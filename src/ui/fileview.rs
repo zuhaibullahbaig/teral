@@ -110,8 +110,11 @@ struct GridItem {
 
 fn build_grid_item(app: &App, item: &gtk::ListItem) -> gtk::Widget {
     let icon_size = app.state.icon_size.get();
-    let tile_width = icon_size * 2 + 28;
-    let tile_height = icon_size * 2 + 14;
+    // The icon fills its tile: the tile is the icon plus a hairline of padding, so
+    // making icons bigger makes tiles bigger instead of adding empty space.
+    let tile = icon_size + 16;
+    // Names need more room than a tile, otherwise everything ellipsises to nothing.
+    let item_width = (tile + 44).max(116);
 
     let icon = gtk::Image::new();
     icon.set_pixel_size(icon_size);
@@ -124,12 +127,13 @@ fn build_grid_item(app: &App, item: &gtk::ListItem) -> gtk::Widget {
     picture.set_vexpand(true);
     picture.set_visible(false);
 
-    let tile = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    tile.add_css_class("teral-tile");
-    tile.set_overflow(gtk::Overflow::Hidden);
-    tile.set_size_request(tile_width, tile_height);
-    tile.append(&icon);
-    tile.append(&picture);
+    let tile_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    tile_box.add_css_class("teral-tile");
+    tile_box.set_overflow(gtk::Overflow::Hidden);
+    tile_box.set_size_request(tile, tile);
+    tile_box.set_halign(gtk::Align::Center);
+    tile_box.append(&icon);
+    tile_box.append(&picture);
 
     let badge = gtk::Image::from_icon_name(icons::ui(icons::names::SELECTED));
     badge.add_css_class("teral-selection-badge");
@@ -140,7 +144,8 @@ fn build_grid_item(app: &App, item: &gtk::ListItem) -> gtk::Widget {
     badge.set_margin_end(6);
 
     let overlay = gtk::Overlay::new();
-    overlay.set_child(Some(&tile));
+    overlay.set_halign(gtk::Align::Center);
+    overlay.set_child(Some(&tile_box));
     overlay.add_overlay(&badge);
 
     let name = gtk::Label::new(None);
@@ -154,9 +159,9 @@ fn build_grid_item(app: &App, item: &gtk::ListItem) -> gtk::Widget {
     subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
     subtitle.set_max_width_chars(1);
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
     root.set_halign(gtk::Align::Center);
-    root.set_size_request(tile_width, -1);
+    root.set_size_request(item_width, -1);
     root.append(&overlay);
     root.append(&name);
     root.append(&subtitle);
@@ -167,9 +172,11 @@ fn build_grid_item(app: &App, item: &gtk::ListItem) -> gtk::Widget {
         .build();
 
     attach_context_gesture(app, &root, item);
+    attach_drag_source(app, &root, item);
+    attach_drop_target(app, &root, item);
 
     let widgets = GridItem {
-        tile,
+        tile: tile_box,
         icon,
         picture,
         name,
@@ -441,6 +448,81 @@ fn text_column_factory(
 }
 
 // ----------------------------------------------------------- context menu ----
+
+// --------------------------------------------------------------- drag and drop ----
+
+/// Let a grid item be dragged, into another Teral folder or into another application.
+fn attach_drag_source(app: &App, widget: &gtk::Box, item: &gtk::ListItem) {
+    let source = gtk::DragSource::new();
+    source.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
+
+    let app = Rc::clone(app);
+    let item = item.clone();
+    source.connect_prepare(move |_, _, _| {
+        let position = item.position();
+        if position != gtk::INVALID_LIST_POSITION && !app.state.selection.is_selected(position) {
+            app.state.selection.select_item(position, true);
+        }
+
+        let files: Vec<gtk::gio::File> =
+            app.selected_entries().iter().map(FileEntry::file).collect();
+        if files.is_empty() {
+            return None;
+        }
+
+        Some(gdk::ContentProvider::for_value(
+            &gdk::FileList::from_array(&files).to_value(),
+        ))
+    });
+
+    widget.add_controller(source);
+}
+
+/// Accept files dropped onto a folder tile.
+fn attach_drop_target(app: &App, widget: &gtk::Box, item: &gtk::ListItem) {
+    let target = gtk::DropTarget::new(
+        gdk::FileList::static_type(),
+        gdk::DragAction::COPY | gdk::DragAction::MOVE,
+    );
+
+    let accept_item = item.clone();
+    target.connect_accept(move |_, _| {
+        accept_item
+            .item()
+            .and_downcast::<FileEntry>()
+            .is_some_and(|entry| entry.is_directory())
+    });
+
+    let app = Rc::clone(app);
+    let item = item.clone();
+    let widget_for_drop = widget.clone();
+    target.connect_drop(move |_, value, _, _| {
+        widget_for_drop.remove_css_class("drop-target");
+
+        let Some(entry) = item.item().and_downcast::<FileEntry>() else {
+            return false;
+        };
+        if !entry.is_directory() {
+            return false;
+        }
+
+        let Ok(files) = value.get::<gdk::FileList>() else {
+            return false;
+        };
+        super::window::drop_files(&app, &files, entry.path())
+    });
+
+    let enter_widget = widget.clone();
+    target.connect_enter(move |_, _, _| {
+        enter_widget.add_css_class("drop-target");
+        gdk::DragAction::COPY
+    });
+
+    let leave_widget = widget.clone();
+    target.connect_leave(move |_| leave_widget.remove_css_class("drop-target"));
+
+    widget.add_controller(target);
+}
 
 fn attach_context_gesture(app: &App, widget: &gtk::Box, item: &gtk::ListItem) {
     let gesture = gtk::GestureClick::new();

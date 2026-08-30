@@ -1,5 +1,6 @@
 mod app;
 mod command;
+mod config;
 mod files;
 mod icons;
 mod places;
