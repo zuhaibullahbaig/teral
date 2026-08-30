@@ -173,7 +173,8 @@ fn place_row(app: &App, label: &str, icon_name: &str, path: &Path) -> gtk::Butto
         move |_| app.navigate(&target)
     });
 
-    attach_context_menu(app, &button, target);
+    attach_context_menu(app, &button, target.clone());
+    attach_drop_target(app, &button, target);
     button
 }
 
@@ -227,6 +228,7 @@ fn device_row(app: &App, device: &Device) -> gtk::Button {
     });
 
     attach_context_menu(app, &button, target.clone());
+    attach_drop_target(app, &button, target.clone());
 
     // Capacity is queried asynchronously: a slow mount must not stall the sidebar.
     glib::spawn_future_local(async move {
@@ -245,6 +247,42 @@ fn device_row(app: &App, device: &Device) -> gtk::Button {
     });
 
     button
+}
+
+/// Sidebar rows accept dropped files, so a folder can be filed away without opening it.
+fn attach_drop_target(app: &App, button: &gtk::Button, path: PathBuf) {
+    let target = gtk::DropTarget::new(
+        gtk::gdk::FileList::static_type(),
+        gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
+    );
+
+    target.connect_drop({
+        let app = Rc::clone(app);
+        let path = path.clone();
+        let button = button.clone();
+        move |_, value, _, _| {
+            button.remove_css_class("drop-target");
+            let Ok(files) = value.get::<gtk::gdk::FileList>() else {
+                return false;
+            };
+            super::window::drop_files(&app, &files, &path)
+        }
+    });
+
+    target.connect_enter({
+        let button = button.clone();
+        move |_, _, _| {
+            button.add_css_class("drop-target");
+            gtk::gdk::DragAction::COPY
+        }
+    });
+
+    target.connect_leave({
+        let button = button.clone();
+        move |_| button.remove_css_class("drop-target")
+    });
+
+    button.add_controller(target);
 }
 
 /// Right-click on any sidebar row offers pinning and a terminal.

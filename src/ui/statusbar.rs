@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 /// Widgets of the bottom bar and the Quick Command console above it.
 pub struct StatusBar {
-    pub root: gtk::CenterBox,
+    pub root: gtk::Box,
     pub command_entry: gtk::Entry,
     pub selection: gtk::Label,
     pub size: gtk::Label,
@@ -15,6 +15,7 @@ pub struct StatusBar {
     pub message: gtk::Label,
     pub zoom: gtk::Scale,
     pub settings: gtk::Button,
+    pub details_toggle: gtk::ToggleButton,
 }
 
 /// The collapsible Quick Command output area.
@@ -85,7 +86,40 @@ pub fn build_console() -> Console {
     }
 }
 
-pub fn build(icon_size: i32, spacing: i32) -> StatusBar {
+/// Build the footer.
+///
+/// The footer is split into the same three columns as the window above it: the
+/// navigation column carries Teral's own controls, the file column carries Quick
+/// Command at exactly the width of the file list, and the details column carries the
+/// selection and storage readout.
+pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBar {
+    // ---- navigation column -------------------------------------------------
+    let settings = super::icon_button(
+        crate::icons::ui(crate::icons::names::SETTINGS),
+        "Settings (Ctrl+,)",
+    );
+
+    let details_toggle = super::icon_toggle(
+        crate::icons::ui(crate::icons::names::PANEL),
+        "Show the details panel (Ctrl+I)",
+    );
+    details_toggle.set_active(true);
+
+    let message = gtk::Label::new(None);
+    message.set_xalign(0.0);
+    message.set_hexpand(true);
+    message.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    message.add_css_class("teral-status-item");
+
+    let left = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    left.add_css_class("teral-footer-navigation");
+    left.set_size_request(sidebar_width, -1);
+    left.set_hexpand(false);
+    left.append(&settings);
+    left.append(&details_toggle);
+    left.append(&message);
+
+    // ---- file column -------------------------------------------------------
     let prompt = gtk::Label::new(Some(">_"));
     prompt.add_css_class("teral-command-prompt");
 
@@ -99,15 +133,15 @@ pub fn build(icon_size: i32, spacing: i32) -> StatusBar {
     command_bar.add_css_class("teral-command-bar");
     command_bar.set_hexpand(true);
     command_bar.set_valign(gtk::Align::Center);
-    command_bar.set_size_request(360, -1);
     command_bar.append(&prompt);
     command_bar.append(&command_entry);
 
-    let message = gtk::Label::new(None);
-    message.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    message.set_max_width_chars(34);
-    message.add_css_class("teral-status-item");
+    let middle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    middle.add_css_class("teral-footer-files");
+    middle.set_hexpand(true);
+    middle.append(&command_bar);
 
+    // ---- details column ----------------------------------------------------
     let selection = status_label();
     selection.add_css_class("strong");
     let size = status_label();
@@ -122,32 +156,26 @@ pub fn build(icon_size: i32, spacing: i32) -> StatusBar {
     zoom.add_css_class("teral-zoom");
     zoom.set_draw_value(false);
     zoom.set_value(f64::from(icon_size));
-    zoom.set_size_request(104, -1);
+    zoom.set_hexpand(true);
     zoom.set_valign(gtk::Align::Center);
     zoom.set_tooltip_text(Some("Icon size (Ctrl+0 resets)"));
 
-    let settings = super::icon_button(
-        crate::icons::ui(crate::icons::names::SETTINGS),
-        "Settings (Ctrl+,)",
-    );
+    let right = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    right.add_css_class("teral-footer-details");
+    right.set_size_request(details_width, -1);
+    right.set_hexpand(false);
+    right.append(&selection);
+    right.append(&size);
+    right.append(&free);
+    right.append(&zoom);
 
-    let start = gtk::Box::new(gtk::Orientation::Horizontal, spacing + 2);
-    start.set_valign(gtk::Align::Center);
-    start.append(&message);
-    start.append(&selection);
-    start.append(&size);
-    start.append(&free);
-
-    let end = gtk::Box::new(gtk::Orientation::Horizontal, spacing);
-    end.set_valign(gtk::Align::Center);
-    end.append(&zoom);
-    end.append(&settings);
-
-    let root = gtk::CenterBox::new();
+    let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     root.add_css_class("teral-status-bar");
-    root.set_start_widget(Some(&start));
-    root.set_center_widget(Some(&command_bar));
-    root.set_end_widget(Some(&end));
+    root.append(&left);
+    root.append(&divider());
+    root.append(&middle);
+    root.append(&divider());
+    root.append(&right);
 
     StatusBar {
         root,
@@ -158,7 +186,15 @@ pub fn build(icon_size: i32, spacing: i32) -> StatusBar {
         message,
         zoom,
         settings,
+        details_toggle,
     }
+}
+
+/// A hairline between footer columns, echoing the borders of the panes above.
+fn divider() -> gtk::Separator {
+    let divider = gtk::Separator::new(gtk::Orientation::Vertical);
+    divider.add_css_class("teral-footer-divider");
+    divider
 }
 
 fn status_label() -> gtk::Label {
@@ -197,6 +233,11 @@ pub fn connect(app: &App) {
     app.widgets.settings.connect_clicked({
         let app = Rc::clone(app);
         move |_| super::settings::present(&app)
+    });
+
+    app.widgets.details_toggle.connect_toggled({
+        let app = Rc::clone(app);
+        move |button| app.widgets.details.root.set_visible(button.is_active())
     });
 
     app.widgets.zoom.connect_value_changed({

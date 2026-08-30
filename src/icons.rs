@@ -83,6 +83,12 @@ pub mod names {
         "preferences-system-symbolic",
         "applications-system-symbolic",
     ];
+    pub const PANEL: &[&str] = &[
+        "sidebar-show-right-symbolic",
+        "view-dual-symbolic",
+        "view-paged-symbolic",
+        "edit-select-all-symbolic",
+    ];
     pub const RESTORE: &[&str] = &[
         "edit-undo-symbolic",
         "document-revert-symbolic",

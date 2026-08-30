@@ -284,7 +284,7 @@ fn build_columns(app: &App) {
         list.remove_column(&column);
     }
 
-    let name = gtk::ColumnViewColumn::new(Some("Name"), Some(name_column_factory()));
+    let name = gtk::ColumnViewColumn::new(Some("Name"), Some(name_column_factory(app)));
     name.set_expand(true);
     name.set_resizable(true);
     list.append_column(&name);
@@ -330,10 +330,11 @@ fn build_columns(app: &App) {
     list.append_column(&modified);
 }
 
-fn name_column_factory() -> gtk::SignalListItemFactory {
+fn name_column_factory(app: &App) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
 
-    factory.connect_setup(|_, item| {
+    let app = Rc::clone(app);
+    factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
@@ -347,6 +348,11 @@ fn name_column_factory() -> gtk::SignalListItemFactory {
         row.append(&icon);
         row.append(&label);
         item.set_child(Some(&row));
+
+        // Rows drag and receive drops exactly like grid tiles do.
+        attach_drag_source(&app, &row, item);
+        attach_drop_target(&app, &row, item);
+        attach_context_gesture(&app, &row, item);
     });
 
     factory.connect_bind(|_, item| {

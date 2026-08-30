@@ -14,6 +14,7 @@ use crate::config::{Config, ThemeMode};
 use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
+use gtk::prelude::*;
 use serde::Deserialize;
 use std::env;
 use std::fs;
@@ -100,9 +101,18 @@ impl ThemeConfig {
         match config.mode {
             ThemeMode::Teral => {}
             ThemeMode::System => {
+                // Tell GTK which way to lean before reading its colours back, so the
+                // palette Teral derives is the one the desktop is actually drawing.
+                if let Some(settings) = gtk::Settings::default() {
+                    settings.set_gtk_application_prefer_dark_theme(prefer_dark);
+                }
+                if let Some(palette) = system_palette(prefer_dark) {
+                    theme.colors.overlay(palette);
+                }
                 if let Some(accent) = system_accent() {
                     theme.colors.accent = Some(accent);
                 }
+                theme.name = Some("System".to_owned());
             }
             ThemeMode::Omarchy => {
                 if let Some(overlay) = omarchy_overlay() {
@@ -464,6 +474,88 @@ pub fn system_prefers_dark() -> bool {
                 .gtk_theme_name()
                 .is_some_and(|name| name.to_lowercase().contains("dark"))
     })
+}
+
+/// Derive Teral's palette from the colours the running GTK theme actually uses.
+///
+/// GTK themes publish a small set of named colours. Teral reads those and computes the
+/// surfaces, borders and muted text it needs from them, so "Follow the system" adopts
+/// the desktop's real colours rather than only its light/dark preference.
+fn system_palette(dark: bool) -> Option<ThemeColors> {
+    if !gtk::is_initialized() {
+        return None;
+    }
+
+    // `lookup_color` is the only way GTK exposes a theme's named colours to code.
+    #[allow(deprecated)]
+    let (background, foreground, base, selected, borders) = {
+        let context = gtk::Label::new(None).style_context();
+        (
+            context.lookup_color("theme_bg_color")?,
+            context.lookup_color("theme_fg_color")?,
+            context.lookup_color("theme_base_color"),
+            context
+                .lookup_color("accent_bg_color")
+                .or_else(|| context.lookup_color("theme_selected_bg_color")),
+            context.lookup_color("borders"),
+        )
+    };
+
+    // Surfaces step away from the window background in the direction of the palette.
+    let (surface, elevated, alt, border) = if dark {
+        (0.82, 1.16, 1.32, 1.55)
+    } else {
+        (1.03, 1.06, 0.94, 0.88)
+    };
+
+    let base = base.unwrap_or(background);
+    let border = borders.unwrap_or_else(|| shade(background, border));
+
+    Some(ThemeColors {
+        background: Some(hex(background)),
+        surface: Some(hex(shade(background, surface))),
+        surface_alt: Some(hex(shade(background, alt))),
+        elevated: Some(hex(shade(base, elevated))),
+        border: Some(hex(border)),
+        text: Some(hex(foreground)),
+        text_bright: Some(hex(shade(foreground, if dark { 1.15 } else { 0.7 }))),
+        text_muted: Some(hex(mix(foreground, background, 0.45))),
+        accent: selected.map(hex),
+        selection: selected.map(|accent| hex(mix(accent, background, 0.8))),
+        danger: None,
+        warning: None,
+        success: None,
+    })
+}
+
+/// Multiply a colour's channels, keeping it inside the sRGB range.
+fn shade(color: gtk::gdk::RGBA, factor: f32) -> gtk::gdk::RGBA {
+    gtk::gdk::RGBA::new(
+        (color.red() * factor).clamp(0.0, 1.0),
+        (color.green() * factor).clamp(0.0, 1.0),
+        (color.blue() * factor).clamp(0.0, 1.0),
+        1.0,
+    )
+}
+
+/// Blend `to` into `from` by `amount`.
+fn mix(from: gtk::gdk::RGBA, to: gtk::gdk::RGBA, amount: f32) -> gtk::gdk::RGBA {
+    let blend = |a: f32, b: f32| a + (b - a) * amount.clamp(0.0, 1.0);
+    gtk::gdk::RGBA::new(
+        blend(from.red(), to.red()),
+        blend(from.green(), to.green()),
+        blend(from.blue(), to.blue()),
+        1.0,
+    )
+}
+
+fn hex(color: gtk::gdk::RGBA) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        channel(f64::from(color.red())),
+        channel(f64::from(color.green())),
+        channel(f64::from(color.blue()))
+    )
 }
 
 /// The desktop's accent colour, when it publishes one.

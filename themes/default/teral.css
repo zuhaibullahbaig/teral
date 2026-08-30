@@ -23,8 +23,8 @@ headerbar.teral-toolbar {
   background-image: none;
   border-bottom: 1px solid @teral_border;
   box-shadow: none;
-  min-height: 54px;
-  padding: 8px 12px;
+  min-height: 44px;
+  padding: 4px 12px;
 }
 
 headerbar.teral-toolbar windowcontrols button {
@@ -68,9 +68,9 @@ menubutton.teral-icon-button > button {
 }
 
 .teral-icon-button {
-  min-width: 28px;
-  min-height: 28px;
-  padding: 3px;
+  min-width: 26px;
+  min-height: 24px;
+  padding: 1px 4px;
   margin: 0;
   border-radius: 8px;
   border: 1px solid transparent;
@@ -99,8 +99,15 @@ menubutton.teral-icon-button > button {
 .teral-button-group {
   background-color: @teral_elevated;
   border: 1px solid @teral_border;
-  border-radius: 9px;
-  padding: 2px;
+  border-radius: 8px;
+  margin: 0;
+  padding: 1px;
+}
+
+.teral-button-group .teral-icon-button {
+  border-radius: 6px;
+  min-height: 22px;
+  padding: 0 5px;
 }
 
 /* ---------------------------------------------------------- breadcrumbs ---- */
@@ -109,8 +116,8 @@ menubutton.teral-icon-button > button {
   background-color: @teral_elevated;
   border: 1px solid @teral_border;
   border-radius: 999px;
-  margin: 4px 6px;
-  min-height: 30px;
+  margin: 0 8px;
+  min-height: 28px;
   padding: 0 12px;
 }
 
@@ -149,8 +156,8 @@ entry.teral-location {
   color: @teral_text;
   font-family: monospace;
   font-size: 12px;
-  margin: 4px 6px;
-  min-height: 30px;
+  margin: 0 8px;
+  min-height: 28px;
   padding: 0 14px;
 }
 
@@ -323,7 +330,8 @@ gridview.teral-grid > child:selected .teral-item-name {
 }
 
 gridview.teral-grid > child.drop-target,
-.teral-place.drop-target {
+.teral-place.drop-target,
+.drop-target {
   background-color: alpha(@teral_accent, 0.2);
   border-color: @teral_accent;
 }
@@ -626,7 +634,30 @@ button.teral-tab-close:hover {
 .teral-status-bar {
   background-color: @teral_surface;
   border-top: 1px solid @teral_border;
+  padding: 0;
+}
+
+.teral-footer-navigation {
+  padding: 8px 10px;
+}
+
+.teral-footer-navigation .teral-icon-button:checked {
+  background: none;
+  border-color: transparent;
+  color: @teral_accent;
+}
+
+.teral-footer-files {
   padding: 8px 14px;
+}
+
+.teral-footer-details {
+  padding: 8px 14px;
+}
+
+separator.teral-footer-divider {
+  background-color: @teral_border;
+  min-width: 1px;
 }
 
 .teral-command-bar {

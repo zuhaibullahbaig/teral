@@ -21,7 +21,7 @@ Teral is usable as a day-to-day file manager. It provides:
 - copy / cut / paste with recursive folder transfers that run off the GTK main thread and never overwrite an existing file
 - filename search, sorting, folders-first and hidden-file toggles
 - Quick Command: run a shell command with the browsed folder as its working directory, asynchronously, with its output in a collapsible console
-- a status bar with selection count and size, free space, and a grid zoom control
+- a footer split into the same three columns as the window: Teral's own controls under the sidebar, Quick Command at exactly the width of the file list, and the selection and storage readout under the details panel
 - tabs, each with its own location and history
 - drag and drop: between Teral folders, and to and from other Linux applications
 - live directory monitoring, so changes made elsewhere appear on their own
@@ -50,6 +50,7 @@ Ctrl+D              Duplicate
 Ctrl+T / Ctrl+W     New tab / close tab
 Ctrl+Tab            Next tab (add Shift for previous)
 Ctrl+,              Settings
+Ctrl+I              Show or hide the details panel
 Ctrl+0              Reset the grid zoom
 F2                  Rename
 Delete              Move to trash
@@ -143,9 +144,12 @@ the environment, according to the chosen mode
 
 `mode = "teral"` uses Teral's own dark palette everywhere.
 
-`mode = "system"` asks the FreeDesktop appearance portal for the desktop's light/dark
-preference and accent colour, falling back to GTK's own settings on desktops without a
-portal, and picks Teral's matching palette.
+`mode = "system"` adopts the desktop's real appearance. Teral asks the FreeDesktop
+appearance portal for the light/dark preference and accent colour, falling back to GTK's
+own settings on desktops without a portal, then reads the named colours the active GTK
+theme publishes (`theme_bg_color`, `theme_fg_color`, `accent_bg_color` and friends) and
+derives its surfaces, borders and muted text from them. Teral therefore takes on the
+desktop's own colours, not just its light/dark preference.
 
 `mode = "omarchy"` looks for the active theme under the XDG state location Omarchy uses.
 If the active theme contains `teral.toml`, Teral applies it. Otherwise Teral derives its

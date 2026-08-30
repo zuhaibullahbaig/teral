@@ -67,6 +67,7 @@ pub struct Widgets {
     pub status_message: gtk::Label,
     pub zoom: gtk::Scale,
     pub settings: gtk::Button,
+    pub details_toggle: gtk::ToggleButton,
     pub settings_window: RefCell<Option<gtk::Window>>,
 }
 
@@ -82,7 +83,11 @@ pub fn build_window(
     let head = header::build();
     let side = sidebar::build(theme.sidebar_width());
     let detail = details::build(theme.details_width());
-    let status = statusbar::build(theme.grid_icon_size(), theme.spacing());
+    let status = statusbar::build(
+        theme.grid_icon_size(),
+        theme.sidebar_width(),
+        theme.details_width(),
+    );
     let console = statusbar::build_console();
     let tab_bar = tabs::build();
 
@@ -115,7 +120,7 @@ pub fn build_window(
         "New folder (Ctrl+Shift+N)",
     );
 
-    let content_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let content_header = gtk::Box::new(gtk::Orientation::Horizontal, theme.spacing());
     content_header.add_css_class("teral-content-header");
     content_header.append(&titles);
     content_header.append(&new_folder);
@@ -231,6 +236,7 @@ pub fn build_window(
         status_message: status.message,
         zoom: status.zoom,
         settings: status.settings,
+        details_toggle: status.details_toggle,
         settings_window: RefCell::new(None),
     };
 
@@ -422,6 +428,10 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         gdk::Key::Tab | gdk::Key::ISO_Left_Tab if control => app.cycle_tab(!shift),
         gdk::Key::d | gdk::Key::D if control => duplicate_selection(app),
         gdk::Key::comma if control => settings::present(app),
+        gdk::Key::i | gdk::Key::I if control => {
+            let toggle = &app.widgets.details_toggle;
+            toggle.set_active(!toggle.is_active());
+        }
         gdk::Key::r | gdk::Key::R if control => app.reload(),
         gdk::Key::F5 => app.reload(),
         gdk::Key::F2 => rename_selection(app),
@@ -858,7 +868,6 @@ pub fn run_menu_action(app: &App, action: header::MenuAction) {
             app.toggle_pin(&current);
         }
         header::MenuAction::Refresh => app.reload(),
-        header::MenuAction::Settings => settings::present(app),
         header::MenuAction::EmptyTrash => empty_trash(app),
     }
 }

@@ -353,7 +353,6 @@ fn folder_popover(app: &App) -> gtk::Popover {
     let pin = menu_item(icons::ui(icons::names::PIN), "Pin This Folder");
     let refresh = menu_item(icons::ui(icons::names::REFRESH), "Refresh");
     let empty_trash = menu_item(icons::ui(icons::names::TRASH), "Empty Trash");
-    let settings = menu_item(icons::ui(icons::names::SETTINGS), "Settings");
 
     for (item, action) in [
         (&new_folder, MenuAction::NewFolder),
@@ -362,7 +361,6 @@ fn folder_popover(app: &App) -> gtk::Popover {
         (&pin, MenuAction::TogglePin),
         (&refresh, MenuAction::Refresh),
         (&empty_trash, MenuAction::EmptyTrash),
-        (&settings, MenuAction::Settings),
     ] {
         let app = Rc::clone(app);
         let popover = popover.clone();
@@ -379,8 +377,6 @@ fn folder_popover(app: &App) -> gtk::Popover {
     content.append(&pin);
     content.append(&refresh);
     content.append(&empty_trash);
-    content.append(&separator());
-    content.append(&settings);
 
     // Reflect the current clipboard and pin state whenever the menu opens.
     popover.connect_show({
@@ -416,7 +412,6 @@ pub enum MenuAction {
     TogglePin,
     Refresh,
     EmptyTrash,
-    Settings,
 }
 
 pub fn menu_item(icon_name: &str, label: &str) -> gtk::Button {
