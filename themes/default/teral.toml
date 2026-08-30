@@ -1,15 +1,32 @@
 version = 1
-name = "Teral Default"
+name = "Teral Midnight"
 
-# Colors are intentionally omitted in the default theme.
-# GTK therefore remains responsible for the desktop's normal system colors.
-# Teral or environment-specific themes can override any color below.
+# Teral's built-in appearance. It is deliberately complete so Teral looks like Teral on
+# any Linux desktop without requiring a theme file. Every value below can be overridden
+# by an Omarchy theme or by ~/.config/teral/teral.toml, and any key left out simply
+# inherits the value from the layer beneath it.
+
+[colors]
+background = "#0e0e11"
+surface = "#0a0a0c"
+surface_alt = "#1a1a20"
+elevated = "#141418"
+border = "#232329"
+text = "#e6e3de"
+text_bright = "#fbf9f5"
+text_muted = "#8a8680"
+accent = "#e0a63c"
+selection = "#2a2117"
+danger = "#d9634f"
+warning = "#e0a63c"
+success = "#6fbf73"
 
 [layout]
-window_width = 1320
-window_height = 820
-sidebar_width = 220
-details_width = 320
+window_width = 1360
+window_height = 840
+sidebar_width = 238
+details_width = 316
 spacing = 12
 radius = 10
-row_height = 44
+row_height = 30
+grid_icon_size = 48

@@ -1,0 +1,752 @@
+/* Teral stylesheet.
+ *
+ * Colors come from the resolved Teral theme as GTK @define-color names, so this file
+ * stays identical across themes and Omarchy palettes. Selectors prefer the stable
+ * semantic .teral-* classes over GTK's internal widget tree wherever possible. */
+
+/* ---------------------------------------------------------------- shell ---- */
+
+window.teral-window {
+  background-color: @teral_bg;
+  color: @teral_text;
+  font-size: 12.5px;
+}
+
+.teral-root {
+  background-color: @teral_bg;
+}
+
+/* ------------------------------------------------------------- top bar ---- */
+
+headerbar.teral-toolbar {
+  background-color: @teral_surface;
+  background-image: none;
+  border-bottom: 1px solid @teral_border;
+  box-shadow: none;
+  min-height: 46px;
+  padding: 0 10px;
+}
+
+headerbar.teral-toolbar windowcontrols button {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  margin: 0 1px;
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: @teral_muted;
+}
+
+headerbar.teral-toolbar windowcontrols button:hover {
+  background-color: @teral_surface_alt;
+  color: @teral_text;
+}
+
+headerbar.teral-toolbar windowcontrols button.close:hover {
+  background-color: @teral_danger;
+  color: @teral_text_bright;
+}
+
+.teral-brand {
+  color: @teral_text;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.teral-icon-button > button,
+menubutton.teral-icon-button > button {
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 8px;
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  color: inherit;
+}
+
+.teral-icon-button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 3px;
+  margin: 0;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: none;
+  background-image: none;
+  box-shadow: none;
+  color: @teral_muted;
+}
+
+.teral-icon-button:hover {
+  background-color: @teral_surface_alt;
+  color: @teral_text;
+}
+
+.teral-icon-button:checked,
+.teral-icon-button.toggled {
+  background-color: alpha(@teral_accent, 0.15);
+  border-color: alpha(@teral_accent, 0.4);
+  color: @teral_accent;
+}
+
+.teral-icon-button:disabled {
+  opacity: 0.3;
+}
+
+.teral-button-group {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  border-radius: 9px;
+  padding: 2px;
+}
+
+/* ---------------------------------------------------------- breadcrumbs ---- */
+
+.teral-breadcrumb {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+
+.teral-crumb {
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 6px;
+  padding: 2px 6px;
+  min-height: 22px;
+  color: @teral_muted;
+  font-size: 12px;
+}
+
+.teral-crumb:hover {
+  background-color: @teral_surface_alt;
+  color: @teral_text;
+}
+
+.teral-crumb.current {
+  color: @teral_accent;
+  font-weight: 700;
+}
+
+.teral-crumb-separator {
+  color: alpha(@teral_muted, 0.55);
+  font-size: 10px;
+}
+
+entry.teral-location {
+  background-color: @teral_elevated;
+  border: 1px solid alpha(@teral_accent, 0.5);
+  border-radius: 999px;
+  box-shadow: none;
+  color: @teral_text;
+  font-family: monospace;
+  font-size: 12px;
+  min-height: 26px;
+  padding: 0 12px;
+}
+
+/* --------------------------------------------------------------- search ---- */
+
+searchbar.teral-searchbar > revealer > box {
+  background-color: @teral_surface;
+  border-bottom: 1px solid @teral_border;
+  padding: 6px 14px;
+}
+
+entry.teral-search {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  border-radius: 8px;
+  box-shadow: none;
+  color: @teral_text;
+  font-size: 12px;
+  min-height: 28px;
+}
+
+entry.teral-search:focus-within {
+  border-color: alpha(@teral_accent, 0.55);
+}
+
+/* -------------------------------------------------------------- sidebar ---- */
+
+.teral-sidebar {
+  background-color: @teral_surface;
+  border-right: 1px solid @teral_border;
+}
+
+.teral-section-title {
+  color: alpha(@teral_muted, 0.8);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.teral-place {
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 8px;
+  padding: 5px 9px;
+  min-height: 0;
+  color: @teral_text;
+}
+
+.teral-place:hover {
+  background-color: @teral_surface_alt;
+}
+
+.teral-place.active {
+  background-color: alpha(@teral_accent, 0.13);
+  color: @teral_accent;
+}
+
+.teral-place-label {
+  font-size: 12.5px;
+}
+
+.teral-place-count {
+  font-size: 10.5px;
+  color: @teral_muted;
+}
+
+.teral-device-detail {
+  font-size: 10px;
+  color: @teral_muted;
+}
+
+levelbar.teral-meter,
+levelbar.teral-meter trough {
+  min-height: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background-color: alpha(@teral_muted, 0.22);
+}
+
+levelbar.teral-meter block {
+  min-height: 3px;
+  border: none;
+  border-radius: 2px;
+  background-color: @teral_accent;
+}
+
+levelbar.teral-meter.critical block {
+  background-color: @teral_danger;
+}
+
+levelbar.teral-meter block.empty {
+  background: none;
+  border: none;
+  min-height: 3px;
+}
+
+/* -------------------------------------------------------------- content ---- */
+
+.teral-content {
+  background-color: @teral_bg;
+}
+
+.teral-content-header {
+  padding: 12px 16px 10px 16px;
+  border-bottom: 1px solid alpha(@teral_border, 0.75);
+}
+
+.teral-folder-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: @teral_text_bright;
+}
+
+.teral-folder-subtitle {
+  font-size: 10.5px;
+  color: @teral_muted;
+}
+
+scrolledwindow.teral-file-area {
+  background-color: @teral_bg;
+}
+
+/* ----------------------------------------------------------- grid view ---- */
+
+gridview.teral-grid {
+  background: none;
+  padding: 12px;
+}
+
+gridview.teral-grid > child {
+  padding: 4px;
+  margin: 2px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: none;
+  outline: none;
+}
+
+gridview.teral-grid > child:hover {
+  background-color: alpha(@teral_muted, 0.07);
+}
+
+gridview.teral-grid > child:selected {
+  background-color: alpha(@teral_accent, 0.09);
+  border-color: alpha(@teral_accent, 0.55);
+}
+
+gridview.teral-grid > child:selected .teral-item-name {
+  color: @teral_text_bright;
+}
+
+.teral-tile {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+}
+
+.teral-tile.directory {
+  background-image: linear-gradient(
+    to bottom,
+    alpha(@teral_accent, 0.06),
+    alpha(@teral_accent, 0.01)
+  );
+}
+
+.teral-tile.image {
+  padding: 0;
+  background-color: #000000;
+}
+
+.teral-item-name {
+  font-size: 12px;
+  color: @teral_text;
+}
+
+.teral-item-subtitle {
+  font-size: 10.5px;
+  color: @teral_muted;
+}
+
+.teral-selection-badge {
+  color: @teral_accent;
+}
+
+/* ----------------------------------------------------------- list view ---- */
+
+columnview.teral-list {
+  background: none;
+}
+
+columnview.teral-list > listview,
+columnview.teral-list > listview > row {
+  background: none;
+  background-image: none;
+  color: @teral_text;
+}
+
+columnview.teral-list > header button {
+  background: none;
+  background-image: none;
+  border: none;
+  border-bottom: 1px solid @teral_border;
+  border-radius: 0;
+  box-shadow: none;
+  color: @teral_muted;
+  font-size: 10px;
+  font-weight: 700;
+  min-height: 26px;
+  padding: 4px 10px;
+}
+
+columnview.teral-list > header button:hover {
+  color: @teral_text;
+  background-color: alpha(@teral_muted, 0.06);
+}
+
+columnview.teral-list > listview > row > cell {
+  padding: 3px 10px;
+  font-size: 12px;
+  color: @teral_text;
+}
+
+columnview.teral-list > listview > row:hover {
+  background-color: alpha(@teral_muted, 0.07);
+}
+
+columnview.teral-list > listview > row:selected {
+  background-color: alpha(@teral_accent, 0.14);
+  background-image: none;
+  color: @teral_text_bright;
+}
+
+columnview.teral-list > listview > row:selected > cell {
+  color: @teral_text_bright;
+}
+
+columnview.teral-list > listview > row > cell .teral-item-subtitle {
+  color: @teral_muted;
+}
+
+columnview.teral-list > listview > row:selected > cell .teral-item-subtitle {
+  color: @teral_text;
+}
+
+/* -------------------------------------------------------------- details ---- */
+
+.teral-details {
+  background-color: @teral_surface;
+  border-left: 1px solid @teral_border;
+}
+
+.teral-details-header {
+  padding: 11px 14px;
+  border-bottom: 1px solid alpha(@teral_border, 0.75);
+}
+
+.teral-details-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: @teral_text;
+}
+
+.teral-details-body {
+  padding: 14px;
+}
+
+.teral-preview {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  min-height: 132px;
+}
+
+.teral-details-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: @teral_text_bright;
+}
+
+.teral-details-kind {
+  font-size: 11.5px;
+  color: @teral_muted;
+}
+
+.teral-details-size {
+  font-size: 11.5px;
+  color: @teral_text;
+}
+
+.teral-separator {
+  background-color: alpha(@teral_border, 0.9);
+  min-height: 1px;
+}
+
+.teral-meta-key {
+  font-size: 11px;
+  color: @teral_muted;
+}
+
+.teral-meta-value {
+  font-size: 11px;
+  color: @teral_text;
+}
+
+.teral-meta-value.path {
+  font-family: monospace;
+  font-size: 10.5px;
+}
+
+menubutton.teral-action > button {
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  color: inherit;
+}
+
+.teral-action {
+  background-color: @teral_elevated;
+  background-image: none;
+  border: 1px solid @teral_border;
+  box-shadow: none;
+  color: @teral_text;
+  min-height: 0;
+  min-width: 0;
+  padding: 7px 2px;
+}
+
+.teral-action:hover {
+  background-color: @teral_surface_alt;
+  border-color: alpha(@teral_accent, 0.45);
+  color: @teral_accent;
+}
+
+.teral-action:disabled {
+  opacity: 0.35;
+}
+
+.teral-action.destructive:hover {
+  border-color: alpha(@teral_danger, 0.55);
+  color: @teral_danger;
+}
+
+.teral-action-label {
+  font-size: 9.5px;
+  color: @teral_muted;
+}
+
+.teral-action:hover .teral-action-label {
+  color: inherit;
+}
+
+.teral-empty {
+  font-size: 12px;
+  color: @teral_muted;
+}
+
+/* --------------------------------------------------- status / commands ---- */
+
+.teral-status-bar {
+  background-color: @teral_surface;
+  border-top: 1px solid @teral_border;
+  padding: 7px 14px;
+}
+
+.teral-command-bar {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  padding: 1px 10px;
+}
+
+.teral-command-bar:focus-within {
+  border-color: alpha(@teral_accent, 0.55);
+}
+
+.teral-command-prompt {
+  color: @teral_accent;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+entry.teral-command-entry {
+  background: none;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  color: @teral_text;
+  font-family: monospace;
+  font-size: 12px;
+  min-height: 26px;
+  padding: 0 4px;
+}
+
+.teral-status-item {
+  font-size: 11px;
+  color: @teral_muted;
+}
+
+.teral-status-item.strong {
+  color: @teral_text;
+}
+
+.teral-status-item.error {
+  color: @teral_danger;
+}
+
+scale.teral-zoom trough {
+  background-color: alpha(@teral_muted, 0.25);
+  min-height: 3px;
+  min-width: 0;
+  margin: 0;
+  border: none;
+}
+
+scale.teral-zoom highlight {
+  background-color: @teral_accent;
+  min-height: 3px;
+  min-width: 0;
+  margin: 0;
+  border: none;
+}
+
+scale.teral-zoom {
+  min-height: 16px;
+}
+
+scale.teral-zoom slider {
+  background-color: @teral_accent;
+  border: none;
+  border-radius: 999px;
+  box-shadow: none;
+  margin: 0;
+  min-width: 12px;
+  min-height: 12px;
+}
+
+/* ----------------------------------------------------- command console ---- */
+
+.teral-console {
+  background-color: @teral_surface;
+  border-top: 1px solid @teral_border;
+}
+
+.teral-console-header {
+  padding: 6px 14px;
+  border-bottom: 1px solid alpha(@teral_border, 0.7);
+}
+
+textview.teral-console-output,
+textview.teral-console-output text {
+  background-color: @teral_bg;
+  color: @teral_text;
+  font-family: monospace;
+  font-size: 11.5px;
+}
+
+/* --------------------------------------------------- popovers and menus ---- */
+
+popover > contents,
+popover.menu > contents {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  border-radius: 12px;
+  box-shadow: 0 14px 34px alpha(#000000, 0.55);
+  color: @teral_text;
+  padding: 6px;
+}
+
+popover.menu modelbutton {
+  border-radius: 7px;
+  font-size: 12px;
+  min-height: 26px;
+  padding: 3px 8px;
+}
+
+popover.menu modelbutton:hover {
+  background-color: @teral_surface_alt;
+}
+
+.teral-menu-item {
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 7px;
+  color: @teral_text;
+  font-size: 12px;
+  min-height: 26px;
+  padding: 3px 8px;
+}
+
+.teral-menu-item:hover {
+  background-color: @teral_surface_alt;
+}
+
+checkbutton.teral-menu-check {
+  font-size: 12px;
+  min-height: 24px;
+  padding: 2px 4px;
+}
+
+checkbutton.teral-menu-check check,
+checkbutton.teral-menu-check radio {
+  background-color: @teral_bg;
+  background-image: none;
+  border: 1px solid @teral_border;
+  box-shadow: none;
+  min-width: 13px;
+  min-height: 13px;
+}
+
+checkbutton.teral-menu-check check {
+  border-radius: 5px;
+}
+
+checkbutton.teral-menu-check radio {
+  border-radius: 999px;
+}
+
+checkbutton.teral-menu-check check:checked,
+checkbutton.teral-menu-check radio:checked {
+  background-color: @teral_accent;
+  background-image: none;
+  border-color: @teral_accent;
+  color: @teral_bg;
+}
+
+/* ---------------------------------------------------------- scrollbars ---- */
+
+scrollbar {
+  background: none;
+  border: none;
+}
+
+scrollbar slider {
+  background-color: alpha(@teral_muted, 0.32);
+  border: none;
+  border-radius: 8px;
+  margin: 3px;
+  min-width: 6px;
+  min-height: 6px;
+}
+
+scrollbar slider:hover {
+  background-color: alpha(@teral_muted, 0.55);
+}
+
+/* -------------------------------------------------------------- dialogs ---- */
+
+window.dialog,
+window.teral-dialog {
+  background-color: @teral_bg;
+  color: @teral_text;
+}
+
+.teral-dialog-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: @teral_text_bright;
+}
+
+entry.teral-input {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  border-radius: 8px;
+  box-shadow: none;
+  color: @teral_text;
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+entry.teral-input:focus-within {
+  border-color: alpha(@teral_accent, 0.6);
+}
+
+button.teral-primary {
+  background-color: @teral_accent;
+  background-image: none;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+  color: #14100a;
+  font-weight: 700;
+  padding: 6px 14px;
+}
+
+button.teral-secondary {
+  background-color: @teral_elevated;
+  background-image: none;
+  border: 1px solid @teral_border;
+  border-radius: 8px;
+  box-shadow: none;
+  color: @teral_text;
+  padding: 6px 14px;
+}
+
+button.teral-secondary:hover {
+  background-color: @teral_surface_alt;
+}

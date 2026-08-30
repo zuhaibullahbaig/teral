@@ -1,10 +1,15 @@
 mod app;
+mod command;
+mod files;
+mod icons;
+mod places;
+mod style;
 mod theme;
 mod ui;
 
+use gtk::Application;
 use gtk::glib;
 use gtk::prelude::*;
-use gtk::Application;
 
 const APP_ID: &str = "dev.zuhaibullahbaig.Teral";
 

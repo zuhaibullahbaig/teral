@@ -1,12 +1,23 @@
-use gtk::gdk::Display;
-use gtk::prelude::*;
-use gtk::CssProvider;
+//! Layered Teral theme resolution.
+//!
+//! Layers, lowest priority first:
+//!
+//! 1. the built-in Teral theme compiled into the binary
+//! 2. the active Omarchy theme (`teral.toml`, otherwise derived from `colors.toml`)
+//! 3. the user override at `~/.config/teral/teral.toml`
+//!
+//! Every field is optional at every layer, so partial overrides inherit safely and a
+//! broken theme can never leave Teral without a usable appearance.
+
 use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_THEME: &str = include_str!("../themes/default/teral.toml");
+
+/// Theme format version understood by this build of Teral.
+pub const THEME_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ThemeConfig {
@@ -23,14 +34,16 @@ pub struct ThemeColors {
     pub background: Option<String>,
     pub surface: Option<String>,
     pub surface_alt: Option<String>,
+    pub elevated: Option<String>,
+    pub border: Option<String>,
     pub text: Option<String>,
+    pub text_bright: Option<String>,
     pub text_muted: Option<String>,
     pub accent: Option<String>,
     pub selection: Option<String>,
     pub danger: Option<String>,
     pub warning: Option<String>,
     pub success: Option<String>,
-    pub border: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -42,6 +55,7 @@ pub struct ThemeLayout {
     pub spacing: Option<i32>,
     pub radius: Option<i32>,
     pub row_height: Option<i32>,
+    pub grid_icon_size: Option<i32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -62,6 +76,7 @@ struct OmarchyColors {
 }
 
 impl ThemeConfig {
+    /// Resolve the effective theme from every available layer.
     pub fn load() -> Self {
         let mut theme = toml::from_str::<Self>(DEFAULT_THEME)
             .expect("the built-in Teral theme must be valid TOML");
@@ -112,108 +127,131 @@ impl ThemeConfig {
     }
 
     pub fn window_width(&self) -> i32 {
-        self.layout.window_width.unwrap_or(1320)
+        self.layout.window_width.unwrap_or(1360)
     }
 
     pub fn window_height(&self) -> i32 {
-        self.layout.window_height.unwrap_or(820)
+        self.layout.window_height.unwrap_or(840)
     }
 
     pub fn sidebar_width(&self) -> i32 {
-        self.layout.sidebar_width.unwrap_or(220)
+        self.layout.sidebar_width.unwrap_or(238)
     }
 
     pub fn details_width(&self) -> i32 {
-        self.layout.details_width.unwrap_or(320)
+        self.layout.details_width.unwrap_or(316)
     }
 
     pub fn spacing(&self) -> i32 {
         self.layout.spacing.unwrap_or(12)
     }
 
+    pub fn radius(&self) -> i32 {
+        self.layout.radius.unwrap_or(10)
+    }
+
     pub fn row_height(&self) -> i32 {
-        self.layout.row_height.unwrap_or(44)
+        self.layout.row_height.unwrap_or(30)
     }
 
-    pub fn apply_css(&self) {
-        let css = self.to_css();
-        let provider = CssProvider::new();
-        provider.load_from_string(&css);
+    pub fn grid_icon_size(&self) -> i32 {
+        self.layout.grid_icon_size.unwrap_or(48)
+    }
 
-        if let Some(display) = Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
+    /// A color resolved through the theme layers, falling back to the built-in value.
+    pub fn color(&self, role: ColorRole) -> &str {
+        let configured = match role {
+            ColorRole::Background => self.colors.background.as_deref(),
+            ColorRole::Surface => self.colors.surface.as_deref(),
+            ColorRole::SurfaceAlt => self.colors.surface_alt.as_deref(),
+            ColorRole::Elevated => self.colors.elevated.as_deref(),
+            ColorRole::Border => self.colors.border.as_deref(),
+            ColorRole::Text => self.colors.text.as_deref(),
+            ColorRole::TextBright => self.colors.text_bright.as_deref(),
+            ColorRole::TextMuted => self.colors.text_muted.as_deref(),
+            ColorRole::Accent => self.colors.accent.as_deref(),
+            ColorRole::Selection => self.colors.selection.as_deref(),
+            ColorRole::Danger => self.colors.danger.as_deref(),
+            ColorRole::Warning => self.colors.warning.as_deref(),
+            ColorRole::Success => self.colors.success.as_deref(),
+        };
+
+        configured.unwrap_or_else(|| role.fallback())
+    }
+}
+
+/// Semantic color roles exposed to the stylesheet and to theme authors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorRole {
+    Background,
+    Surface,
+    SurfaceAlt,
+    Elevated,
+    Border,
+    Text,
+    TextBright,
+    TextMuted,
+    Accent,
+    Selection,
+    Danger,
+    Warning,
+    Success,
+}
+
+impl ColorRole {
+    /// Every role Teral defines, in stylesheet declaration order.
+    pub const ALL: [Self; 13] = [
+        Self::Background,
+        Self::Surface,
+        Self::SurfaceAlt,
+        Self::Elevated,
+        Self::Border,
+        Self::Text,
+        Self::TextBright,
+        Self::TextMuted,
+        Self::Accent,
+        Self::Selection,
+        Self::Danger,
+        Self::Warning,
+        Self::Success,
+    ];
+
+    /// The GTK `@define-color` name used by the Teral stylesheet.
+    pub const fn css_name(self) -> &'static str {
+        match self {
+            Self::Background => "teral_bg",
+            Self::Surface => "teral_surface",
+            Self::SurfaceAlt => "teral_surface_alt",
+            Self::Elevated => "teral_elevated",
+            Self::Border => "teral_border",
+            Self::Text => "teral_text",
+            Self::TextBright => "teral_text_bright",
+            Self::TextMuted => "teral_muted",
+            Self::Accent => "teral_accent",
+            Self::Selection => "teral_selection",
+            Self::Danger => "teral_danger",
+            Self::Warning => "teral_warning",
+            Self::Success => "teral_success",
         }
     }
 
-    fn to_css(&self) -> String {
-        let mut css = String::from(
-            ".teral-root { }\n\
-             .teral-toolbar { padding: 10px 12px; }\n\
-             .teral-sidebar { padding: 10px; }\n\
-             .teral-details { padding: 16px; }\n\
-             .teral-title { font-size: 15px; font-weight: 700; }\n\
-             .teral-section-title { font-size: 11px; font-weight: 700; opacity: 0.72; }\n\
-             .teral-muted { opacity: 0.66; }\n\
-             .teral-path { font-family: monospace; opacity: 0.78; }\n\
-             .teral-file-list row { padding: 7px 10px; }\n\
-             .teral-file-name { font-weight: 600; }\n",
-        );
-
-        let radius = self.layout.radius.unwrap_or(10);
-        css.push_str(&format!(
-            ".teral-card {{ border-radius: {radius}px; }}\n\
-             .teral-file-list row {{ min-height: {}px; }}\n",
-            self.row_height()
-        ));
-
-        push_rule(&mut css, ".teral-root", "background-color", self.colors.background.as_deref());
-        push_rule(&mut css, ".teral-root", "color", self.colors.text.as_deref());
-        push_rule(
-            &mut css,
-            ".teral-sidebar, .teral-details, .teral-toolbar",
-            "background-color",
-            self.colors.surface.as_deref(),
-        );
-        push_rule(
-            &mut css,
-            ".teral-muted, .teral-path, .teral-section-title",
-            "color",
-            self.colors.text_muted.as_deref(),
-        );
-        push_rule(
-            &mut css,
-            ".teral-file-list row:selected",
-            "background-color",
-            self.colors.selection.as_deref().or(self.colors.accent.as_deref()),
-        );
-        push_rule(
-            &mut css,
-            ".teral-file-list row:hover",
-            "background-color",
-            self.colors.surface_alt.as_deref(),
-        );
-        push_rule(
-            &mut css,
-            ".teral-accent",
-            "color",
-            self.colors.accent.as_deref(),
-        );
-
-        if let Some(border) = self.colors.border.as_deref() {
-            if valid_color(border) {
-                css.push_str(&format!(
-                    ".teral-sidebar {{ border-right: 1px solid {border}; }}\n\
-                     .teral-details {{ border-left: 1px solid {border}; }}\n\
-                     .teral-toolbar {{ border-bottom: 1px solid {border}; }}\n"
-                ));
-            }
+    /// Used when neither the built-in theme file nor any overlay supplies the role.
+    const fn fallback(self) -> &'static str {
+        match self {
+            Self::Background => "#0e0e11",
+            Self::Surface => "#0a0a0c",
+            Self::SurfaceAlt => "#1a1a1f",
+            Self::Elevated => "#141418",
+            Self::Border => "#232329",
+            Self::Text => "#e6e3de",
+            Self::TextBright => "#ffffff",
+            Self::TextMuted => "#8a8680",
+            Self::Accent => "#e0a63c",
+            Self::Selection => "#2a2117",
+            Self::Danger => "#d9634f",
+            Self::Warning => "#e0a63c",
+            Self::Success => "#6fbf73",
         }
-
-        css
     }
 }
 
@@ -222,14 +260,16 @@ impl ThemeColors {
         overlay_option(&mut self.background, other.background);
         overlay_option(&mut self.surface, other.surface);
         overlay_option(&mut self.surface_alt, other.surface_alt);
+        overlay_option(&mut self.elevated, other.elevated);
+        overlay_option(&mut self.border, other.border);
         overlay_option(&mut self.text, other.text);
+        overlay_option(&mut self.text_bright, other.text_bright);
         overlay_option(&mut self.text_muted, other.text_muted);
         overlay_option(&mut self.accent, other.accent);
         overlay_option(&mut self.selection, other.selection);
         overlay_option(&mut self.danger, other.danger);
         overlay_option(&mut self.warning, other.warning);
         overlay_option(&mut self.success, other.success);
-        overlay_option(&mut self.border, other.border);
     }
 
     fn sanitize(&mut self) {
@@ -237,14 +277,16 @@ impl ThemeColors {
             &mut self.background,
             &mut self.surface,
             &mut self.surface_alt,
+            &mut self.elevated,
+            &mut self.border,
             &mut self.text,
+            &mut self.text_bright,
             &mut self.text_muted,
             &mut self.accent,
             &mut self.selection,
             &mut self.danger,
             &mut self.warning,
             &mut self.success,
-            &mut self.border,
         ] {
             if color.as_deref().is_some_and(|value| !valid_color(value)) {
                 *color = None;
@@ -262,16 +304,18 @@ impl ThemeLayout {
         overlay_option(&mut self.spacing, other.spacing);
         overlay_option(&mut self.radius, other.radius);
         overlay_option(&mut self.row_height, other.row_height);
+        overlay_option(&mut self.grid_icon_size, other.grid_icon_size);
     }
 
     fn sanitize(&mut self) {
         clamp_option(&mut self.window_width, 720, 3840);
         clamp_option(&mut self.window_height, 480, 2160);
-        clamp_option(&mut self.sidebar_width, 160, 520);
-        clamp_option(&mut self.details_width, 220, 720);
-        clamp_option(&mut self.spacing, 0, 48);
-        clamp_option(&mut self.radius, 0, 40);
-        clamp_option(&mut self.row_height, 28, 96);
+        clamp_option(&mut self.sidebar_width, 180, 420);
+        clamp_option(&mut self.details_width, 240, 520);
+        clamp_option(&mut self.spacing, 0, 32);
+        clamp_option(&mut self.radius, 0, 24);
+        clamp_option(&mut self.row_height, 22, 64);
+        clamp_option(&mut self.grid_icon_size, 32, 128);
     }
 }
 
@@ -279,8 +323,13 @@ fn read_theme(path: &Path) -> Result<ThemeConfig, String> {
     let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
     let theme = toml::from_str::<ThemeConfig>(&raw).map_err(|error| error.to_string())?;
 
-    if theme.version.is_some_and(|version| version != 1) {
-        return Err("unsupported theme version; Teral currently supports version = 1".to_owned());
+    if theme
+        .version
+        .is_some_and(|version| version != THEME_FORMAT_VERSION)
+    {
+        return Err(format!(
+            "unsupported theme version; Teral currently supports version = {THEME_FORMAT_VERSION}"
+        ));
     }
 
     Ok(theme)
@@ -291,20 +340,27 @@ fn derive_omarchy_theme(colors_path: &Path) -> Option<ThemeConfig> {
     let colors = toml::from_str::<OmarchyColors>(&raw).ok()?;
 
     Some(ThemeConfig {
-        version: Some(1),
+        version: Some(THEME_FORMAT_VERSION),
         name: Some("Omarchy Active Theme".to_owned()),
         colors: ThemeColors {
-            background: colors.background,
-            surface: colors.dark_background.or(colors.darker_background),
-            surface_alt: colors.lighter_background,
-            text: colors.foreground.or(colors.bright_foreground),
+            background: colors.background.clone(),
+            surface: colors
+                .dark_background
+                .clone()
+                .or_else(|| colors.darker_background.clone()),
+            surface_alt: colors.lighter_background.clone(),
+            elevated: colors
+                .lighter_background
+                .or_else(|| colors.dark_background.clone()),
+            border: colors.dark_background,
+            text: colors.foreground.clone(),
+            text_bright: colors.bright_foreground,
             text_muted: colors.muted.or(colors.dark_foreground),
             accent: colors.accent,
             selection: colors.selection,
             danger: colors.red,
             warning: colors.yellow,
             success: colors.green,
-            border: None,
         },
         layout: ThemeLayout::default(),
     })
@@ -327,6 +383,14 @@ fn state_home() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".local/state")))
         .unwrap_or_else(|| PathBuf::from(".local/state"))
+}
+
+/// The user's data directory, used for Teral's own persisted state.
+pub fn data_home() -> PathBuf {
+    env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from(".local/share"))
 }
 
 pub fn home_dir() -> Option<PathBuf> {
@@ -353,8 +417,66 @@ fn valid_color(value: &str) -> bool {
     matches!(hex.len(), 6 | 8) && hex.chars().all(|character| character.is_ascii_hexdigit())
 }
 
-fn push_rule(css: &mut String, selector: &str, property: &str, value: Option<&str>) {
-    if let Some(value) = value.filter(|value| valid_color(value)) {
-        css.push_str(&format!("{selector} {{ {property}: {value}; }}\n"));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn built_in_theme_parses() {
+        let theme = toml::from_str::<ThemeConfig>(DEFAULT_THEME).expect("built-in theme parses");
+        assert_eq!(theme.version, Some(THEME_FORMAT_VERSION));
+    }
+
+    #[test]
+    fn every_color_role_resolves() {
+        let mut theme = toml::from_str::<ThemeConfig>(DEFAULT_THEME).expect("built-in theme");
+        theme.sanitize();
+        for role in ColorRole::ALL {
+            assert!(valid_color(theme.color(role)), "{role:?} must be a color");
+        }
+    }
+
+    #[test]
+    fn invalid_colors_fall_back_instead_of_breaking() {
+        let mut theme = ThemeConfig {
+            colors: ThemeColors {
+                accent: Some("not-a-color".to_owned()),
+                ..ThemeColors::default()
+            },
+            ..ThemeConfig::default()
+        };
+        theme.sanitize();
+        assert_eq!(theme.color(ColorRole::Accent), ColorRole::Accent.fallback());
+    }
+
+    #[test]
+    fn overlays_only_replace_provided_fields() {
+        let mut base = toml::from_str::<ThemeConfig>(DEFAULT_THEME).expect("built-in theme");
+        let base_background = base.color(ColorRole::Background).to_owned();
+
+        base.overlay(ThemeConfig {
+            colors: ThemeColors {
+                accent: Some("#123456".to_owned()),
+                ..ThemeColors::default()
+            },
+            ..ThemeConfig::default()
+        });
+        base.sanitize();
+
+        assert_eq!(base.color(ColorRole::Accent), "#123456");
+        assert_eq!(base.color(ColorRole::Background), base_background);
+    }
+
+    #[test]
+    fn layout_values_are_clamped() {
+        let mut theme = ThemeConfig {
+            layout: ThemeLayout {
+                sidebar_width: Some(4000),
+                ..ThemeLayout::default()
+            },
+            ..ThemeConfig::default()
+        };
+        theme.sanitize();
+        assert_eq!(theme.sidebar_width(), 420);
     }
 }
