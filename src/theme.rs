@@ -88,9 +88,19 @@ struct OmarchyColors {
 impl ThemeConfig {
     /// Resolve the effective theme for a configuration.
     pub fn resolve(config: &Config) -> Self {
-        let prefer_dark = match config.mode {
-            ThemeMode::System => system_prefers_dark(),
-            _ => true,
+        // Following the system means following the active Omarchy theme when Teral is
+        // running under Omarchy, because that theme *is* that desktop's appearance and
+        // is more specific than anything GTK publishes. Every other desktop — and
+        // Omarchy with no readable theme — keeps the GTK-derived palette.
+        let omarchy = match config.mode {
+            ThemeMode::System => omarchy_active_theme_dir(),
+            ThemeMode::Teral => None,
+        };
+
+        let prefer_dark = match (config.mode, &omarchy) {
+            (ThemeMode::System, Some(directory)) => omarchy_prefers_dark(directory),
+            (ThemeMode::System, None) => system_prefers_dark(),
+            (ThemeMode::Teral, _) => true,
         };
 
         let source = if prefer_dark { DARK_THEME } else { LIGHT_THEME };
@@ -98,25 +108,23 @@ impl ThemeConfig {
             toml::from_str::<Self>(source).expect("the built-in Teral themes must be valid TOML");
         theme.dark = prefer_dark;
 
-        match config.mode {
-            ThemeMode::Teral => {}
-            ThemeMode::System => {
-                // Tell GTK which way to lean before reading its colours back, so the
-                // palette Teral derives is the one the desktop is actually drawing.
-                if let Some(settings) = gtk::Settings::default() {
-                    settings.set_gtk_application_prefer_dark_theme(prefer_dark);
-                }
-                if let Some(palette) = system_palette(prefer_dark) {
-                    theme.colors.overlay(palette);
-                }
-                if let Some(accent) = system_accent() {
-                    theme.colors.accent = Some(accent);
-                }
-                theme.name = Some("System".to_owned());
+        if config.mode == ThemeMode::System {
+            // Tell GTK which way to lean before reading its colours back, so the
+            // palette Teral derives is the one the desktop is actually drawing.
+            if let Some(settings) = gtk::Settings::default() {
+                settings.set_gtk_application_prefer_dark_theme(prefer_dark);
             }
-            ThemeMode::Omarchy => {
-                if let Some(overlay) = omarchy_overlay() {
-                    theme.overlay(overlay);
+
+            match omarchy.as_deref().and_then(omarchy_overlay) {
+                Some(overlay) => theme.overlay(overlay),
+                None => {
+                    if let Some(palette) = system_palette(prefer_dark) {
+                        theme.colors.overlay(palette);
+                    }
+                    if let Some(accent) = system_accent() {
+                        theme.colors.accent = Some(accent);
+                    }
+                    theme.name = Some("System".to_owned());
                 }
             }
         }
@@ -398,9 +406,17 @@ fn read_theme(path: &Path) -> Result<ThemeConfig, String> {
     Ok(theme)
 }
 
+/// Whether the active Omarchy theme is a dark one.
+///
+/// Omarchy marks its light themes with a `light.mode` file in the theme directory;
+/// everything else is dark, which is also the safer assumption for a theme that says
+/// nothing.
+fn omarchy_prefers_dark(directory: &Path) -> bool {
+    !directory.join("light.mode").exists()
+}
+
 /// The Omarchy overlay: the active theme's `teral.toml`, or its palette.
-fn omarchy_overlay() -> Option<ThemeConfig> {
-    let directory = omarchy_active_theme_dir()?;
+fn omarchy_overlay(directory: &Path) -> Option<ThemeConfig> {
     let teral_theme = directory.join("teral.toml");
     let colors_theme = directory.join("colors.toml");
 

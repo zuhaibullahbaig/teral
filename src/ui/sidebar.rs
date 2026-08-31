@@ -37,18 +37,20 @@ pub fn build(width: i32) -> Sidebar {
     content.append(&section_title("DEVICES"));
     content.append(&devices);
 
-    // The drop hint only appears while a folder is actually being dragged over the
-    // bookmarks area, so an empty section costs nothing but the space it reserves.
-    let pin_drop = gtk::Label::new(Some("Drop to bookmark"));
-    pin_drop.add_css_class("teral-pin-target");
-    pin_drop.set_visible(false);
+    // One row does both jobs: it is the "No bookmarks" placeholder while the section is
+    // empty, and turns into the drop hint in that same place during a drag. With
+    // bookmarks present it stays hidden until a folder is dragged over.
+    let pin_drop = gtk::Label::new(Some("No bookmarks"));
+    pin_drop.set_xalign(0.0);
+    pin_drop.add_css_class("teral-bookmarks-empty");
 
     let bookmarks = gtk::Box::new(gtk::Orientation::Vertical, 0);
     bookmarks.add_css_class("teral-bookmarks");
-    bookmarks.set_size_request(-1, 64);
+    // The hint sits directly under the heading, where the first bookmark goes: that is
+    // where the eye already is, and where the placeholder it replaces has always been.
     bookmarks.append(&section_title("BOOKMARKS"));
-    bookmarks.append(&pinned);
     bookmarks.append(&pin_drop);
+    bookmarks.append(&pinned);
     content.append(&bookmarks);
 
     let tags = section_box();
@@ -146,14 +148,11 @@ fn connect_pin_target(app: &App) {
         gtk::gdk::FileList::static_type(),
         gtk::gdk::DragAction::COPY,
     );
-    let label = app.widgets.pin_drop.clone();
 
     target.connect_drop({
         let app = Rc::clone(app);
-        let label = label.clone();
         move |_, value, _, _| {
-            label.set_visible(false);
-            label.remove_css_class("drop-target");
+            show_drop_hint(&app, false);
             let Ok(files) = value.get::<gtk::gdk::FileList>() else {
                 return false;
             };
@@ -179,19 +178,15 @@ fn connect_pin_target(app: &App) {
     });
 
     target.connect_enter({
-        let label = label.clone();
+        let app = Rc::clone(app);
         move |_, _, _| {
-            label.set_visible(true);
-            label.add_css_class("drop-target");
+            show_drop_hint(&app, true);
             gtk::gdk::DragAction::COPY
         }
     });
     target.connect_leave({
-        let label = label.clone();
-        move |_| {
-            label.set_visible(false);
-            label.remove_css_class("drop-target");
-        }
+        let app = Rc::clone(app);
+        move |_| show_drop_hint(&app, false)
     });
 
     // The target lives on the whole section so the hint appears as soon as a drag
@@ -321,17 +316,35 @@ pub fn mark_active_tag(app: &App, active: Option<&str>) {
     }
 }
 
+/// Turn the bookmarks placeholder row into the drop hint, and back again.
+///
+/// The same row carries both states, so the hint appears exactly where "No bookmarks"
+/// was rather than beside it, and disappears again with the section still empty.
+fn show_drop_hint(app: &App, dragging: bool) {
+    let label = &app.widgets.pin_drop;
+    let empty = app.state.pinned.borrow().is_empty();
+
+    if dragging {
+        label.set_text("Drop to bookmark");
+        label.remove_css_class("teral-bookmarks-empty");
+        label.add_css_class("teral-pin-target");
+        label.add_css_class("drop-target");
+        label.set_visible(true);
+    } else {
+        label.set_text("No bookmarks");
+        label.remove_css_class("drop-target");
+        label.remove_css_class("teral-pin-target");
+        label.add_css_class("teral-bookmarks-empty");
+        label.set_visible(empty);
+    }
+}
+
 /// Rebuild the bookmarks section, showing a placeholder while it is empty.
 pub fn rebuild_pinned(app: &App) {
     clear(&app.widgets.pinned_box);
 
     let pinned = app.state.pinned.borrow().clone();
-    if pinned.is_empty() {
-        let empty = gtk::Label::new(Some("No bookmarks"));
-        empty.set_xalign(0.0);
-        empty.add_css_class("teral-bookmarks-empty");
-        app.widgets.pinned_box.append(&empty);
-    }
+    show_drop_hint(app, false);
 
     for path in pinned {
         let label = places::display_label(&path);

@@ -12,6 +12,12 @@ pub fn activate(application: &Application) {
     config::set_current(config.clone());
     style::apply(&theme);
 
+    // Wear whatever icon this desktop already uses for its file manager, instead of the
+    // blank placeholder an application with no installed icon gets.
+    if let Some(icon) = crate::icons::file_manager_icon_name() {
+        gtk::Window::set_default_icon_name(&icon);
+    }
+
     let window = ui::build_window(application, config, theme);
     window.present();
 }

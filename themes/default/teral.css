@@ -574,8 +574,16 @@ entry.teral-search-entry > text > placeholder {
   margin-bottom: 10px;
 }
 
-/* Only shown while a folder is being dragged over the bookmarks area, and sized like
- * one of the rows it sits among rather than as a large panel. */
+/* GTK draws an outline around any widget that is a live drop target. A rectangle
+ * around a whole sidebar section is noise: the hint row that takes the placeholder's
+ * place says the same thing where the folder will actually land. */
+.teral-bookmarks:drop(active) {
+  box-shadow: none;
+  outline: none;
+}
+
+/* Shown in place of the "No bookmarks" placeholder while a folder is being dragged
+ * over the section, and sized like one of the rows it sits among. */
 .teral-pin-target {
   background-color: alpha(@teral_accent, 0.12);
   border: 1px dashed alpha(@teral_accent, 0.6);
@@ -615,11 +623,12 @@ entry.teral-search-entry > text > placeholder {
   background-color: @teral_surface_alt;
 }
 
+/* Deliberately unstyled: the two buttons already carry their own hover states, so a
+ * second rounded container around them reads as a box inside a box. */
 .teral-zoom-group {
-  background-color: @teral_elevated;
-  border: 1px solid @teral_border;
-  border-radius: 999px;
-  padding: 1px 6px;
+  background: none;
+  border: none;
+  padding: 0;
 }
 
 .teral-tag-chips {

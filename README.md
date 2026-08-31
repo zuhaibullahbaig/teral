@@ -11,13 +11,15 @@ Teral is one application and one codebase. Desktop-specific behavior is handled 
 Teral is usable as a day-to-day file manager. It provides:
 
 - a dark, dense three-pane shell: sidebar, file view, details/actions panel
-- restrained `TERAL` branding, clickable breadcrumbs and a `Ctrl+L` path entry
+- a restrained `Files` wordmark, clickable breadcrumbs and a `Ctrl+L` path entry
 - back / forward / parent navigation with real history
 - a sidebar with XDG user locations, the trash folder, GIO-discovered mounts with capacity meters, and bookmarks you can drag folders onto
 - a polished grid view and a dense list view (Name, Size, Type, Modified) sharing one selection
 - real image thumbnails, and system/MIME icons through GIO for everything else
 - a details panel with type, size, path, modified/created/accessed times, owner, permissions and symlink target
 - actions: Open, Open With, Copy Path, Open Terminal Here, Rename, Move, Copy and Trash
+- the same panel for a selection of several files: what is selected and how large it is, then Copy, Cut, Compress, Tags, Copy Paths and Trash
+- Compress: pack the selection into a zip archive beside it
 - copy / cut / paste with recursive folder transfers that run off the GTK main thread and never overwrite an existing file
 - type-ahead filename search in the toolbar: start typing in the file list and the field opens with a live match count
 - Quick Command: run a shell command with the browsed folder as its working directory, in a real terminal — `vim`, `git rebase -i` and anything else interactive work. Drag the console's title bar to resize it, double-click to expand it, or use the expand button
@@ -27,9 +29,10 @@ Teral is usable as a day-to-day file manager. It provides:
 - live directory monitoring, so changes made elsewhere appear on their own
 - trash browsing, restore to the original location, Empty Trash and permanent delete
 - archive extraction (Extract Here / Extract to Folder) for zip, tar, 7z and rar
-- Open in New Tab and Open in New Window, Select All, Select by Type, and an executable toggle offered only for scripts and programs
+- Open in New Tab and Open in New Window, Select All, Select by Type — every folder, every file of one extension, or every file without one — and an executable toggle offered only for scripts and programs
+- the desktop's own file manager icon, borrowed from whichever application it opens folders with
 - user tags: create them with a name and colour, attach them to files, and click one in the sidebar to see everything carrying it
-- a Settings window with three theme modes, an accent colour, density and command settings, plus Shortcuts and About windows
+- a Settings window with theme modes, an accent colour, density and command settings, plus Shortcuts and About windows
 - a layered TOML theme system that live-reloads when its files change
 
 Richer previews (PDF, video, text), a command palette and network locations are not implemented yet.
@@ -103,7 +106,7 @@ Teral restyles itself as soon as the file changes.
 version = 1
 
 [appearance]
-mode = "teral"        # "teral", "system" or "omarchy"
+mode = "teral"        # "teral" or "system" ("omarchy" still reads as "system")
 accent = "#e0a63c"    # optional, overrides the palette's accent
 
 [layout]
@@ -156,17 +159,24 @@ the environment, according to the chosen mode
 
 `mode = "teral"` uses Teral's own dark palette everywhere.
 
-`mode = "system"` adopts the desktop's real appearance. Teral asks the FreeDesktop
-appearance portal for the light/dark preference and accent colour, falling back to GTK's
-own settings on desktops without a portal, then reads the named colours the active GTK
-theme publishes (`theme_bg_color`, `theme_fg_color`, `accent_bg_color` and friends) and
-derives its surfaces, borders and muted text from them. Teral therefore takes on the
-desktop's own colours, not just its light/dark preference.
+`mode = "system"` adopts the desktop's real appearance, and what that means depends on
+the desktop.
 
-`mode = "omarchy"` looks for the active theme under the XDG state location Omarchy uses.
-If the active theme contains `teral.toml`, Teral applies it. Otherwise Teral derives its
-palette from that theme's `colors.toml`, so switching Omarchy themes restyles Teral even
-when the theme author has never heard of Teral.
+Under Omarchy, the active theme *is* the desktop's appearance, so Teral follows it:
+it looks for the active theme under the XDG state location Omarchy uses, applies that
+theme's `teral.toml` when it has one, and otherwise derives its palette from the theme's
+`colors.toml` — so switching Omarchy themes restyles Teral even when the theme author has
+never heard of Teral.
+
+Everywhere else — and under Omarchy when no theme can be read — Teral asks the
+FreeDesktop appearance portal for the light/dark preference and accent colour, falling
+back to GTK's own settings on desktops without a portal, then reads the named colours the
+active GTK theme publishes (`theme_bg_color`, `theme_fg_color`, `accent_bg_color` and
+friends) and derives its surfaces, borders and muted text from them. Teral therefore takes
+on the desktop's own colours, not just its light/dark preference.
+
+Configuration files written before Omarchy became part of "follow the system" still work:
+`mode = "omarchy"` is read as `mode = "system"`.
 
 Teral watches both its own configuration file and the active Omarchy theme, so changing
 either restyles a running Teral without a restart.

@@ -29,6 +29,19 @@ pub struct Details {
     pub tags: gtk::FlowBox,
     pub actions: Actions,
     pub folder_actions: FolderActions,
+    pub multi: MultiActions,
+}
+
+/// Actions offered for several selected entries at once.
+pub struct MultiActions {
+    pub root: gtk::Box,
+    pub summary: gtk::Label,
+    pub copy: gtk::Button,
+    pub cut: gtk::Button,
+    pub compress: gtk::Button,
+    pub tags: gtk::MenuButton,
+    pub copy_paths: gtk::Button,
+    pub trash: gtk::Button,
 }
 
 /// Actions offered for the folder being browsed, with nothing selected.
@@ -188,9 +201,14 @@ pub fn build(width: i32) -> Details {
     empty.append(&folder_heading);
     empty.append(&folder_actions.root);
 
+    // Several selected files can still be acted on, so the panel offers the actions
+    // that work on a whole selection rather than going blank.
+    let multi = build_multi_actions();
+
     let stack = gtk::Stack::new();
     stack.add_named(&empty, Some("empty"));
     stack.add_named(&body_scroller, Some("details"));
+    stack.add_named(&multi.root, Some("multi"));
     stack.set_visible_child_name("empty");
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -214,6 +232,57 @@ pub fn build(width: i32) -> Details {
         tags,
         actions,
         folder_actions,
+        multi,
+    }
+}
+
+fn build_multi_actions() -> MultiActions {
+    let summary = gtk::Label::new(None);
+    summary.set_xalign(0.0);
+    summary.set_wrap(true);
+    summary.set_max_width_chars(1);
+    summary.add_css_class("teral-empty");
+
+    let heading = super::tracked_label("ACTIONS", 1);
+    heading.add_css_class("teral-section-title");
+    heading.set_margin_top(14);
+    heading.set_margin_bottom(8);
+
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(7);
+    grid.set_column_spacing(7);
+    grid.set_column_homogeneous(true);
+
+    let copy = action_button(icons::ui(names::COPY), "Copy");
+    let cut = action_button(icons::ui(names::CUT), "Cut");
+    let compress = action_button(icons::ui(names::COMPRESS), "Compress");
+    let tags = action_menu_button(icons::ui(names::TAG), "Tags");
+    let copy_paths = action_button(icons::ui(names::COPY_PATH), "Copy Paths");
+    let trash = action_button(icons::ui(names::TRASH), "Trash");
+    trash.add_css_class("destructive");
+
+    grid.attach(&copy, 0, 0, 1, 1);
+    grid.attach(&cut, 1, 0, 1, 1);
+    grid.attach(&compress, 2, 0, 1, 1);
+    grid.attach(&tags, 0, 1, 1, 1);
+    grid.attach(&copy_paths, 1, 1, 1, 1);
+    grid.attach(&trash, 2, 1, 1, 1);
+
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.add_css_class("teral-details-body");
+    root.append(&summary);
+    root.append(&heading);
+    root.append(&grid);
+
+    MultiActions {
+        root,
+        summary,
+        copy,
+        cut,
+        compress,
+        tags,
+        copy_paths,
+        trash,
     }
 }
 
@@ -485,12 +554,14 @@ pub fn connect(app: &App) {
         }
     });
 
-    actions.open_with.connect_activate({
+    // Built the moment the button is pressed rather than on every selection: building
+    // it eagerly made each click pay for icon lookups it usually never showed. GTK calls
+    // this just before the popover is shown, which is the only hook a plain click has —
+    // `activate` never fires for a mouse press, which is why this button used to do
+    // nothing at all.
+    actions.open_with.set_create_popup_func({
         let app = Rc::clone(app);
         move |button| {
-            if button.popover().is_some() {
-                return;
-            }
             let Some(entry) = app.single_selection() else {
                 return;
             };
@@ -499,9 +570,11 @@ pub fn connect(app: &App) {
             if applications.is_empty() {
                 return;
             }
-            let popover = super::dialogs::open_with_popover(&app, &entry, applications);
-            button.set_popover(Some(&popover));
-            button.popup();
+            button.set_popover(Some(&super::dialogs::open_with_popover(
+                &app,
+                &entry,
+                applications,
+            )));
         }
     });
 
@@ -578,6 +651,154 @@ pub fn connect(app: &App) {
             }
         }
     });
+
+    connect_multi(app);
+}
+
+/// Wire the actions offered for a selection of several entries.
+fn connect_multi(app: &App) {
+    let multi = &app.widgets.details.multi;
+
+    multi.copy.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| super::window::stage_transfer(&app, crate::files::ops::TransferKind::Copy)
+    });
+    multi.cut.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| {
+            if crate::files::ops::is_in_trash(&app.current_dir()) {
+                super::window::restore_selection(&app);
+            } else {
+                super::window::stage_transfer(&app, crate::files::ops::TransferKind::Move);
+            }
+        }
+    });
+    multi.compress.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| super::window::compress_selection(&app)
+    });
+    multi.copy_paths.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| {
+            let paths: Vec<String> = app
+                .selected_entries()
+                .iter()
+                .map(|entry| entry.path().to_string_lossy().into_owned())
+                .collect();
+            if paths.is_empty() {
+                return;
+            }
+            app.widgets.window.clipboard().set_text(&paths.join("\n"));
+            app.set_message(
+                &format!("{} copied to the clipboard", paths_label(paths.len())),
+                false,
+            );
+        }
+    });
+    multi.trash.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| {
+            if crate::files::ops::is_in_trash(&app.current_dir()) {
+                super::window::delete_permanently(&app);
+            } else {
+                super::window::trash_selection(&app);
+            }
+        }
+    });
+
+    // The popover is built against whatever is selected at the moment it opens, so it
+    // never goes stale and costs nothing while the selection is only being changed.
+    multi.tags.set_create_popup_func({
+        let app = Rc::clone(app);
+        move |button| {
+            let paths: Vec<std::path::PathBuf> = app
+                .selected_entries()
+                .iter()
+                .map(|entry| entry.path().to_path_buf())
+                .collect();
+            if paths.is_empty() {
+                return;
+            }
+            button.set_popover(Some(&super::window::tag_popover(&app, &paths)));
+        }
+    });
+}
+
+fn paths_label(count: usize) -> String {
+    if count == 1 {
+        "1 path".to_owned()
+    } else {
+        format!("{count} paths")
+    }
+}
+
+/// Describe and offer actions for a selection of several entries.
+fn update_multi(app: &App, selected: &[FileEntry]) {
+    let details = &app.widgets.details;
+    let multi = &details.multi;
+    let in_trash = crate::files::ops::is_in_trash(&app.current_dir());
+
+    details.stack.set_visible_child_name("multi");
+    details
+        .title
+        .set_text(&format!("{} items selected", selected.len()));
+
+    let folders = selected.iter().filter(|entry| entry.is_directory()).count();
+    let files = selected.len() - folders;
+    // Only files carry a size worth adding up: a folder's own entry says nothing about
+    // what is inside it, and Teral does not walk the tree to find out.
+    let bytes: u64 = selected
+        .iter()
+        .filter(|entry| !entry.is_directory())
+        .map(|entry| entry.data().size)
+        .sum();
+
+    let mut parts = Vec::new();
+    if folders > 0 {
+        parts.push(count_label(folders, "folder"));
+    }
+    if files > 0 {
+        parts.push(count_label(files, "file"));
+    }
+    if bytes > 0 {
+        parts.push(format_size(bytes));
+    }
+    multi.summary.set_text(&parts.join("   ·   "));
+
+    relabel(&multi.cut, if in_trash { "Restore" } else { "Cut" });
+    relabel(&multi.trash, if in_trash { "Delete" } else { "Trash" });
+    set_action_icon(
+        &multi.cut,
+        if in_trash {
+            icons::ui(names::RESTORE)
+        } else {
+            icons::ui(names::CUT)
+        },
+    );
+    set_action_icon(
+        &multi.trash,
+        if in_trash {
+            icons::ui(names::DELETE)
+        } else {
+            icons::ui(names::TRASH)
+        },
+    );
+
+    multi.copy.set_sensitive(!in_trash);
+    // Compress needs both an archiving tool and somewhere sensible to write; the trash
+    // is neither.
+    multi
+        .compress
+        .set_visible(!in_trash && crate::files::ops::can_compress());
+    multi.tags.set_visible(!in_trash);
+}
+
+fn count_label(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
 }
 
 /// Refresh the panel for the current selection.
@@ -585,12 +806,11 @@ pub fn update(app: &App) {
     let details = &app.widgets.details;
     let selected = app.selected_entries();
 
-    if selected.len() != 1 {
+    if selected.is_empty() {
         details.stack.set_visible_child_name("empty");
-        details.title.set_text(&match selected.len() {
-            0 => crate::places::display_label(&app.current_dir()),
-            count => format!("{count} items selected"),
-        });
+        details
+            .title
+            .set_text(&crate::places::display_label(&app.current_dir()));
 
         let current = app.current_dir();
         let folder = &details.folder_actions;
@@ -605,6 +825,11 @@ pub fn update(app: &App) {
                 "Bookmark"
             },
         );
+        return;
+    }
+
+    if selected.len() > 1 {
+        update_multi(app, &selected);
         return;
     }
 

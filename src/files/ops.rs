@@ -623,6 +623,114 @@ pub async fn extract(
     Err(message)
 }
 
+/// The name a new archive of `paths` should take, inside `directory`.
+///
+/// One item keeps its own name; several become the folder's name, which is what every
+/// other file manager does and what people expect to find afterwards.
+pub fn archive_name(directory: &Path, paths: &[PathBuf]) -> OsString {
+    let mut name = match paths {
+        [single] => single
+            .file_name()
+            .map(std::ffi::OsStr::to_os_string)
+            .unwrap_or_else(|| OsString::from("archive")),
+        _ => directory
+            .file_name()
+            .map(std::ffi::OsStr::to_os_string)
+            .unwrap_or_else(|| OsString::from("archive")),
+    };
+    name.push(".zip");
+    name
+}
+
+/// True when a tool that can write an archive is installed.
+///
+/// Teral only offers Compress when something on this machine can carry it out; an
+/// action that always fails is worse than one that is absent.
+pub fn can_compress() -> bool {
+    glib::find_program_in_path("bsdtar").is_some() || glib::find_program_in_path("zip").is_some()
+}
+
+/// Build the command that packs `names` — relative to `directory` — into `archive`.
+///
+/// `bsdtar` is preferred for the same reason it is preferred for extraction: it is one
+/// tool for every format. `zip` is the fallback, since zip is the format Teral writes.
+fn compress_command(directory: &Path, archive: &Path, names: &[OsString]) -> Option<Vec<OsString>> {
+    let arg = |value: &str| OsString::from(value);
+
+    let mut command = if let Some(bsdtar) = glib::find_program_in_path("bsdtar") {
+        vec![
+            bsdtar.into_os_string(),
+            arg("-a"),
+            arg("-c"),
+            arg("-f"),
+            archive.as_os_str().to_os_string(),
+            arg("-C"),
+            directory.as_os_str().to_os_string(),
+        ]
+    } else {
+        let zip = glib::find_program_in_path("zip")?;
+        vec![
+            zip.into_os_string(),
+            arg("-r"),
+            arg("-q"),
+            archive.as_os_str().to_os_string(),
+        ]
+    };
+
+    command.extend(names.iter().cloned());
+    Some(command)
+}
+
+/// Pack `paths` into a new zip archive beside them, and return the archive.
+///
+/// The archive never overwrites an existing file, and `zip` is run with the folder as
+/// its working directory so the archive holds plain relative names.
+pub async fn compress(directory: PathBuf, paths: Vec<PathBuf>) -> Result<PathBuf, String> {
+    if paths.is_empty() {
+        return Err("nothing was selected to compress".to_owned());
+    }
+
+    let archive = unique_destination(&directory, &archive_name(&directory, &paths))
+        .map_err(|error| format!("{}: {error}", directory.display()))?;
+
+    let names: Vec<OsString> = paths
+        .iter()
+        .map(|path| path.file_name().unwrap_or(path.as_os_str()).to_os_string())
+        .collect();
+
+    let Some(command) = compress_command(&directory, &archive, &names) else {
+        return Err("no archiving tool was found; install bsdtar or zip".to_owned());
+    };
+
+    let arguments: Vec<&std::ffi::OsStr> = command.iter().map(OsString::as_os_str).collect();
+    let launcher = gio::SubprocessLauncher::new(
+        gio::SubprocessFlags::STDOUT_SILENCE | gio::SubprocessFlags::STDERR_PIPE,
+    );
+    launcher.set_cwd(&directory);
+    let process = launcher
+        .spawn(&arguments)
+        .map_err(|error| error.message().trim().to_owned())?;
+
+    let (_stdout, stderr) = process
+        .communicate_future(None)
+        .await
+        .map_err(|error| error.message().trim().to_owned())?;
+
+    if process.exit_status() == 0 {
+        return Ok(archive);
+    }
+
+    // A failed run can leave a half-written archive behind; it is Teral's file, so
+    // Teral removes it rather than leaving a broken zip in the user's folder.
+    let _ = fs::remove_file(&archive);
+
+    let message = stderr
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| format!("compression failed with status {}", process.exit_status()));
+    Err(message)
+}
+
 /// Launch an entry with the desktop's default application.
 pub fn open(path: &Path) -> Result<(), glib::Error> {
     let uri = gio::File::for_path(path).uri();
@@ -779,6 +887,23 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("scratch directory");
         dir
+    }
+
+    #[test]
+    fn an_archive_is_named_after_what_goes_into_it() {
+        let folder = Path::new("/home/someone/Reports");
+
+        let single = vec![folder.join("March.pdf")];
+        assert_eq!(
+            archive_name(folder, &single),
+            OsString::from("March.pdf.zip")
+        );
+
+        let several = vec![folder.join("March.pdf"), folder.join("April.pdf")];
+        assert_eq!(
+            archive_name(folder, &several),
+            OsString::from("Reports.zip")
+        );
     }
 
     #[test]

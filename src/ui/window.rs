@@ -1154,6 +1154,40 @@ fn extract_archive(app: &App, entry: &FileEntry, into_subfolder: bool) {
     });
 }
 
+/// Pack the selection into a zip archive beside it.
+pub fn compress_selection(app: &App) {
+    let paths: Vec<PathBuf> = app
+        .selected_entries()
+        .iter()
+        .map(|entry| entry.path().to_path_buf())
+        .collect();
+
+    if paths.is_empty() {
+        return;
+    }
+
+    let directory = app.current_dir();
+    app.set_message(
+        &format!(
+            "Compressing {}…",
+            crate::files::item_count_label(paths.len())
+        ),
+        false,
+    );
+
+    let app = Rc::clone(app);
+    glib::spawn_future_local(async move {
+        match ops::compress(directory, paths).await {
+            Ok(archive) => app.set_message(
+                &format!("Created {}", places::display_label(&archive)),
+                false,
+            ),
+            Err(error) => app.show_error(&format!("Could not compress: {error}")),
+        }
+        app.reload();
+    });
+}
+
 /// Add or remove the execute bit on the selection.
 fn set_executable(app: &App, executable: bool) {
     let paths: Vec<PathBuf> = app
@@ -1185,8 +1219,43 @@ fn set_executable(app: &App, executable: bool) {
     });
 }
 
-/// Select every entry sharing an extension.
-fn select_by_extension(app: &App, extension: &str) {
+/// A group of entries the current listing can select in one go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SelectionGroup {
+    /// Every folder — folders have no extension, so they need a group of their own.
+    Folders,
+    /// Every file carrying this extension, lower-cased.
+    Extension(String),
+    /// Every file with no extension at all.
+    NoExtension,
+}
+
+impl SelectionGroup {
+    fn label(&self) -> String {
+        match self {
+            Self::Folders => "Folders".to_owned(),
+            Self::Extension(extension) => format!(".{extension}"),
+            Self::NoExtension => "No extension".to_owned(),
+        }
+    }
+
+    fn matches(&self, entry: &FileEntry) -> bool {
+        match self {
+            Self::Folders => entry.is_directory(),
+            Self::Extension(extension) => {
+                !entry.is_directory()
+                    && entry
+                        .path()
+                        .extension()
+                        .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+            }
+            Self::NoExtension => !entry.is_directory() && entry.path().extension().is_none(),
+        }
+    }
+}
+
+/// Select every entry in a group, replacing the current selection.
+fn select_group(app: &App, group: &SelectionGroup) {
     let selection = &app.state.selection;
     selection.unselect_all();
 
@@ -1194,36 +1263,53 @@ fn select_by_extension(app: &App, extension: &str) {
         let Some(entry) = selection.item(index).and_downcast::<FileEntry>() else {
             continue;
         };
-        let matches = entry
-            .path()
-            .extension()
-            .is_some_and(|value| value.eq_ignore_ascii_case(extension));
-        if matches {
+        if group.matches(&entry) {
             selection.select_item(index, false);
         }
     }
 }
 
-/// Extensions present in the current listing, most common first.
-fn extensions_in_view(app: &App) -> Vec<(String, usize)> {
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+/// The groups worth offering for the current listing, most numerous first.
+fn selection_groups(app: &App) -> Vec<(SelectionGroup, usize)> {
+    let mut folders = 0usize;
+    let mut bare = 0usize;
+    let mut extensions: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
     for index in 0..app.state.selection.n_items() {
         let Some(entry) = app.state.selection.item(index).and_downcast::<FileEntry>() else {
             continue;
         };
         if entry.is_directory() {
+            folders += 1;
             continue;
         }
-        if let Some(extension) = entry.path().extension().and_then(|value| value.to_str()) {
-            *counts.entry(extension.to_lowercase()).or_default() += 1;
+        match entry.path().extension().and_then(|value| value.to_str()) {
+            Some(extension) => *extensions.entry(extension.to_lowercase()).or_default() += 1,
+            None => bare += 1,
         }
     }
 
-    let mut extensions: Vec<(String, usize)> = counts.into_iter().collect();
-    extensions.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-    extensions.truncate(10);
-    extensions
+    let mut groups: Vec<(SelectionGroup, usize)> = extensions
+        .into_iter()
+        .map(|(extension, count)| (SelectionGroup::Extension(extension), count))
+        .collect();
+    groups.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.0.label().cmp(&right.0.label()))
+    });
+    groups.truncate(10);
+
+    if bare > 0 {
+        groups.push((SelectionGroup::NoExtension, bare));
+    }
+    // Folders lead: they are what people reach for first, and they are the one group
+    // an extension list can never describe.
+    if folders > 0 {
+        groups.insert(0, (SelectionGroup::Folders, folders));
+    }
+    groups
 }
 
 /// Run an entry from the folder menu.
@@ -1364,6 +1450,12 @@ fn context_menu_content(app: &App) -> gtk::Box {
             header::menu_item(icons::ui(icons::names::COPY), "Duplicate"),
             ContextAction::Duplicate,
         ));
+        if ops::can_compress() {
+            items.push((
+                header::menu_item(icons::ui(icons::names::COMPRESS), "Compress"),
+                ContextAction::Compress,
+            ));
+        }
     }
 
     if let Some(entry) = single.as_ref() {
@@ -1476,10 +1568,10 @@ fn background_menu_content(app: &App) -> gtk::Box {
         content.append(&button);
     }
 
-    let extensions = extensions_in_view(app);
-    if !extensions.is_empty() {
+    let groups = selection_groups(app);
+    if !groups.is_empty() {
         let by_type = submenu_item(icons::ui(icons::names::SELECT_ALL), "Select by Type");
-        by_type.set_popover(Some(&extension_popover(app, &extensions)));
+        by_type.set_popover(Some(&selection_group_popover(app, &groups)));
         content.append(&by_type);
     }
 
@@ -1534,27 +1626,28 @@ fn submenu_item(icon_name: &str, label: &str) -> gtk::MenuButton {
     button
 }
 
-/// A popover offering to select every file with a given extension.
-fn extension_popover(app: &App, extensions: &[(String, usize)]) -> gtk::Popover {
+/// A popover offering to select every folder, or every file of one type.
+fn selection_group_popover(app: &App, groups: &[(SelectionGroup, usize)]) -> gtk::Popover {
     let popover = gtk::Popover::new();
     popover.add_css_class("teral-popover");
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_width_request(180);
 
-    for (extension, count) in extensions {
-        let item = header::menu_item(
-            icons::ui(icons::names::SELECT_ALL),
-            &format!(".{extension}   ({count})"),
-        );
+    for (group, count) in groups {
+        let icon = match group {
+            SelectionGroup::Folders => icons::ui(icons::names::OPEN_FOLDER),
+            _ => icons::ui(icons::names::SELECT_ALL),
+        };
+        let item = header::menu_item(icon, &format!("{}   ({count})", group.label()));
         item.connect_clicked({
             let app = Rc::clone(app);
-            let extension = extension.clone();
+            let group = group.clone();
             let popover = popover.clone();
             move |_| {
                 popover.popdown();
                 app.widgets.context_menu.popdown();
-                select_by_extension(&app, &extension);
+                select_group(&app, &group);
             }
         });
         content.append(&item);
@@ -1588,6 +1681,7 @@ enum ContextAction {
     NewFolder,
     Paste,
     Refresh,
+    Compress,
 }
 
 fn run_context_action(app: &App, action: ContextAction) {
@@ -1601,11 +1695,15 @@ fn run_context_action(app: &App, action: ContextAction) {
                 }
             }
         }
+        // From the background menu nothing is selected, and the folder being browsed is
+        // what "here" means; a selected folder is more specific, so it wins.
         ContextAction::TerminalHere => {
-            if let Some(entry) = app.single_selection() {
-                let path = entry.path().to_path_buf();
-                open_terminal(app, &path);
-            }
+            let target = app
+                .single_selection()
+                .filter(FileEntry::is_directory)
+                .map(|entry| entry.path().to_path_buf())
+                .unwrap_or_else(|| app.current_dir());
+            open_terminal(app, &target);
         }
         ContextAction::Pin => {
             if let Some(entry) = app.single_selection() {
@@ -1658,5 +1756,6 @@ fn run_context_action(app: &App, action: ContextAction) {
         ContextAction::NewFolder => new_folder(app),
         ContextAction::Paste => paste(app),
         ContextAction::Refresh => app.reload(),
+        ContextAction::Compress => compress_selection(app),
     }
 }

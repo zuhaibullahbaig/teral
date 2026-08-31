@@ -20,20 +20,17 @@ pub enum ThemeMode {
     /// Teral's own palette, identical on every desktop.
     #[default]
     Teral,
-    /// Follow the desktop's light/dark preference and accent colour.
+    /// Follow the desktop's own appearance, including the active Omarchy theme.
     System,
-    /// Follow the active Omarchy theme when one is present.
-    Omarchy,
 }
 
 impl ThemeMode {
-    pub const ALL: [Self; 3] = [Self::Teral, Self::System, Self::Omarchy];
+    pub const ALL: [Self; 2] = [Self::Teral, Self::System];
 
     pub const fn key(self) -> &'static str {
         match self {
             Self::Teral => "teral",
             Self::System => "system",
-            Self::Omarchy => "omarchy",
         }
     }
 
@@ -41,21 +38,25 @@ impl ThemeMode {
         match self {
             Self::Teral => "Teral",
             Self::System => "Follow the system",
-            Self::Omarchy => "Follow Omarchy",
         }
     }
 
     pub const fn description(self) -> &'static str {
         match self {
             Self::Teral => "Teral's own dark palette, the same on every desktop.",
-            Self::System => "Use the desktop's light/dark preference and accent colour.",
-            Self::Omarchy => {
-                "Use the active Omarchy theme, or its colours when it has no teral.toml."
+            Self::System => {
+                "Take the desktop's colours: the active Omarchy theme under Omarchy, \
+                 and the GTK theme and accent colour elsewhere."
             }
         }
     }
 
     fn parse(value: &str) -> Option<Self> {
+        // `omarchy` was its own mode before Omarchy became part of following the
+        // system, so existing configuration files keep working unchanged.
+        if value.eq_ignore_ascii_case("omarchy") {
+            return Some(Self::System);
+        }
         Self::ALL
             .into_iter()
             .find(|mode| mode.key().eq_ignore_ascii_case(value))
@@ -334,7 +335,7 @@ mod tests {
     #[test]
     fn every_setting_round_trips() {
         let config = Config {
-            mode: ThemeMode::Omarchy,
+            mode: ThemeMode::System,
             accent: Some("#123456".to_owned()),
             show_hidden: true,
             folders_first: false,
@@ -349,7 +350,7 @@ mod tests {
         let parsed = toml::from_str::<RawConfig>(&config.to_toml()).expect("valid TOML");
         let restored = Config::from_raw(parsed);
 
-        assert_eq!(restored.mode, ThemeMode::Omarchy);
+        assert_eq!(restored.mode, ThemeMode::System);
         assert_eq!(restored.accent.as_deref(), Some("#123456"));
         assert!(restored.show_hidden);
         assert!(!restored.folders_first);
@@ -364,6 +365,12 @@ mod tests {
     fn an_unreadable_accent_is_discarded_rather_than_applied() {
         let raw = toml::from_str::<RawConfig>("[appearance]\naccent = \"purple\"\n").expect("toml");
         assert!(Config::from_raw(raw).accent.is_none());
+    }
+
+    #[test]
+    fn the_old_omarchy_mode_now_means_following_the_system() {
+        let raw = toml::from_str::<RawConfig>("[appearance]\nmode = \"omarchy\"\n").expect("toml");
+        assert_eq!(Config::from_raw(raw).mode, ThemeMode::System);
     }
 
     #[test]

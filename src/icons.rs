@@ -112,6 +112,40 @@ pub mod names {
         "document-revert-symbolic",
         "go-up-symbolic",
     ];
+    pub const COMPRESS: &[&str] = &[
+        "package-x-generic-symbolic",
+        "folder-download-symbolic",
+        "document-save-symbolic",
+    ];
+}
+
+/// The window icon Teral should wear on this desktop.
+///
+/// Until Teral is installed with an icon of its own, a window with no icon shows the
+/// desktop's blank placeholder. Rather than invent artwork, Teral asks the desktop which
+/// application it opens folders with and borrows that application's icon — the file
+/// manager icon people already recognise — falling back to the standard names for one.
+pub fn file_manager_icon_name() -> Option<String> {
+    let handler = gio::AppInfo::default_for_type("inode/directory", false)
+        .and_then(|application| application.icon())
+        .and_downcast::<gio::ThemedIcon>()
+        .map(|icon| icon.names())
+        .unwrap_or_default();
+
+    handler
+        .iter()
+        .map(glib::GString::as_str)
+        .chain(["system-file-manager", "folder"])
+        .find(|name| theme_has_icon(name))
+        .map(str::to_owned)
+}
+
+/// True when the active icon theme can actually draw `name`.
+fn theme_has_icon(name: &str) -> bool {
+    let Some(display) = gdk::Display::default() else {
+        return false;
+    };
+    gtk::IconTheme::for_display(&display).has_icon(name)
 }
 
 /// Resolve the first candidate the active icon theme can actually draw.
