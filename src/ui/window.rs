@@ -55,7 +55,6 @@ pub struct Widgets {
     pub places_box: gtk::Box,
     pub devices_box: gtk::Box,
     pub pinned_box: gtk::Box,
-    pub bookmarks_title: gtk::Label,
     pub pin_drop: gtk::Label,
     pub tags: gtk::Box,
     pub add_tag: gtk::Button,
@@ -68,6 +67,9 @@ pub struct Widgets {
     pub status_size: gtk::Label,
     pub status_message: gtk::Label,
     pub zoom: gtk::Scale,
+    pub zoom_value: gtk::Label,
+    pub zoom_out: gtk::Button,
+    pub zoom_in: gtk::Button,
     pub settings: gtk::Button,
     pub details_toggle: gtk::ToggleButton,
     pub settings_window: RefCell<Option<gtk::Window>>,
@@ -240,7 +242,6 @@ pub fn build_window_at(
         places_box: side.places,
         devices_box: side.devices,
         pinned_box: side.pinned,
-        bookmarks_title: side.bookmarks_title,
         pin_drop: side.pin_drop,
         tags: side.tags,
         add_tag: side.add_tag,
@@ -251,6 +252,9 @@ pub fn build_window_at(
         status_size: status.size,
         status_message: status.message,
         zoom: status.zoom,
+        zoom_value: status.zoom_value,
+        zoom_out: status.zoom_out,
+        zoom_in: status.zoom_in,
         settings: status.settings,
         details_toggle: status.details_toggle,
         settings_window: RefCell::new(None),
@@ -290,6 +294,7 @@ pub fn build_window_at(
         config_monitors: RefCell::new(Vec::new()),
         console_height: Cell::new(statusbar::CONSOLE_HEIGHT),
         tag_view: RefCell::new(None),
+        icon_size_save: Cell::new(None),
     };
 
     let app: App = Rc::new(AppInner {
@@ -558,7 +563,8 @@ fn toggle_hidden(app: &App) {
     app.state.show_hidden.set(value);
     app.apply_filter();
 
-    if let Some(check) = app.widgets.hidden_check.borrow().as_ref() {
+    let hidden_check = app.widgets.hidden_check.borrow().clone();
+    if let Some(check) = hidden_check {
         app.state.updating.set(true);
         check.set_active(value);
         app.state.updating.set(false);
@@ -1064,11 +1070,16 @@ pub fn tag_popover(app: &App, paths: &[PathBuf]) -> gtk::Popover {
             move |check| {
                 let tagged = check.is_active();
                 crate::tags::edit(|tags| tags.set_tagged(&name, &paths, tagged));
-                sidebar::rebuild_tags(&app);
-                app.update_details();
-                if app.state.tag_view.borrow().is_some() {
-                    app.reload();
-                }
+
+                let app = Rc::clone(&app);
+                super::defer(move || {
+                    sidebar::rebuild_tags(&app);
+                    app.update_details();
+                    let in_tag_view = app.state.tag_view.borrow().is_some();
+                    if in_tag_view {
+                        app.reload();
+                    }
+                });
             }
         });
 
@@ -1143,43 +1154,34 @@ fn extract_archive(app: &App, entry: &FileEntry, into_subfolder: bool) {
     });
 }
 
-/// Edit the permission bits of the selection.
-fn edit_permissions(app: &App) {
-    let entries = app.selected_entries();
-    let Some(first) = entries.first() else {
-        app.set_message("Select something first", false);
-        return;
-    };
-
-    let paths: Vec<PathBuf> = entries
+/// Add or remove the execute bit on the selection.
+fn set_executable(app: &App, executable: bool) {
+    let paths: Vec<PathBuf> = app
+        .selected_entries()
         .iter()
         .map(|entry| entry.path().to_path_buf())
         .collect();
-    let mode = first.data().mode.unwrap_or(0o644);
-    let summary = if paths.len() == 1 {
-        first.display_name().to_owned()
-    } else {
-        crate::files::item_count_label(paths.len())
-    };
 
-    dialogs::permissions(app, &summary, mode, move |app, mode| {
-        let app = Rc::clone(app);
-        let paths = paths.clone();
-        glib::spawn_future_local(async move {
-            let report = ops::set_permissions(paths, mode).await;
-            if report.failures.is_empty() {
-                app.set_message(
-                    &format!(
-                        "Permissions set to {}",
-                        crate::files::format_permissions(mode)
-                    ),
-                    false,
-                );
-            } else {
-                app.show_error(&report.failures.join("; "));
-            }
-            app.reload();
-        });
+    if paths.is_empty() {
+        return;
+    }
+
+    let app = Rc::clone(app);
+    glib::spawn_future_local(async move {
+        let report = ops::set_executable(paths, executable).await;
+        if report.failures.is_empty() {
+            app.set_message(
+                if executable {
+                    "Marked as executable"
+                } else {
+                    "No longer executable"
+                },
+                false,
+            );
+        } else {
+            app.show_error(&report.failures.join("; "));
+        }
+        app.reload();
     });
 }
 
@@ -1266,17 +1268,21 @@ pub fn show_context_menu(app: &App, origin: &impl IsA<gtk::Widget>, x: f64, y: f
     menu.popup();
 }
 
+/// The menu for a selected file or folder: things you can do to it, nothing else.
 fn context_menu_content(app: &App) -> gtk::Box {
+    let selected = app.selected_entries();
+    if selected.is_empty() {
+        return background_menu_content(app);
+    }
+
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_width_request(214);
 
-    let selected = app.selected_entries();
     let single = app.single_selection();
     let in_trash = ops::is_in_trash(&app.current_dir());
-    let in_tag_view = app.state.tag_view.borrow().is_some();
-
     let mut items: Vec<(gtk::Button, ContextAction)> = Vec::new();
 
+    // Opening comes first, destructive actions come last: the order every desktop uses.
     if let Some(entry) = single.as_ref() {
         if entry.is_directory() {
             items.push((
@@ -1291,6 +1297,31 @@ fn context_menu_content(app: &App) -> gtk::Box {
                 header::menu_item(icons::ui(icons::names::WINDOW), "Open in New Window"),
                 ContextAction::OpenInNewWindow,
             ));
+        } else {
+            items.push((
+                header::menu_item(icons::ui(icons::names::OPEN), "Open"),
+                ContextAction::Open,
+            ));
+        }
+    }
+
+    for (button, action) in std::mem::take(&mut items) {
+        wire_menu_item(app, &button, action);
+        content.append(&button);
+    }
+
+    // Open With sits right under Open, where it belongs.
+    if let Some(entry) = single.as_ref().filter(|entry| !entry.is_directory()) {
+        let applications = ops::applications_for(entry.data().content_type.as_deref());
+        if !applications.is_empty() {
+            let open_with = submenu_item(icons::ui(icons::names::OPEN_WITH), "Open With");
+            open_with.set_popover(Some(&dialogs::open_with_popover(app, entry, applications)));
+            content.append(&open_with);
+        }
+    }
+
+    if let Some(entry) = single.as_ref() {
+        if entry.is_directory() {
             items.push((
                 header::menu_item(icons::ui(icons::names::TERMINAL), "Open Terminal Here"),
                 ContextAction::TerminalHere,
@@ -1306,14 +1337,8 @@ fn context_menu_content(app: &App) -> gtk::Box {
                 ),
                 ContextAction::Pin,
             ));
-        } else {
-            items.push((
-                header::menu_item(icons::ui(icons::names::OPEN), "Open"),
-                ContextAction::Open,
-            ));
         }
 
-        // Archives get the actions that only make sense for an archive.
         if ops::is_archive(entry.data().content_type.as_deref()) {
             items.push((
                 header::menu_item(icons::ui(icons::names::EXTRACT), "Extract Here"),
@@ -1324,31 +1349,9 @@ fn context_menu_content(app: &App) -> gtk::Box {
                 ContextAction::ExtractToFolder,
             ));
         }
-
-        items.push((
-            header::menu_item(icons::ui(icons::names::RENAME), "Rename"),
-            ContextAction::Rename,
-        ));
-        items.push((
-            header::menu_item(icons::ui(icons::names::COPY_PATH), "Copy Path"),
-            ContextAction::CopyPath,
-        ));
     }
 
-    if !selected.is_empty() && in_trash {
-        items.push((
-            header::menu_item(icons::ui(icons::names::RESTORE), "Restore"),
-            ContextAction::Restore,
-        ));
-        items.push((
-            header::menu_item(icons::ui(icons::names::DELETE), "Delete Permanently"),
-            ContextAction::Delete,
-        ));
-    } else if !selected.is_empty() {
-        items.push((
-            header::menu_item(icons::ui(icons::names::COPY), "Duplicate"),
-            ContextAction::Duplicate,
-        ));
+    if !in_trash {
         items.push((
             header::menu_item(icons::ui(icons::names::COPY), "Copy"),
             ContextAction::Copy,
@@ -1358,17 +1361,91 @@ fn context_menu_content(app: &App) -> gtk::Box {
             ContextAction::Cut,
         ));
         items.push((
+            header::menu_item(icons::ui(icons::names::COPY), "Duplicate"),
+            ContextAction::Duplicate,
+        ));
+    }
+
+    if let Some(entry) = single.as_ref() {
+        items.push((
+            header::menu_item(icons::ui(icons::names::RENAME), "Rename"),
+            ContextAction::Rename,
+        ));
+        items.push((
+            header::menu_item(icons::ui(icons::names::COPY_PATH), "Copy Path"),
+            ContextAction::CopyPath,
+        ));
+
+        // Only offered for the kinds of file that are meant to be run.
+        let data = entry.data();
+        if ops::can_be_executable(entry.is_directory(), data.content_type.as_deref()) {
+            let executable = data.mode.is_some_and(|mode| mode & 0o111 != 0);
+            items.push((
+                header::menu_item(
+                    icons::ui(icons::names::EXECUTABLE),
+                    if executable {
+                        "Stop Allowing Execution"
+                    } else {
+                        "Allow Executing as a Program"
+                    },
+                ),
+                if executable {
+                    ContextAction::ClearExecutable
+                } else {
+                    ContextAction::SetExecutable
+                },
+            ));
+        }
+    }
+
+    for (button, action) in std::mem::take(&mut items) {
+        wire_menu_item(app, &button, action);
+        content.append(&button);
+    }
+
+    let paths: Vec<PathBuf> = selected
+        .iter()
+        .map(|entry| entry.path().to_path_buf())
+        .collect();
+    let tags = submenu_item(icons::ui(icons::names::TAG), "Tags");
+    tags.set_popover(Some(&tag_popover(app, &paths)));
+    content.append(&tags);
+
+    content.append(&menu_separator());
+
+    if in_trash {
+        items.push((
+            header::menu_item(icons::ui(icons::names::RESTORE), "Restore"),
+            ContextAction::Restore,
+        ));
+        items.push((
+            header::menu_item(icons::ui(icons::names::DELETE), "Delete Permanently"),
+            ContextAction::Delete,
+        ));
+    } else {
+        items.push((
             header::menu_item(icons::ui(icons::names::TRASH), "Move to Trash"),
             ContextAction::Trash,
         ));
     }
 
-    if !selected.is_empty() {
-        items.push((
-            header::menu_item(icons::ui(icons::names::PERMISSIONS), "Permissions…"),
-            ContextAction::Permissions,
-        ));
+    for (button, action) in items {
+        button.add_css_class("destructive");
+        wire_menu_item(app, &button, action);
+        content.append(&button);
     }
+
+    content
+}
+
+/// The menu for the folder itself, shown when the click missed every file.
+fn background_menu_content(app: &App) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    content.set_width_request(214);
+
+    let in_trash = ops::is_in_trash(&app.current_dir());
+    let in_tag_view = app.state.tag_view.borrow().is_some();
+    let mut items: Vec<(gtk::Button, ContextAction)> = Vec::new();
 
     if !in_trash && !in_tag_view {
         items.push((
@@ -1376,15 +1453,12 @@ fn context_menu_content(app: &App) -> gtk::Box {
             ContextAction::NewFolder,
         ));
 
-        let paste_item = header::menu_item(icons::ui(icons::names::PASTE), "Paste");
-        paste_item.set_sensitive(app.state.clipboard.borrow().is_some());
-        items.push((paste_item, ContextAction::Paste));
-    }
-
-    if in_trash {
+        let paste = header::menu_item(icons::ui(icons::names::PASTE), "Paste");
+        paste.set_sensitive(app.state.clipboard.borrow().is_some());
+        items.push((paste, ContextAction::Paste));
         items.push((
-            header::menu_item(icons::ui(icons::names::TRASH), "Empty Trash"),
-            ContextAction::EmptyTrash,
+            header::menu_item(icons::ui(icons::names::TERMINAL), "Open Terminal Here"),
+            ContextAction::TerminalHere,
         ));
     }
 
@@ -1397,28 +1471,9 @@ fn context_menu_content(app: &App) -> gtk::Box {
         ContextAction::Refresh,
     ));
 
-    let menu = app.widgets.context_menu.clone();
-    for (button, action) in items {
-        let app = Rc::clone(app);
-        let menu = menu.clone();
-        button.connect_clicked(move |_| {
-            menu.popdown();
-            run_context_action(&app, action);
-        });
+    for (button, action) in std::mem::take(&mut items) {
+        wire_menu_item(app, &button, action);
         content.append(&button);
-    }
-
-    // Tagging and extension selection are attached as their own popovers so the menu
-    // stays one column tall instead of listing every tag inline.
-    if !selected.is_empty() {
-        let paths: Vec<PathBuf> = selected
-            .iter()
-            .map(|entry| entry.path().to_path_buf())
-            .collect();
-
-        let tags = submenu_item(icons::ui(icons::names::TAG), "Tags");
-        tags.set_popover(Some(&tag_popover(app, &paths)));
-        content.append(&tags);
     }
 
     let extensions = extensions_in_view(app);
@@ -1428,7 +1483,32 @@ fn context_menu_content(app: &App) -> gtk::Box {
         content.append(&by_type);
     }
 
+    if in_trash {
+        content.append(&menu_separator());
+        let empty = header::menu_item(icons::ui(icons::names::TRASH), "Empty Trash");
+        empty.add_css_class("destructive");
+        wire_menu_item(app, &empty, ContextAction::EmptyTrash);
+        content.append(&empty);
+    }
+
     content
+}
+
+fn wire_menu_item(app: &App, button: &gtk::Button, action: ContextAction) {
+    let app = Rc::clone(app);
+    let menu = app.widgets.context_menu.clone();
+    button.connect_clicked(move |_| {
+        menu.popdown();
+        run_context_action(&app, action);
+    });
+}
+
+fn menu_separator() -> gtk::Separator {
+    let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+    separator.add_css_class("teral-separator");
+    separator.set_margin_top(4);
+    separator.set_margin_bottom(4);
+    separator
 }
 
 /// A menu row that opens a popover of its own.
@@ -1494,7 +1574,8 @@ enum ContextAction {
     Delete,
     ExtractHere,
     ExtractToFolder,
-    Permissions,
+    SetExecutable,
+    ClearExecutable,
     SelectAll,
     EmptyTrash,
     TerminalHere,
@@ -1562,7 +1643,8 @@ fn run_context_action(app: &App, action: ContextAction) {
                 extract_archive(app, &entry, true);
             }
         }
-        ContextAction::Permissions => edit_permissions(app),
+        ContextAction::SetExecutable => set_executable(app, true),
+        ContextAction::ClearExecutable => set_executable(app, false),
         ContextAction::SelectAll => {
             app.state.selection.select_all();
         }

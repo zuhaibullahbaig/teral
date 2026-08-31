@@ -84,6 +84,8 @@ pub struct State {
     pub console_height: Cell<i32>,
     /// Set while the file view is showing everything carrying one tag.
     pub tag_view: RefCell<Option<String>>,
+    /// Pending write of a new icon size, so dragging the slider writes once.
+    pub icon_size_save: Cell<Option<glib::SourceId>>,
 }
 
 /// One browsing tab: a location and its own history.
@@ -175,7 +177,10 @@ impl AppInner {
 
     /// Re-read whatever the view is showing, keeping history and selection intact.
     pub fn reload(self: &App) {
-        if let Some(tag) = self.state.tag_view.borrow().clone() {
+        // The borrow is released before anything is called: `show_tag` takes the same
+        // cell mutably, and a live shared borrow here would abort the process.
+        let tag = self.state.tag_view.borrow().clone();
+        if let Some(tag) = tag {
             self.show_tag(&tag);
             return;
         }
@@ -378,7 +383,8 @@ impl AppInner {
     pub fn refresh_chrome(self: &App) {
         let current = self.current_dir();
 
-        if let Some(tag) = self.state.tag_view.borrow().clone() {
+        let tag_view = self.state.tag_view.borrow().clone();
+        if let Some(tag) = tag_view {
             self.widgets.folder_title.set_text(&tag);
             header::show_tag_crumb(self, &tag);
             sidebar::mark_active(self, Path::new(""));
@@ -620,6 +626,7 @@ impl AppInner {
             self.state.updating.set(true);
             self.widgets.zoom.set_value(f64::from(icon_size));
             self.state.updating.set(false);
+            self.widgets.zoom_value.set_text(&format!("{icon_size} px"));
             fileview::refresh_grid_factory(self);
         }
     }
@@ -663,7 +670,8 @@ impl AppInner {
         });
 
         self.state.updating.set(true);
-        if let Some(check) = self.widgets.hidden_check.borrow().as_ref() {
+        let hidden_check = self.widgets.hidden_check.borrow().clone();
+        if let Some(check) = hidden_check {
             check.set_active(config.show_hidden);
         }
         match config.view {
@@ -684,6 +692,39 @@ impl AppInner {
         let size = (self.state.icon_size.get() + delta)
             .clamp(crate::theme::MIN_ICON_SIZE, crate::theme::MAX_ICON_SIZE);
         self.widgets.zoom.set_value(f64::from(size));
+    }
+
+    /// Resize the grid icons.
+    ///
+    /// Re-resolving the theme and rewriting the configuration on every step of the
+    /// slider made dragging it feel sticky, so the size is applied immediately and the
+    /// configuration is written once the slider settles.
+    pub fn set_icon_size(self: &App, size: i32) {
+        if size == self.state.icon_size.get() {
+            return;
+        }
+        self.state.icon_size.set(size);
+        self.widgets.zoom_value.set_text(&format!("{size} px"));
+        fileview::refresh_grid_factory(self);
+
+        let pending = self.state.icon_size_save.replace(None);
+        if let Some(source) = pending {
+            source.remove();
+        }
+
+        let app = Rc::clone(self);
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                app.state.icon_size_save.set(None);
+                let mut config = app.config.borrow().clone();
+                config.layout.grid_icon_size = Some(app.state.icon_size.get());
+                if let Err(error) = config.save() {
+                    app.show_error(&format!("Could not save settings: {error}"));
+                }
+                crate::config::set_current(config.clone());
+                *app.config.borrow_mut() = config;
+            });
+        self.state.icon_size_save.set(Some(source));
     }
 
     pub fn set_view_mode(self: &App, mode: ViewMode) {
@@ -712,6 +753,15 @@ pub fn tracked_label(text: &str, tracking: i32) -> gtk::Label {
     attributes.insert(pango::AttrInt::new_letter_spacing(tracking * pango::SCALE));
     label.set_attributes(Some(&attributes));
     label
+}
+
+/// Run `action` on the next main-loop pass.
+///
+/// Signal handlers that rebuild the very widget they were fired from must not destroy
+/// it while GTK is still inside the emission; deferring by one iteration lets the
+/// handler return first.
+pub fn defer(action: impl FnOnce() + 'static) {
+    glib::idle_add_local_once(action);
 }
 
 /// Colour one widget without going through the global stylesheet.

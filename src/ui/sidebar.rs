@@ -15,7 +15,6 @@ pub struct Sidebar {
     pub places: gtk::Box,
     pub devices: gtk::Box,
     pub pinned: gtk::Box,
-    pub bookmarks_title: gtk::Label,
     pub pin_drop: gtk::Label,
     pub tags: gtk::Box,
     pub add_tag: gtk::Button,
@@ -38,8 +37,6 @@ pub fn build(width: i32) -> Sidebar {
     content.append(&section_title("DEVICES"));
     content.append(&devices);
 
-    let bookmarks_title = section_title("BOOKMARKS");
-
     // The drop hint only appears while a folder is actually being dragged over the
     // bookmarks area, so an empty section costs nothing but the space it reserves.
     let pin_drop = gtk::Label::new(Some("Drop to bookmark"));
@@ -49,7 +46,7 @@ pub fn build(width: i32) -> Sidebar {
     let bookmarks = gtk::Box::new(gtk::Orientation::Vertical, 0);
     bookmarks.add_css_class("teral-bookmarks");
     bookmarks.set_size_request(-1, 64);
-    bookmarks.append(&bookmarks_title);
+    bookmarks.append(&section_title("BOOKMARKS"));
     bookmarks.append(&pinned);
     bookmarks.append(&pin_drop);
     content.append(&bookmarks);
@@ -77,7 +74,6 @@ pub fn build(width: i32) -> Sidebar {
         places,
         devices,
         pinned,
-        bookmarks_title,
         pin_drop,
         tags,
         add_tag,
@@ -241,13 +237,14 @@ pub fn rebuild_tags(app: &App) {
         content.append(&count);
         content.append(&controls);
 
-        let row = gtk::Button::new();
-        row.set_child(Some(&content));
+        // A button inside a button never receives clicks in GTK, so the row is a box
+        // with its own gesture and the hover controls are ordinary siblings.
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         row.add_css_class("teral-place");
         row.add_css_class("teral-tag-row");
-        row.set_has_frame(false);
+        row.append(&content);
+        content.set_hexpand(true);
 
-        // Controls stay out of the way until the pointer is on the row.
         let hover = gtk::EventControllerMotion::new();
         hover.connect_enter({
             let controls = controls.clone();
@@ -267,28 +264,40 @@ pub fn rebuild_tags(app: &App) {
         });
         row.add_controller(hover);
 
-        row.connect_clicked({
+        let open = gtk::GestureClick::new();
+        open.set_button(gtk::gdk::BUTTON_PRIMARY);
+        open.connect_released({
             let app = Rc::clone(app);
             let name = tag.name.clone();
-            move |_| app.show_tag(&name)
+            move |_, _, _, _| app.show_tag(&name)
         });
+        row.add_controller(open);
 
         edit.connect_clicked({
             let app = Rc::clone(app);
             let name = tag.name.clone();
-            move |_| super::dialogs::edit_tag(&app, Some(&name))
+            move |_| {
+                let app = Rc::clone(&app);
+                let name = name.clone();
+                super::defer(move || super::dialogs::edit_tag(&app, Some(&name)));
+            }
         });
 
         delete.connect_clicked({
             let app = Rc::clone(app);
             let name = tag.name.clone();
-            move |_| super::dialogs::confirm_delete_tag(&app, &name)
+            move |_| {
+                let app = Rc::clone(&app);
+                let name = name.clone();
+                super::defer(move || super::dialogs::confirm_delete_tag(&app, &name));
+            }
         });
 
         app.widgets.tags.append(&row);
     }
 
-    mark_active_tag(app, app.state.tag_view.borrow().as_deref());
+    let active = app.state.tag_view.borrow().clone();
+    mark_active_tag(app, active.as_deref());
 }
 
 /// Highlight the tag whose contents are on screen.
@@ -312,12 +321,17 @@ pub fn mark_active_tag(app: &App, active: Option<&str>) {
     }
 }
 
-/// Rebuild the bookmarks section, hiding its heading while it is empty.
+/// Rebuild the bookmarks section, showing a placeholder while it is empty.
 pub fn rebuild_pinned(app: &App) {
     clear(&app.widgets.pinned_box);
 
     let pinned = app.state.pinned.borrow().clone();
-    app.widgets.bookmarks_title.set_visible(!pinned.is_empty());
+    if pinned.is_empty() {
+        let empty = gtk::Label::new(Some("No bookmarks"));
+        empty.set_xalign(0.0);
+        empty.add_css_class("teral-bookmarks-empty");
+        app.widgets.pinned_box.append(&empty);
+    }
 
     for path in pinned {
         let label = places::display_label(&path);

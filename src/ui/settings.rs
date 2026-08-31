@@ -14,7 +14,8 @@ use std::rc::Rc;
 
 /// Open the Settings window, or focus it when it is already open.
 pub fn present(app: &App) {
-    if let Some(window) = app.widgets.settings_window.borrow().as_ref() {
+    let existing = app.widgets.settings_window.borrow().clone();
+    if let Some(window) = existing {
         window.present();
         return;
     }

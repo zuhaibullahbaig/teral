@@ -52,6 +52,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
         "View",
         &[
             ("Ctrl+= / Ctrl+-", "Larger / smaller icons"),
+            ("Ctrl+I", "Show or hide the details panel"),
             ("Ctrl+0", "Reset the icon size"),
             ("Ctrl+,", "Settings"),
             ("F1", "This shortcut list"),

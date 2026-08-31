@@ -623,16 +623,84 @@ pub async fn extract(
     Err(message)
 }
 
-// --------------------------------------------------------------- permissions ----
+/// Launch an entry with the desktop's default application.
+pub fn open(path: &Path) -> Result<(), glib::Error> {
+    let uri = gio::File::for_path(path).uri();
+    gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
+}
 
-/// Replace the permission bits of a set of entries.
-pub async fn set_permissions(paths: Vec<PathBuf>, mode: u32) -> TransferReport {
+thread_local! {
+    /// Querying the desktop's application database costs real time, and the details
+    /// panel asks about the same handful of content types over and over.
+    static APPLICATIONS: std::cell::RefCell<std::collections::HashMap<String, Vec<gio::AppInfo>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Applications the desktop recommends for an entry's content type.
+pub fn applications_for(content_type: Option<&str>) -> Vec<gio::AppInfo> {
+    let Some(content_type) = content_type else {
+        return Vec::new();
+    };
+
+    APPLICATIONS.with_borrow_mut(|cache| {
+        if let Some(applications) = cache.get(content_type) {
+            return applications.clone();
+        }
+
+        let mut applications = gio::AppInfo::recommended_for_type(content_type);
+        if applications.is_empty() {
+            applications = gio::AppInfo::all_for_type(content_type);
+        }
+        cache.insert(content_type.to_owned(), applications.clone());
+        applications
+    })
+}
+
+/// True when marking this entry executable is a sensible thing to offer.
+///
+/// Folders already need their execute bit, and marking a document executable is never
+/// what anyone wants, so the action is limited to the files it makes sense for.
+pub fn can_be_executable(is_directory: bool, content_type: Option<&str>) -> bool {
+    const RUNNABLE: [&str; 8] = [
+        "application/x-executable",
+        "application/x-sharedlib",
+        "application/x-shellscript",
+        "application/x-perl",
+        "application/x-python-code",
+        "text/x-shellscript",
+        "text/x-python",
+        "text/x-script",
+    ];
+
+    if is_directory {
+        return false;
+    }
+
+    content_type.is_some_and(|value| {
+        RUNNABLE.contains(&value) || value.starts_with("text/x-") && value.contains("script")
+    })
+}
+
+/// Add or remove the execute bits on a set of files, leaving read/write alone.
+pub async fn set_executable(paths: Vec<PathBuf>, executable: bool) -> TransferReport {
     gio::spawn_blocking(move || {
         use std::os::unix::fs::PermissionsExt;
 
         let mut report = TransferReport::default();
         for path in paths {
-            let result = fs::set_permissions(&path, fs::Permissions::from_mode(mode));
+            let result = fs::metadata(&path).and_then(|metadata| {
+                let mode = metadata.permissions().mode();
+                // Execute follows read: a file readable by a group becomes runnable by
+                // that group too, which is what chmod +x does.
+                let executable_bits = (mode & 0o444) >> 2;
+                let updated = if executable {
+                    mode | executable_bits
+                } else {
+                    mode & !0o111
+                };
+                fs::set_permissions(&path, fs::Permissions::from_mode(updated))
+            });
+
             match result {
                 Ok(()) => report.succeeded += 1,
                 Err(error) => report
@@ -647,25 +715,6 @@ pub async fn set_permissions(paths: Vec<PathBuf>, mode: u32) -> TransferReport {
         failures: vec!["the permission worker stopped unexpectedly".to_owned()],
         ..TransferReport::default()
     })
-}
-
-/// Launch an entry with the desktop's default application.
-pub fn open(path: &Path) -> Result<(), glib::Error> {
-    let uri = gio::File::for_path(path).uri();
-    gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
-}
-
-/// Applications the desktop recommends for an entry's content type.
-pub fn applications_for(content_type: Option<&str>) -> Vec<gio::AppInfo> {
-    let Some(content_type) = content_type else {
-        return Vec::new();
-    };
-
-    let mut applications = gio::AppInfo::recommended_for_type(content_type);
-    if applications.is_empty() {
-        applications = gio::AppInfo::all_for_type(content_type);
-    }
-    applications
 }
 
 /// Launch `path` with a specific application.
@@ -806,6 +855,16 @@ mod tests {
         assert!(!source.exists());
         assert!(destination.join("source/file.txt").exists());
         fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn only_runnable_files_are_offered_the_execute_bit() {
+        assert!(can_be_executable(false, Some("application/x-shellscript")));
+        assert!(can_be_executable(false, Some("text/x-python")));
+        assert!(!can_be_executable(false, Some("text/plain")));
+        assert!(!can_be_executable(false, Some("image/png")));
+        assert!(!can_be_executable(true, Some("inode/directory")));
+        assert!(!can_be_executable(false, None));
     }
 
     #[test]

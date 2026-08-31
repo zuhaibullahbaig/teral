@@ -28,6 +28,18 @@ pub struct Details {
     pub rows: Vec<(&'static str, MetaRow)>,
     pub tags: gtk::FlowBox,
     pub actions: Actions,
+    pub folder_actions: FolderActions,
+}
+
+/// Actions offered for the folder being browsed, with nothing selected.
+pub struct FolderActions {
+    pub root: gtk::Grid,
+    pub terminal: gtk::Button,
+    pub new_folder: gtk::Button,
+    pub paste: gtk::Button,
+    pub bookmark: gtk::Button,
+    pub new_tab: gtk::Button,
+    pub new_window: gtk::Button,
 }
 
 /// Action buttons in the details panel.
@@ -157,9 +169,24 @@ pub fn build(width: i32) -> Details {
         .vexpand(true)
         .build();
 
-    let empty = gtk::Label::new(Some("Select a file or folder"));
-    empty.add_css_class("teral-empty");
-    empty.set_vexpand(true);
+    let empty_hint = gtk::Label::new(Some("Nothing selected"));
+    empty_hint.set_xalign(0.0);
+    empty_hint.add_css_class("teral-empty");
+
+    let folder_heading = super::tracked_label("THIS FOLDER", 1);
+    folder_heading.add_css_class("teral-section-title");
+    folder_heading.set_margin_top(14);
+    folder_heading.set_margin_bottom(8);
+
+    let folder_actions = build_folder_actions();
+
+    // With nothing selected the panel is still worth having: it offers the actions
+    // that apply to the folder being browsed.
+    let empty = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    empty.add_css_class("teral-details-body");
+    empty.append(&empty_hint);
+    empty.append(&folder_heading);
+    empty.append(&folder_actions.root);
 
     let stack = gtk::Stack::new();
     stack.add_named(&empty, Some("empty"));
@@ -186,6 +213,38 @@ pub fn build(width: i32) -> Details {
         rows,
         tags,
         actions,
+        folder_actions,
+    }
+}
+
+fn build_folder_actions() -> FolderActions {
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(7);
+    grid.set_column_spacing(7);
+    grid.set_column_homogeneous(true);
+
+    let terminal = action_button(icons::ui(names::TERMINAL), "Terminal");
+    let new_folder = action_button(icons::ui(names::NEW_FOLDER), "New Folder");
+    let paste = action_button(icons::ui(names::PASTE), "Paste");
+    let bookmark = action_button(icons::ui(names::PIN), "Bookmark");
+    let new_tab = action_button(icons::ui(names::ADD), "New Tab");
+    let new_window = action_button(icons::ui(names::WINDOW), "New Window");
+
+    grid.attach(&terminal, 0, 0, 1, 1);
+    grid.attach(&new_folder, 1, 0, 1, 1);
+    grid.attach(&paste, 2, 0, 1, 1);
+    grid.attach(&bookmark, 0, 1, 1, 1);
+    grid.attach(&new_tab, 1, 1, 1, 1);
+    grid.attach(&new_window, 2, 1, 1, 1);
+
+    FolderActions {
+        root: grid,
+        terminal,
+        new_folder,
+        paste,
+        bookmark,
+        new_tab,
+        new_window,
     }
 }
 
@@ -332,8 +391,12 @@ fn rebuild_tag_chips(app: &App, entry: &FileEntry) {
                 crate::tags::edit(|tags| {
                     tags.set_tagged(&name, std::slice::from_ref(&path), false)
                 });
-                super::sidebar::rebuild_tags(&app);
-                app.update_details();
+                // This handler's own button is about to be destroyed by the rebuild.
+                let app = Rc::clone(&app);
+                super::defer(move || {
+                    super::sidebar::rebuild_tags(&app);
+                    app.update_details();
+                });
             }
         });
 
@@ -346,7 +409,10 @@ fn rebuild_tag_chips(app: &App, entry: &FileEntry) {
     add.set_always_show_arrow(false);
     add.set_child(Some(&gtk::Image::from_icon_name(icons::ui(names::ADD))));
     add.set_tooltip_text(Some("Add a tag"));
-    add.set_popover(Some(&super::window::tag_popover(app, &[path])));
+    add.set_popover(Some(&super::window::tag_popover(
+        app,
+        std::slice::from_ref(&path),
+    )));
     container.append(&add);
 }
 
@@ -419,6 +485,26 @@ pub fn connect(app: &App) {
         }
     });
 
+    actions.open_with.connect_activate({
+        let app = Rc::clone(app);
+        move |button| {
+            if button.popover().is_some() {
+                return;
+            }
+            let Some(entry) = app.single_selection() else {
+                return;
+            };
+            let applications =
+                crate::files::ops::applications_for(entry.data().content_type.as_deref());
+            if applications.is_empty() {
+                return;
+            }
+            let popover = super::dialogs::open_with_popover(&app, &entry, applications);
+            button.set_popover(Some(&popover));
+            button.popup();
+        }
+    });
+
     actions.rename.connect_clicked({
         let app = Rc::clone(app);
         move |_| super::window::rename_selection(&app)
@@ -442,6 +528,46 @@ pub fn connect(app: &App) {
         }
     });
 
+    let folder = &app.widgets.details.folder_actions;
+
+    folder.terminal.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| {
+            let current = app.current_dir();
+            super::window::open_terminal(&app, &current);
+        }
+    });
+    folder.new_folder.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| super::window::run_menu_action(&app, super::header::MenuAction::NewFolder)
+    });
+    folder.paste.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| super::window::paste(&app)
+    });
+    folder.bookmark.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| {
+            let current = app.current_dir();
+            app.toggle_pin(&current);
+            app.update_details();
+        }
+    });
+    folder.new_tab.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| {
+            let current = app.current_dir();
+            app.open_tab(current);
+        }
+    });
+    folder.new_window.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| {
+            let current = app.current_dir();
+            super::window::open_in_new_window(&app, &current);
+        }
+    });
+
     actions.trash.connect_clicked({
         let app = Rc::clone(app);
         move |_| {
@@ -462,9 +588,23 @@ pub fn update(app: &App) {
     if selected.len() != 1 {
         details.stack.set_visible_child_name("empty");
         details.title.set_text(&match selected.len() {
-            0 => "Details".to_owned(),
+            0 => crate::places::display_label(&app.current_dir()),
             count => format!("{count} items selected"),
         });
+
+        let current = app.current_dir();
+        let folder = &details.folder_actions;
+        folder
+            .paste
+            .set_sensitive(app.state.clipboard.borrow().is_some());
+        relabel(
+            &folder.bookmark,
+            if app.is_pinned(&current) {
+                "Bookmarked"
+            } else {
+                "Bookmark"
+            },
+        );
         return;
     }
 
@@ -553,13 +693,10 @@ pub fn update(app: &App) {
     );
     actions.copy.set_sensitive(!in_trash);
 
+    // The popover is built when it is opened, not on every selection: building it
+    // eagerly meant every click paid for icon lookups it usually never showed.
     let applications = crate::files::ops::applications_for(data.content_type.as_deref());
     let can_open_with = !entry.is_directory() && !applications.is_empty();
     actions.open_with.set_sensitive(can_open_with);
-    if can_open_with {
-        let popover = super::dialogs::open_with_popover(app, entry, applications);
-        actions.open_with.set_popover(Some(&popover));
-    } else {
-        actions.open_with.set_popover(None::<&gtk::Popover>);
-    }
+    actions.open_with.set_popover(None::<&gtk::Popover>);
 }

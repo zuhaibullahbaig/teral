@@ -88,11 +88,6 @@ pub mod names {
         "folder-download-symbolic",
         "document-save-symbolic",
     ];
-    pub const PERMISSIONS: &[&str] = &[
-        "changes-prevent-symbolic",
-        "security-high-symbolic",
-        "emblem-system-symbolic",
-    ];
     pub const SELECT_ALL: &[&str] = &["edit-select-all-symbolic"];
     pub const TAG: &[&str] = &["tag-symbolic", "bookmark-new-symbolic"];
     pub const WINDOW: &[&str] = &[
@@ -100,6 +95,9 @@ pub mod names {
         "view-dual-symbolic",
         "list-add-symbolic",
     ];
+    pub const ZOOM_OUT: &[&str] = &["zoom-out-symbolic", "list-remove-symbolic"];
+    pub const ZOOM_IN: &[&str] = &["zoom-in-symbolic", "list-add-symbolic"];
+    pub const EXECUTABLE: &[&str] = &["application-x-executable-symbolic", "system-run-symbolic"];
     pub const HELP: &[&str] = &["help-browser-symbolic", "dialog-question-symbolic"];
     pub const ABOUT: &[&str] = &["help-about-symbolic", "dialog-information-symbolic"];
     pub const DELETE: &[&str] = &["edit-delete-symbolic", "user-trash-symbolic"];

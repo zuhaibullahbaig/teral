@@ -574,15 +574,23 @@ entry.teral-search-entry > text > placeholder {
   margin-bottom: 10px;
 }
 
-/* Only shown while a folder is being dragged over the bookmarks area. */
+/* Only shown while a folder is being dragged over the bookmarks area, and sized like
+ * one of the rows it sits among rather than as a large panel. */
 .teral-pin-target {
   background-color: alpha(@teral_accent, 0.12);
   border: 1px dashed alpha(@teral_accent, 0.6);
-  border-radius: 9px;
+  border-radius: 8px;
   color: @teral_accent;
-  font-size: 10.5px;
-  margin: 4px 2px;
-  padding: 12px 8px;
+  font-size: 11.5px;
+  margin: 1px 0;
+  min-height: 0;
+  padding: 5px 9px;
+}
+
+.teral-bookmarks-empty {
+  color: alpha(@teral_muted, 0.75);
+  font-size: 11.5px;
+  padding: 5px 9px;
 }
 
 .teral-pin-target.drop-target {
@@ -595,8 +603,23 @@ entry.teral-search-entry > text > placeholder {
   font-size: 9px;
 }
 
-.teral-tag-row .teral-tag-controls {
-  margin: 0;
+.teral-tag-row {
+  padding: 3px 6px 3px 9px;
+}
+
+.teral-tag-row.active {
+  background-color: alpha(@teral_accent, 0.13);
+}
+
+.teral-tag-row:hover {
+  background-color: @teral_surface_alt;
+}
+
+.teral-zoom-group {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  border-radius: 999px;
+  padding: 1px 6px;
 }
 
 .teral-tag-chips {

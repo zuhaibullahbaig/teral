@@ -14,6 +14,9 @@ pub struct StatusBar {
     pub size: gtk::Label,
     pub message: gtk::Label,
     pub zoom: gtk::Scale,
+    pub zoom_value: gtk::Label,
+    pub zoom_out: gtk::Button,
+    pub zoom_in: gtk::Button,
     pub settings: gtk::Button,
     pub details_toggle: gtk::ToggleButton,
 }
@@ -146,6 +149,17 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
     selection.add_css_class("strong");
     let size = status_label();
 
+    // A bare slider says nothing about what it does, so it is bracketed by the
+    // universally understood minus and plus and labelled with the size it produces.
+    let zoom_out = super::icon_button(
+        crate::icons::ui(crate::icons::names::ZOOM_OUT),
+        "Smaller icons (Ctrl+-)",
+    );
+    let zoom_in = super::icon_button(
+        crate::icons::ui(crate::icons::names::ZOOM_IN),
+        "Larger icons (Ctrl+=)",
+    );
+
     let zoom = gtk::Scale::with_range(
         gtk::Orientation::Horizontal,
         f64::from(crate::theme::MIN_ICON_SIZE),
@@ -159,13 +173,27 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
     zoom.set_valign(gtk::Align::Center);
     zoom.set_tooltip_text(Some("Icon size (Ctrl+0 resets)"));
 
+    let zoom_value = gtk::Label::new(Some(&format!("{icon_size} px")));
+    zoom_value.add_css_class("teral-status-item");
+    zoom_value.set_width_chars(6);
+
+    let zoom_group = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    zoom_group.add_css_class("teral-zoom-group");
+    zoom_group.set_hexpand(true);
+    zoom_group.set_valign(gtk::Align::Center);
+    zoom_group.set_tooltip_text(Some("Icon size"));
+    zoom_group.append(&zoom_out);
+    zoom_group.append(&zoom);
+    zoom_group.append(&zoom_in);
+    zoom_group.append(&zoom_value);
+
     let right = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     right.add_css_class("teral-footer-details");
     right.set_size_request(details_width, -1);
     right.set_hexpand(false);
     right.append(&selection);
     right.append(&size);
-    right.append(&zoom);
+    right.append(&zoom_group);
 
     let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     root.add_css_class("teral-status-bar");
@@ -182,6 +210,9 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
         size,
         message,
         zoom,
+        zoom_value,
+        zoom_out,
+        zoom_in,
         settings,
         details_toggle,
     }
@@ -254,22 +285,20 @@ pub fn connect(app: &App) {
     app.widgets.zoom.connect_value_changed({
         let app = Rc::clone(app);
         move |scale| {
-            let size = scale.value().round() as i32;
-            if size == app.state.icon_size.get() {
-                return;
-            }
             if app.state.updating.get() {
                 return;
             }
-            app.state.icon_size.set(size);
-            // Rebuilding the factory recreates every cell at the new size.
-            super::fileview::refresh_grid_factory(&app);
-
-            // Remember the choice the same way the Settings window would.
-            let mut config = app.config.borrow().clone();
-            config.layout.grid_icon_size = Some(size);
-            app.apply_config(config, true);
+            app.set_icon_size(scale.value().round() as i32);
         }
+    });
+
+    app.widgets.zoom_out.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| app.step_zoom(-8)
+    });
+    app.widgets.zoom_in.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| app.step_zoom(8)
     });
 }
 
