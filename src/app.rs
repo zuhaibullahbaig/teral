@@ -1,11 +1,91 @@
 use crate::config::{self, Config};
 use crate::style;
 use crate::theme::ThemeConfig;
-use crate::ui;
+use crate::ui::{self, App};
 use gtk::Application;
+use gtk::gio;
+use gtk::gio::prelude::*;
 use gtk::prelude::*;
+use std::cell::RefCell;
+use std::path::PathBuf;
 
+thread_local! {
+    /// The window this process is showing, if it has built one yet.
+    ///
+    /// Teral is a single-instance application: a second `teral` launch, and every
+    /// folder the desktop asks it to open, is delivered to this process rather than
+    /// starting another one. Keeping the running window here is what lets those
+    /// requests land in it as tabs instead of piling up windows.
+    static RUNNING: RefCell<Option<App>> = const { RefCell::new(None) };
+}
+
+/// Launched with no arguments, or activated again while already running.
 pub fn activate(application: &Application) {
+    present(application, None);
+}
+
+/// Launched with files or folders: `teral ~/Documents`, or the desktop entry's `%U`.
+///
+/// Directories open directly. A file opens the folder that contains it with the file
+/// selected, which is what makes `teral some/report.pdf` useful — Teral is a file
+/// manager, so it shows you the file rather than launching it.
+pub fn open(application: &Application, files: &[gio::File], _hint: &str) {
+    let mut requests = files.iter().filter_map(request_for).peekable();
+
+    if requests.peek().is_none() {
+        // Every argument was something Teral cannot show — a remote URI with no local
+        // path, or a path that has since gone. Opening the default window is better
+        // than starting nothing at all.
+        present(application, None);
+        return;
+    }
+
+    for request in requests {
+        present(application, Some(request));
+    }
+}
+
+/// What one command-line argument asks Teral to show.
+struct Request {
+    directory: PathBuf,
+    select: Option<PathBuf>,
+}
+
+fn request_for(file: &gio::File) -> Option<Request> {
+    let path = file.path()?;
+
+    if path.is_dir() {
+        return Some(Request {
+            directory: path,
+            select: None,
+        });
+    }
+
+    // Not a directory: show the folder it lives in. This covers a regular file, and
+    // also a path that no longer exists, where landing in the parent is more useful
+    // than refusing to start.
+    let parent = path.parent()?.to_path_buf();
+    Some(Request {
+        directory: parent,
+        select: path.symlink_metadata().is_ok().then_some(path),
+    })
+}
+
+/// Show `request`, building the window if this is the first thing to arrive.
+fn present(application: &Application, request: Option<Request>) {
+    let existing = RUNNING.with_borrow(Clone::clone);
+
+    if let Some(app) = existing {
+        if let Some(request) = request {
+            // A second launch never replaces what is already on screen. Whatever was
+            // being looked at stays in its tab, and the new location arrives beside it.
+            *app.state.pending_selection.borrow_mut() = request.select;
+            app.open_tab(request.directory);
+        }
+        app.widgets.window.present();
+        return;
+    }
+
     crate::tags::init();
     let config = Config::load();
     let theme = ThemeConfig::resolve(&config);
@@ -18,6 +98,19 @@ pub fn activate(application: &Application) {
         gtk::Window::set_default_icon_name(&icon);
     }
 
-    let window = ui::build_window(application, config, theme);
+    let (directory, select) = match request {
+        Some(request) => (Some(request.directory), request.select),
+        None => (None, None),
+    };
+
+    let app = ui::build_window_at(application, config, theme, directory);
+    *app.state.pending_selection.borrow_mut() = select;
+
+    let window = app.widgets.window.clone();
+    RUNNING.with_borrow_mut(|running| *running = Some(app));
+
+    // The window outlives this function; dropping the record when it closes keeps a
+    // later activation from presenting a window that is gone.
+    window.connect_destroy(|_| RUNNING.with_borrow_mut(|running| *running = None));
     window.present();
 }

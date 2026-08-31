@@ -1,5 +1,6 @@
 //! Sidebar locations: XDG user directories, mounted volumes and user pins.
 
+use crate::files::trash::TrashDir;
 use crate::theme::{data_home, home_dir};
 use gtk::gio;
 use gtk::gio::prelude::*;
@@ -91,28 +92,27 @@ pub fn user_places() -> Vec<Place> {
 /// no way to tell which disk's deleted files are being looked at. A device that is
 /// unplugged simply stops appearing.
 pub fn trash_places() -> Vec<Place> {
-    let home = crate::files::trash::home_trash(&data_home()).files();
-    crate::files::ops::trash_locations()
+    let home = crate::files::trash::home_trash(&data_home());
+    crate::files::ops::trash_dirs()
         .into_iter()
-        .map(|path| Place {
-            label: trash_label(&path, &home),
+        .map(|dir| Place {
+            label: trash_label(&dir, &home),
             icon_name: "user-trash-symbolic".to_owned(),
-            path,
+            path: dir.files(),
         })
         .collect()
 }
 
 /// The label one trash location should carry in the sidebar.
-fn trash_label(path: &Path, home: &Path) -> String {
-    if path == home {
+///
+/// The mount point comes from the trash directory itself rather than by counting path
+/// components, because the two forms the specification allows —
+/// `<mount>/.Trash-<uid>` and `<mount>/.Trash/<uid>` — sit at different depths.
+fn trash_label(dir: &TrashDir, home: &TrashDir) -> String {
+    if dir.root == home.root {
         return "Trash".to_owned();
     }
-    // `<mount>/.Trash-1000/files` — the mount point is three components up.
-    match path
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::file_name)
-    {
+    match dir.top_dir.file_name() {
         Some(mount) => format!("Trash on {}", mount.to_string_lossy()),
         None => "Trash".to_owned(),
     }
@@ -224,15 +224,12 @@ pub fn display_label(path: &Path) -> String {
     // Every browsable trash path ends in "files". Checking that first keeps the
     // volume-monitor lookup out of ordinary breadcrumb and title rendering.
     if path.file_name() == Some(std::ffi::OsStr::new("files")) {
-        let home_trash = crate::files::trash::home_trash(&data_home()).files();
-        if path == home_trash {
-            return "Trash".to_owned();
-        }
-        if crate::files::ops::trash_locations()
+        let home = crate::files::trash::home_trash(&data_home());
+        if let Some(dir) = crate::files::ops::trash_dirs()
             .iter()
-            .any(|location| location == path)
+            .find(|dir| dir.files() == path)
         {
-            return trash_label(path, &home_trash);
+            return trash_label(dir, &home);
         }
     }
 
@@ -247,16 +244,25 @@ mod tests {
 
     #[test]
     fn a_secondary_trash_is_labelled_by_the_disk_it_belongs_to() {
-        let home = Path::new("/home/zub/.local/share/Trash/files");
-        assert_eq!(trash_label(home, home), "Trash");
-        assert_eq!(
-            trash_label(Path::new("/media/zub/backup/.Trash-1000/files"), home),
-            "Trash on backup"
+        let home = TrashDir::new(
+            PathBuf::from("/home/zub/.local/share/Trash"),
+            PathBuf::from("/"),
         );
-        assert_eq!(
-            trash_label(Path::new("/media/zub/backup/.Trash/1000/files"), home),
-            "Trash on 1000"
+        assert_eq!(trash_label(&home, &home), "Trash");
+
+        // The two forms the specification allows sit at different depths, and both must
+        // be named after the disk rather than after a directory inside the path.
+        let unshared = TrashDir::new(
+            PathBuf::from("/media/zub/backup/.Trash-1000"),
+            PathBuf::from("/media/zub/backup"),
         );
+        assert_eq!(trash_label(&unshared, &home), "Trash on backup");
+
+        let shared = TrashDir::new(
+            PathBuf::from("/media/zub/backup/.Trash/1000"),
+            PathBuf::from("/media/zub/backup"),
+        );
+        assert_eq!(trash_label(&shared, &home), "Trash on backup");
     }
 
     #[test]

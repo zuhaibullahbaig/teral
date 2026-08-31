@@ -4,6 +4,7 @@
 //! be rebuilt without touching filesystem behaviour.
 
 pub mod entry;
+pub mod name;
 pub mod ops;
 pub mod scan;
 pub mod transfer;

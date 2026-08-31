@@ -17,7 +17,14 @@ use gtk::prelude::*;
 pub const APP_ID: &str = "dev.zuhaibullahbaig.Teral";
 
 fn main() -> glib::ExitCode {
-    let application = Application::builder().application_id(APP_ID).build();
+    // HANDLES_OPEN is what lets the desktop entry's `%U` and `teral ~/Documents` reach
+    // Teral at all; without it GApplication refuses arguments outright, so opening a
+    // folder from another application does nothing.
+    let application = Application::builder()
+        .application_id(APP_ID)
+        .flags(gtk::gio::ApplicationFlags::HANDLES_OPEN)
+        .build();
     application.connect_activate(app::activate);
+    application.connect_open(app::open);
     application.run()
 }

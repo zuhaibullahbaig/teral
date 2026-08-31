@@ -31,7 +31,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-pub use window::build_window;
+pub use window::build_window_at;
 
 /// Which file view is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +46,51 @@ impl ViewMode {
             Self::Grid => "grid",
             Self::List => "list",
         }
+    }
+}
+
+/// What the file view is showing.
+///
+/// Not every view is a directory. The trash needs restore and permanent deletion where
+/// an ordinary folder offers Cut and Trash, and a tag view gathers files from all over
+/// the filesystem, so it has no single folder for a new file, a paste or a shell to act
+/// in. Naming the difference here keeps every one of those decisions in one place
+/// instead of scattered `is_in_trash` checks that a future virtual view would miss.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Location {
+    /// An ordinary directory on disk.
+    Directory(PathBuf),
+    /// A trash directory. A real path, but its items belong somewhere else.
+    Trash(PathBuf),
+    /// Every file carrying one tag, gathered from across the filesystem.
+    Tag(String),
+}
+
+impl Location {
+    /// The directory an action should act in, for the views that have one.
+    ///
+    /// `None` means the view is not one place on disk, so creating a file, pasting into
+    /// it, or opening a shell there has no defined meaning.
+    pub fn working_directory(&self) -> Option<&Path> {
+        match self {
+            Self::Directory(path) => Some(path),
+            Self::Trash(_) | Self::Tag(_) => None,
+        }
+    }
+
+    /// True when the view gathers entries rather than showing one folder's contents.
+    pub const fn is_virtual(&self) -> bool {
+        matches!(self, Self::Tag(_))
+    }
+
+    /// True when the view's items are deleted files awaiting restore or removal.
+    pub const fn is_trash(&self) -> bool {
+        matches!(self, Self::Trash(_))
+    }
+
+    /// True when new folders, pastes, drops and a shell make sense here.
+    pub const fn accepts_new_files(&self) -> bool {
+        matches!(self, Self::Directory(_))
     }
 }
 
@@ -84,16 +129,27 @@ pub struct State {
     pub console_height: Cell<i32>,
     /// Set while the file view is showing everything carrying one tag.
     pub tag_view: RefCell<Option<String>>,
+    /// True while a directory read is in flight, so a filesystem event arriving in the
+    /// meantime cannot restart the view and cancel the navigation already under way.
+    pub loading: Cell<bool>,
+    /// An entry to select once the view it lives in has finished loading, used when
+    /// another application asks Teral to open a file rather than a folder.
+    pub pending_selection: RefCell<Option<PathBuf>>,
     /// Pending write of a new icon size, so dragging the slider writes once.
     pub icon_size_save: Cell<Option<glib::SourceId>>,
 }
 
 /// One browsing tab: a location and its own history.
+///
+/// `tag` is part of the tab, not the window. A tag view opened in one tab used to
+/// disappear the moment another tab was shown, because switching tabs always loaded a
+/// directory; keeping it here means each tab restores exactly the view it had.
 #[derive(Debug, Clone)]
 pub struct Tab {
     pub path: PathBuf,
     pub back: Vec<PathBuf>,
     pub forward: Vec<PathBuf>,
+    pub tag: Option<String>,
 }
 
 impl Tab {
@@ -102,6 +158,7 @@ impl Tab {
             path,
             back: Vec::new(),
             forward: Vec::new(),
+            tag: None,
         }
     }
 }
@@ -121,6 +178,19 @@ pub type App = Rc<AppInner>;
 impl AppInner {
     pub fn current_dir(&self) -> PathBuf {
         self.state.current.borrow().clone()
+    }
+
+    /// What the view is currently showing.
+    pub fn location(&self) -> Location {
+        if let Some(tag) = self.state.tag_view.borrow().clone() {
+            return Location::Tag(tag);
+        }
+        let path = self.current_dir();
+        if crate::files::ops::is_in_trash(&path) {
+            Location::Trash(path)
+        } else {
+            Location::Directory(path)
+        }
     }
 
     /// Entries currently selected, in view order.
@@ -196,6 +266,7 @@ impl AppInner {
         let tag = tag.to_owned();
         let generation = self.state.generation.get().wrapping_add(1);
         self.state.generation.set(generation);
+        self.state.loading.set(true);
 
         glib::spawn_future_local(async move {
             let paths = crate::tags::current()
@@ -206,7 +277,16 @@ impl AppInner {
             if app.state.generation.get() != generation {
                 return;
             }
+            app.state.loading.set(false);
 
+            if let Some(tab) = app
+                .state
+                .tabs
+                .borrow_mut()
+                .get_mut(app.state.active_tab.get())
+            {
+                tab.tag = Some(tag.clone());
+            }
             *app.state.all.borrow_mut() = entries;
             app.state.directory_monitor.borrow_mut().take();
             app.apply_filter();
@@ -218,17 +298,28 @@ impl AppInner {
     /// Read a directory asynchronously and swap it in when it arrives.
     pub fn load(self: &App, path: &Path, history: Option<HistoryStep>) {
         *self.state.tag_view.borrow_mut() = None;
+        if let Some(tab) = self
+            .state
+            .tabs
+            .borrow_mut()
+            .get_mut(self.state.active_tab.get())
+        {
+            tab.tag = None;
+        }
 
         let app = Rc::clone(self);
         let path = path.to_path_buf();
         let generation = self.state.generation.get().wrapping_add(1);
         self.state.generation.set(generation);
+        self.state.loading.set(true);
 
         glib::spawn_future_local(async move {
             let result = scan::scan_directory(&path).await;
             if app.state.generation.get() != generation {
+                // A newer navigation has already taken over; it owns the flag now.
                 return;
             }
+            app.state.loading.set(false);
 
             match result {
                 Ok(entries) => {
@@ -332,12 +423,34 @@ impl AppInner {
                 .collect::<Vec<_>>(),
         );
 
-        if !previously_selected.is_empty() {
+        // Another application asked Teral to show one particular file. It is selected
+        // once, when the folder holding it first appears, and then behaves like any
+        // other selection.
+        let requested = self.state.pending_selection.borrow_mut().take();
+        let wanted: Vec<&Path> = requested
+            .as_deref()
+            .into_iter()
+            .chain(previously_selected.iter().map(PathBuf::as_path))
+            .collect();
+
+        if !wanted.is_empty() {
+            let mut found = false;
             for (index, entry) in objects.iter().enumerate() {
-                if previously_selected.iter().any(|path| path == entry.path()) {
+                if wanted.contains(&entry.path()) {
                     let index = u32::try_from(index).unwrap_or(u32::MAX);
                     self.state.selection.select_item(index, false);
+                    found = true;
                 }
+            }
+            // A file that is hidden, or filtered out, would otherwise be requested and
+            // then silently not shown.
+            if !found && requested.is_some() {
+                self.state.updating.set(false);
+                self.set_message("That file is not visible in this folder", false);
+                self.update_counts();
+                self.update_details();
+                self.update_status();
+                return;
             }
         }
         self.state.updating.set(false);
@@ -513,21 +626,36 @@ impl AppInner {
         };
 
         let app = Rc::clone(self);
-        monitor.connect_changed(move |_, _, _, _| app.queue_refresh());
+        let watched = path.to_path_buf();
+        monitor.connect_changed(move |_, _, _, _| app.queue_refresh(&watched));
         *self.state.directory_monitor.borrow_mut() = Some(monitor);
     }
 
     /// Coalesce a burst of filesystem events into a single reload.
-    fn queue_refresh(self: &App) {
+    ///
+    /// `watched` is the directory the event came from. Events are delivered on a delay,
+    /// and a monitor is only replaced once its successor's directory has been read, so
+    /// without this check a change to the folder being left could fire after the user
+    /// had already clicked into the next one — reloading the old location and cancelling
+    /// the navigation in flight.
+    fn queue_refresh(self: &App, watched: &Path) {
+        if *self.state.current.borrow() != watched {
+            return;
+        }
         if self.state.refresh_queued.replace(true) {
             return;
         }
 
         let app = Rc::clone(self);
+        let watched = watched.to_path_buf();
         glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
             app.state.refresh_queued.set(false);
-            // A running transfer will reload on its own when it finishes.
-            if app.state.running_transfer.borrow().is_none() {
+            // Still the same place, nothing already on its way in, and no transfer that
+            // will reload on its own when it finishes.
+            if *app.state.current.borrow() == watched
+                && !app.state.loading.get()
+                && app.state.running_transfer.borrow().is_none()
+            {
                 app.reload();
             }
         });
@@ -542,6 +670,7 @@ impl AppInner {
             tab.path = self.current_dir();
             tab.back = self.state.back.borrow().clone();
             tab.forward = self.state.forward.borrow().clone();
+            tab.tag = self.state.tag_view.borrow().clone();
         }
     }
 
@@ -583,7 +712,13 @@ impl AppInner {
         self.state.active_tab.set(index);
         *self.state.back.borrow_mut() = tab.back;
         *self.state.forward.borrow_mut() = tab.forward;
-        self.load(&tab.path, None);
+        match &tab.tag {
+            Some(tag) => {
+                *self.state.current.borrow_mut() = tab.path.clone();
+                self.show_tag(tag);
+            }
+            None => self.load(&tab.path, None),
+        }
         tabs::rebuild(self);
     }
 
@@ -820,4 +955,51 @@ pub fn icon_toggle(icon_name: &str, tooltip: &str) -> gtk::ToggleButton {
     button.set_valign(gtk::Align::Center);
     button.set_halign(gtk::Align::Center);
     button
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_real_folder_can_be_acted_in() {
+        let folder = Location::Directory(PathBuf::from("/home/zub/Documents"));
+        assert_eq!(
+            folder.working_directory(),
+            Some(Path::new("/home/zub/Documents"))
+        );
+        assert!(folder.accepts_new_files());
+        assert!(!folder.is_virtual());
+        assert!(!folder.is_trash());
+
+        // The trash is a real path, but its items belong somewhere else, so nothing new
+        // is created in it and no shell is opened there.
+        let trash = Location::Trash(PathBuf::from("/home/zub/.local/share/Trash/files"));
+        assert_eq!(trash.working_directory(), None);
+        assert!(!trash.accepts_new_files());
+        assert!(trash.is_trash());
+        assert!(!trash.is_virtual());
+
+        // A tag view gathers files from all over the filesystem and is not one place.
+        let tagged = Location::Tag("Important".to_owned());
+        assert_eq!(tagged.working_directory(), None);
+        assert!(!tagged.accepts_new_files());
+        assert!(tagged.is_virtual());
+        assert!(!tagged.is_trash());
+    }
+
+    #[test]
+    fn a_tab_remembers_the_view_it_was_showing() {
+        let mut tab = Tab::new(PathBuf::from("/home/zub"));
+        assert_eq!(tab.tag, None);
+        assert!(tab.back.is_empty());
+        assert!(tab.forward.is_empty());
+
+        // Switching away from a tag view and back must return to the tag view, not to
+        // whichever directory the tab happened to be in beforehand.
+        tab.tag = Some("Important".to_owned());
+        let restored = tab.clone();
+        assert_eq!(restored.tag.as_deref(), Some("Important"));
+        assert_eq!(restored.path, PathBuf::from("/home/zub"));
+    }
 }

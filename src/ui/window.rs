@@ -78,21 +78,13 @@ pub struct Widgets {
 }
 
 /// Build the main window and start browsing the user's home directory.
-pub fn build_window(
-    application: &gtk::Application,
-    config: Config,
-    theme: ThemeConfig,
-) -> gtk::ApplicationWindow {
-    build_window_at(application, config, theme, None)
-}
-
 /// Build a window, optionally starting somewhere other than the home directory.
 pub fn build_window_at(
     application: &gtk::Application,
     config: Config,
     theme: ThemeConfig,
     start_at: Option<PathBuf>,
-) -> gtk::ApplicationWindow {
+) -> App {
     let store = gio::ListStore::new::<FileEntry>();
     let selection = gtk::MultiSelection::new(Some(store.clone()));
 
@@ -296,6 +288,8 @@ pub fn build_window_at(
         config_monitors: RefCell::new(Vec::new()),
         console_height: Cell::new(statusbar::CONSOLE_HEIGHT),
         tag_view: RefCell::new(None),
+        loading: Cell::new(false),
+        pending_selection: RefCell::new(None),
         icon_size_save: Cell::new(None),
     };
 
@@ -321,7 +315,7 @@ pub fn build_window_at(
     }
     app.load(&start, None);
 
-    window
+    app
 }
 
 /// Re-apply the theme when the configuration file or the active Omarchy theme changes,
@@ -607,6 +601,24 @@ fn toggle_hidden(app: &App) {
 
 /// Launch an entry with the desktop's default application.
 pub fn open_entry(app: &App, entry: &FileEntry) {
+    let data = entry.data();
+    if data.is_broken_symlink {
+        app.show_error(&format!(
+            "{} points at something that is not there",
+            entry.display_name()
+        ));
+        return;
+    }
+    if data.is_special {
+        // Opening a FIFO blocks until something opens the other end, and a device node
+        // is not a document. Handing either to another application can hang it.
+        app.show_error(&format!(
+            "{} is a {} and cannot be opened as a file",
+            entry.display_name(),
+            data.kind.to_lowercase()
+        ));
+        return;
+    }
     if let Err(error) = ops::open(entry.path()) {
         app.show_error(&format!(
             "Could not open {}: {}",
@@ -617,6 +629,10 @@ pub fn open_entry(app: &App, entry: &FileEntry) {
 }
 
 pub fn open_terminal(app: &App, directory: &Path) {
+    if !app.location().accepts_new_files() {
+        app.set_message("Open a folder to start a terminal in it", false);
+        return;
+    }
     match ops::open_terminal(directory) {
         Ok(()) => app.set_message(
             &format!("Terminal opened in {}", directory.display()),
@@ -627,8 +643,11 @@ pub fn open_terminal(app: &App, directory: &Path) {
 }
 
 fn new_folder(app: &App) {
-    let parent = app.current_dir();
-    dialogs::prompt(
+    let Some(parent) = app.location().working_directory().map(Path::to_path_buf) else {
+        app.set_message("Open a folder to create something in it", false);
+        return;
+    };
+    dialogs::prompt_name(
         app,
         "New folder",
         "Create",
@@ -663,12 +682,16 @@ pub fn rename_selection(app: &App) {
 
     let path = entry.path().to_path_buf();
     let current = entry.display_name().to_owned();
+    // A name that is not valid UTF-8 can only be shown through a lossy conversion, so
+    // the text in the field is not the name on disk. Confirming it unchanged must not
+    // write those replacement characters back over the real name.
+    let lossy = crate::files::name::is_lossy_on_screen(&path);
     let stem_length = Path::new(&current)
         .file_stem()
         .map(|stem| stem.to_string_lossy().chars().count())
         .unwrap_or(current.chars().count());
 
-    dialogs::prompt(
+    dialogs::prompt_name(
         app,
         "Rename",
         "Rename",
@@ -678,6 +701,13 @@ pub fn rename_selection(app: &App) {
             let current = current.clone();
             move |app, name| {
                 if name == current {
+                    if lossy {
+                        app.set_message(
+                            "That name contains characters Teral cannot type back exactly; \
+                             edit it to rename this file",
+                            false,
+                        );
+                    }
                     return;
                 }
                 let app = Rc::clone(app);
@@ -746,9 +776,12 @@ pub fn paste(app: &App) {
         app.set_message("The clipboard does not contain files", false);
         return;
     }
+    let Some(destination) = app.location().working_directory().map(Path::to_path_buf) else {
+        app.set_message("Open a folder to paste into it", false);
+        return;
+    };
 
     let system_clipboard = app.widgets.window.clipboard();
-    let destination = app.current_dir();
     let app = Rc::clone(app);
     glib::spawn_future_local(async move {
         match ops::read_clipboard(&system_clipboard).await {
@@ -769,7 +802,6 @@ pub fn paste(app: &App) {
 fn run_trash_job<Fut>(
     app: &App,
     verb: &'static str,
-    past: &'static str,
     extra_problems: Vec<String>,
     start: impl FnOnce(CancelFlag, mpsc::SyncSender<ops::JobProgress>) -> Fut,
 ) where
@@ -793,7 +825,7 @@ fn run_trash_job<Fut>(
         app.state.running_transfer.borrow_mut().take();
         apply_tag_results(&report);
         sidebar::rebuild_tags(&app);
-        report_job(&app, past, &report, &extra_problems);
+        report_job(&app, &report, &extra_problems);
         app.reload();
     });
 }
@@ -818,13 +850,14 @@ fn apply_tag_results(report: &ops::JobReport) {
 }
 
 /// Say what a finished job actually did.
-fn report_job(app: &App, past: &str, report: &ops::JobReport, extra_problems: &[String]) {
+fn report_job(app: &App, report: &ops::JobReport, extra_problems: &[String]) {
+    let past = report.kind.past_tense();
     let done = crate::files::item_count_label(report.succeeded());
     let mut problems = report.problems();
     problems.extend(extra_problems.iter().cloned());
 
     if problems.is_empty() && report.is_complete() {
-        app.set_message(&format!("{past} {done}"), false);
+        app.set_message(&format!("{past} {done}{}", renamed_note(report)), false);
         return;
     }
     if report.cancelled
@@ -838,14 +871,26 @@ fn report_job(app: &App, past: &str, report: &ops::JobReport, extra_problems: &[
     if problems.is_empty() {
         app.set_message(
             &format!(
-                "{past} {done}; skipped {}",
-                crate::files::item_count_label(report.skipped())
+                "{past} {done}; skipped {}{}",
+                crate::files::item_count_label(report.skipped()),
+                renamed_note(report)
             ),
             false,
         );
         return;
     }
     app.show_error(&format!("{past} {done}; {}", problems.join("; ")));
+}
+
+/// Say when a job had to rename its way around an existing entry.
+///
+/// A renamed file is a success the user did not ask for, so it is never left silent.
+fn renamed_note(report: &ops::JobReport) -> String {
+    match report.renamed() {
+        0 => String::new(),
+        1 => " (1 renamed to avoid replacing an existing entry)".to_owned(),
+        count => format!(" ({count} renamed to avoid replacing existing entries)"),
+    }
 }
 
 /// Move the selection to the trash after confirmation.
@@ -878,7 +923,6 @@ pub fn trash_selection(app: &App) {
             run_trash_job(
                 &app_for_action,
                 "Moving to the trash",
-                "Moved to the trash",
                 Vec::new(),
                 move |cancel, progress| ops::trash(paths, cancel, progress),
             );
@@ -896,6 +940,12 @@ pub fn drop_files(
     destination: &Path,
     requested_action: gdk::DragAction,
 ) -> bool {
+    // A drop onto a gathered view has no folder to land in, and the trash is not a
+    // place to put files that were never deleted.
+    if !destination.is_dir() || ops::is_in_trash(destination) {
+        return false;
+    }
+
     let sources: Vec<PathBuf> = files
         .files()
         .iter()
@@ -1060,9 +1110,10 @@ fn start_transfer(
         if report.is_complete() {
             app.set_message(
                 &format!(
-                    "{} {}",
+                    "{} {}{}",
                     kind.past_tense(),
-                    crate::files::item_count_label(report.succeeded())
+                    crate::files::item_count_label(report.succeeded()),
+                    renamed_note(&report)
                 ),
                 false,
             );
@@ -1082,10 +1133,11 @@ fn start_transfer(
         } else if report.problems().is_empty() {
             app.set_message(
                 &format!(
-                    "{} {}; skipped {} existing",
+                    "{} {}; skipped {} existing{}",
                     kind.past_tense(),
                     crate::files::item_count_label(report.succeeded()),
-                    crate::files::item_count_label(report.skipped())
+                    crate::files::item_count_label(report.skipped()),
+                    renamed_note(&report)
                 ),
                 false,
             );
@@ -1131,9 +1183,17 @@ fn watch_transfer_progress(
             } else {
                 String::new()
             };
+            // Naming the entry being worked on is what makes a long job legible: it is
+            // the difference between "something is happening" and knowing where it is.
+            let current = update
+                .current
+                .as_deref()
+                .and_then(Path::file_name)
+                .map(|name| format!(" · {}", name.to_string_lossy()))
+                .unwrap_or_default();
             app.set_message(
                 &format!(
-                    "{verb} {} of {}{bytes} (Esc to cancel)",
+                    "{verb} {} of {}{current}{bytes} (Esc to cancel)",
                     update.processed_items, update.total_items
                 ),
                 false,
@@ -1230,7 +1290,6 @@ pub fn delete_permanently(app: &App) {
             run_trash_job(
                 &app_for_action,
                 "Deleting",
-                "Deleted",
                 Vec::new(),
                 move |cancel, progress| ops::delete_permanently(paths, dirs, cancel, progress),
             );
@@ -1269,8 +1328,9 @@ pub fn duplicate_selection(app: &App) {
         if report.is_complete() {
             app.set_message(
                 &format!(
-                    "Duplicated {}",
-                    crate::files::item_count_label(report.succeeded())
+                    "Duplicated {}{}",
+                    crate::files::item_count_label(report.succeeded()),
+                    renamed_note(&report)
                 ),
                 false,
             );
@@ -1394,15 +1454,9 @@ fn start_restore(
         return;
     }
 
-    run_trash_job(
-        app,
-        "Restoring",
-        "Restored",
-        problems,
-        move |cancel, progress| {
-            ops::restore_from_trash(targets, policy, missing_parent, cancel, progress)
-        },
-    );
+    run_trash_job(app, "Restoring", problems, move |cancel, progress| {
+        ops::restore_from_trash(targets, policy, missing_parent, cancel, progress)
+    });
 }
 
 /// Permanently delete everything in every trash Teral can see, after confirmation.
@@ -1428,7 +1482,6 @@ pub fn empty_trash(app: &App) {
             run_trash_job(
                 &app_for_action,
                 "Emptying the trash",
-                "Deleted",
                 Vec::new(),
                 move |cancel, progress| ops::empty_trash(dirs, cancel, progress),
             );
@@ -1473,7 +1526,7 @@ pub fn tag_popover(app: &App, paths: &[PathBuf]) -> gtk::Popover {
                 super::defer(move || {
                     sidebar::rebuild_tags(&app);
                     app.update_details();
-                    let in_tag_view = app.state.tag_view.borrow().is_some();
+                    let in_tag_view = app.location().is_virtual();
                     if in_tag_view {
                         app.reload();
                     }
@@ -1513,8 +1566,8 @@ pub fn open_in_new_window(app: &App, path: &Path) {
 
     let config = app.config.borrow().clone();
     let theme = ThemeConfig::resolve(&config);
-    let window = build_window_at(&application, config, theme, Some(path.to_path_buf()));
-    window.present();
+    let second = build_window_at(&application, config, theme, Some(path.to_path_buf()));
+    second.widgets.window.present();
 }
 
 /// Unpack an archive, either into this folder or into a folder named after it.
@@ -1601,7 +1654,8 @@ fn set_executable(app: &App, executable: bool) {
     let app = Rc::clone(app);
     glib::spawn_future_local(async move {
         let report = ops::set_executable(paths, executable).await;
-        if report.failures.is_empty() {
+        let problems = report.problems();
+        if problems.is_empty() {
             app.set_message(
                 if executable {
                     "Marked as executable"
@@ -1611,7 +1665,7 @@ fn set_executable(app: &App, executable: bool) {
                 false,
             );
         } else {
-            app.show_error(&report.failures.join("; "));
+            app.show_error(&problems.join("; "));
         }
         app.reload();
     });
@@ -1763,7 +1817,7 @@ fn context_menu_content(app: &App) -> gtk::Box {
     content.set_width_request(214);
 
     let single = app.single_selection();
-    let in_trash = ops::is_in_trash(&app.current_dir());
+    let in_trash = app.location().is_trash();
     let mut items: Vec<(gtk::Button, ContextAction)> = Vec::new();
 
     // Opening comes first, destructive actions come last: the order every desktop uses.
@@ -1933,11 +1987,13 @@ fn background_menu_content(app: &App) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_width_request(214);
 
-    let in_trash = ops::is_in_trash(&app.current_dir());
-    let in_tag_view = app.state.tag_view.borrow().is_some();
+    let location = app.location();
+    let in_trash = location.is_trash();
     let mut items: Vec<(gtk::Button, ContextAction)> = Vec::new();
 
-    if !in_trash && !in_tag_view {
+    // New Folder, Paste and a shell all need one real folder to act in, which is
+    // exactly what the trash and a tag view do not have.
+    if location.accepts_new_files() {
         items.push((
             header::menu_item(icons::ui(icons::names::NEW_FOLDER), "New Folder"),
             ContextAction::NewFolder,

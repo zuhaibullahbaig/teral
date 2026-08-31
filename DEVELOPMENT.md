@@ -67,13 +67,14 @@ After `./scripts/check.sh` succeeds, launch the release build with
 - [ ] Close the window and confirm the process exits cleanly.
 
 Record the distribution, desktop session, GTK version, VTE version, and any failed step in
-the commit or release-candidate notes. This smoke test is required on Ubuntu; repeat it on
+the commit or test notes. This smoke test is required on Ubuntu; repeat it on
 Omarchy for changes that affect desktop integration, themes, packaging, or file operations.
 
-## Filesystem transfer gate
+## Copy, move and clipboard test matrix
 
-Run this matrix with disposable test data after `./scripts/check.sh` succeeds. A Stage 1–2
-candidate does not pass merely because its unit tests pass.
+Run this matrix with disposable test data after `./scripts/check.sh` succeeds. Passing
+unit tests is not sufficient; the desktop and cross-filesystem behaviour has to be
+exercised by hand.
 
 - [ ] Copy, Cut/Paste, Move, Duplicate, and Link work on files, folders, empty files,
   deep trees, relative symlinks, absolute symlinks, and broken symlinks.
@@ -98,13 +99,13 @@ candidate does not pass merely because its unit tests pass.
 
 Record filesystem types, desktop/file-manager versions, available free space, and the
 exact failed row. Ubuntu coverage is mandatory; repeat the desktop-integration rows on
-Omarchy/Arch before treating the stage as accepted.
+Omarchy/Arch before treating this matrix as passed.
 
-## Trash gate
+## Trash and deletion test matrix
 
 Run this with disposable data on a scratch filesystem after `./scripts/check.sh`
-succeeds. Never point it at a trash that holds anything you want back. A Stage 3
-candidate does not pass merely because its unit tests pass.
+succeeds. Never point it at a trash that holds anything you want back. Passing unit tests
+is not sufficient; the device and multi-filesystem behaviour has to be exercised by hand.
 
 - [ ] Trash a file, an empty folder, a deep folder, a relative symlink, an absolute
   symlink, and a broken symlink. Each appears in the trash and restores to its original
@@ -144,7 +145,42 @@ candidate does not pass merely because its unit tests pass.
 
 Record filesystem types, desktop versions, the exact failed row, and whether the second
 filesystem was removable. Ubuntu coverage is mandatory; repeat the device rows on
-Omarchy/Arch before treating the stage as accepted.
+Omarchy/Arch before treating this matrix as passed.
+
+## Navigation, opening and filenames test matrix
+
+Run with disposable data after `./scripts/check.sh` succeeds.
+
+- [ ] `teral` with no arguments opens the home directory.
+- [ ] `teral ~/Documents` opens that folder; `teral ~/Documents/report.pdf` opens the
+  folder with the file selected; `teral /path/that/does/not/exist` still opens something
+  usable rather than failing to start.
+- [ ] With Teral already running, launch it again with a folder. The running window is
+  raised and the folder arrives as a new tab; no second window appears.
+- [ ] Set Teral as the default file manager
+  (`xdg-mime default dev.zuhaibullahbaig.Teral.desktop inode/directory`), then run
+  `xdg-open ~/Documents` and open a folder from a browser's download list.
+- [ ] Create and rename with names containing spaces, a leading dot, quotes, `*`, `?`,
+  a newline, and emoji. Each is accepted and the file is created under exactly that name.
+- [ ] Create a name with leading and trailing spaces. It is not trimmed, and the file
+  appears under the name that was typed.
+- [ ] Try `/`, an empty name, `.`, `..`, and a name over 255 bytes. Each is refused with
+  a reason, and the dialog stays open so the name can be corrected.
+- [ ] Rename a file whose name is not valid UTF-8. Confirming it unchanged does not
+  replace the name; editing it renames it correctly.
+- [ ] Open a symlink to a directory. Teral navigates into it. Open one to a file and it
+  opens the file.
+- [ ] Select a broken symlink. It is listed, the details panel names its target and says
+  it is missing, Open is unavailable, and it can still be trashed and deleted.
+- [ ] Select a FIFO (`mkfifo`), a socket and a device node under `/dev`. Each is
+  described, none is opened, and Teral does not hang.
+- [ ] Delete and recreate files in a folder from a terminal while browsing it. The view
+  updates on its own. Do the same while clicking into a subfolder; the navigation
+  completes and is not thrown back to the previous folder.
+- [ ] Open a tag view in one tab and a folder in another. Switch between them repeatedly;
+  each tab returns to its own view, with its own back and forward history.
+- [ ] In a tag view and in the trash, confirm New Folder, Paste, Open Terminal Here and
+  Quick Command are not offered, and that dropping files there is refused.
 
 ## Packaging
 

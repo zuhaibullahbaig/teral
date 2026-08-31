@@ -3,6 +3,7 @@
 use super::App;
 use crate::command;
 use gtk::prelude::*;
+use std::path::Path;
 use std::rc::Rc;
 use vte::prelude::*;
 
@@ -382,7 +383,13 @@ pub fn run_command(app: &App, text: &str) {
         return;
     }
 
-    let directory = app.current_dir();
+    // A tag view gathers files from all over the filesystem and the trash holds files
+    // that belong somewhere else, so neither has a folder a shell could sensibly run in.
+    // Running in whichever directory happened to be visited last would be a surprise.
+    let Some(directory) = app.location().working_directory().map(Path::to_path_buf) else {
+        app.show_error("Quick Command needs a folder; open one to run a command in it");
+        return;
+    };
     let console = &app.widgets.console;
 
     console

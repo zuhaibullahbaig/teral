@@ -7,6 +7,7 @@ use gtk::gio::prelude::*;
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::RefCell;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -50,7 +51,24 @@ pub fn window(
 }
 
 /// Ask for a single line of text. `confirm` runs only when the user accepts.
-pub fn prompt(
+/// Ask for a single filename.
+///
+/// The text is never trimmed. Leading and trailing spaces are legal in a Linux
+/// filename, and silently removing them would create a file under a name the user did
+/// not type and cannot find. Anything the filesystem would actually refuse is reported
+/// under the field, and the dialog stays open so the name can be corrected.
+pub fn prompt_name(
+    app: &App,
+    title: &str,
+    accept_label: &str,
+    initial: &str,
+    select_range: Option<(i32, i32)>,
+    confirm: impl Fn(&App, String) + 'static,
+) {
+    prompt_with(app, title, accept_label, initial, select_range, confirm);
+}
+
+fn prompt_with(
     app: &App,
     title: &str,
     accept_label: &str,
@@ -82,6 +100,15 @@ pub fn prompt(
     buttons.append(&cancel);
     buttons.append(&accept);
 
+    // Only ever visible when there is something to say, so the dialog does not carry an
+    // empty row waiting for a mistake.
+    let problem = gtk::Label::new(None);
+    problem.set_xalign(0.0);
+    problem.set_wrap(true);
+    problem.add_css_class("teral-status-item");
+    problem.add_css_class("error");
+    problem.set_visible(false);
+
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.set_margin_top(18);
     content.set_margin_bottom(18);
@@ -89,6 +116,7 @@ pub fn prompt(
     content.set_margin_end(18);
     content.append(&heading);
     content.append(&entry);
+    content.append(&problem);
     content.append(&buttons);
 
     let window = window(app, title, 400, -1, &content);
@@ -100,15 +128,26 @@ pub fn prompt(
         let app = Rc::clone(app);
         let entry = entry.clone();
         let window = window.clone();
+        let problem = problem.clone();
         let confirm = Rc::clone(&confirm);
         move || {
-            let value = entry.text().trim().to_owned();
-            window.close();
-            if !value.is_empty() {
-                confirm(&app, value);
+            let value = entry.text().to_string();
+            if let Err(error) = crate::files::name::validate(OsStr::new(&value)) {
+                problem.set_text(error.message());
+                problem.set_visible(true);
+                entry.grab_focus();
+                return;
             }
+            window.close();
+            confirm(&app, value);
         }
     };
+
+    // A name that has been corrected should stop being flagged as you type.
+    entry.connect_changed({
+        let problem = problem.clone();
+        move |_| problem.set_visible(false)
+    });
 
     accept.connect_clicked({
         let submit = submit.clone();

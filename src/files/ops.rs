@@ -23,25 +23,6 @@ pub use super::transfer::{
     clipboard_has_files, conflicts, duplicate, read_clipboard, transfer, write_clipboard,
 };
 
-/// Outcome of a completed transfer.
-#[derive(Debug, Default)]
-pub struct TransferReport {
-    pub succeeded: usize,
-    pub completed_paths: Vec<PathBuf>,
-    pub failures: Vec<String>,
-    pub cancelled: bool,
-}
-
-fn blocked_report(paths: &[PathBuf], error: &str) -> TransferReport {
-    TransferReport {
-        failures: paths
-            .iter()
-            .map(|path| format!("{}: {error}", display_name(path)))
-            .collect(),
-        ..TransferReport::default()
-    }
-}
-
 /// Create a directory, reporting the GIO error if it already exists or is refused.
 pub async fn create_directory(parent: &Path, name: &OsStr) -> Result<PathBuf, glib::Error> {
     let path = parent.join(name);
@@ -138,11 +119,6 @@ pub fn trash_dirs() -> Vec<trash::TrashDir> {
         };
     };
     trash::discover(&crate::theme::data_home(), &mount_points(), uid)
-}
-
-/// Where trashed data can be browsed, in the order the sidebar should offer it.
-pub fn trash_locations() -> Vec<PathBuf> {
-    trash_dirs().iter().map(trash::TrashDir::files).collect()
 }
 
 /// True when `path` is inside any trash Teral knows about, so restore and permanent
@@ -1027,15 +1003,16 @@ pub fn can_be_executable(is_directory: bool, content_type: Option<&str>) -> bool
 }
 
 /// Add or remove the execute bits on a set of files, leaving read/write alone.
-pub async fn set_executable(paths: Vec<PathBuf>, executable: bool) -> TransferReport {
+pub async fn set_executable(paths: Vec<PathBuf>, executable: bool) -> JobReport {
+    let fallback = paths.clone();
     gio::spawn_blocking(move || {
         let _lease = match OperationLease::acquire(&paths) {
             Ok(lease) => lease,
-            Err(error) => return blocked_report(&paths, &error),
+            Err(error) => return blocked_job(OperationKind::SetExecutable, &paths, &error),
         };
         use std::os::unix::fs::PermissionsExt;
 
-        let mut report = TransferReport::default();
+        let mut report = JobReport::new(OperationKind::SetExecutable);
         for path in paths {
             let result = fs::metadata(&path).and_then(|metadata| {
                 let mode = metadata.permissions().mode();
@@ -1050,22 +1027,22 @@ pub async fn set_executable(paths: Vec<PathBuf>, executable: bool) -> TransferRe
                 fs::set_permissions(&path, fs::Permissions::from_mode(updated))
             });
 
+            let mut item = ItemResult::new(path.clone(), path);
             match result {
-                Ok(()) => {
-                    report.succeeded += 1;
-                    report.completed_paths.push(path);
-                }
-                Err(error) => report
-                    .failures
-                    .push(format!("{}: {error}", display_name(&path))),
+                Ok(()) => item.state = ItemState::Completed,
+                Err(error) => item.error = Some(error.to_string()),
             }
+            report.items.push(item);
         }
         report
     })
     .await
-    .unwrap_or_else(|_| TransferReport {
-        failures: vec!["the permission worker stopped unexpectedly".to_owned()],
-        ..TransferReport::default()
+    .unwrap_or_else(|_| {
+        blocked_job(
+            OperationKind::SetExecutable,
+            &fallback,
+            "the permission worker stopped unexpectedly",
+        )
     })
 }
 
@@ -1113,13 +1090,6 @@ pub fn open_terminal(directory: &Path) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("{}: {error}", program.display()))
-}
-
-fn display_name(path: &Path) -> String {
-    path.file_name()
-        .unwrap_or(path.as_os_str())
-        .to_string_lossy()
-        .into_owned()
 }
 
 #[cfg(test)]

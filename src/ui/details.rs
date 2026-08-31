@@ -593,7 +593,7 @@ pub fn connect(app: &App) {
     actions.cut.connect_clicked({
         let app = Rc::clone(app);
         move |_| {
-            if crate::files::ops::is_in_trash(&app.current_dir()) {
+            if app.location().is_trash() {
                 super::window::restore_selection(&app);
             } else {
                 super::window::stage_transfer(&app, crate::files::ops::TransferKind::Move);
@@ -644,7 +644,7 @@ pub fn connect(app: &App) {
     actions.trash.connect_clicked({
         let app = Rc::clone(app);
         move |_| {
-            if crate::files::ops::is_in_trash(&app.current_dir()) {
+            if app.location().is_trash() {
                 super::window::delete_permanently(&app);
             } else {
                 super::window::trash_selection(&app);
@@ -666,7 +666,7 @@ fn connect_multi(app: &App) {
     multi.cut.connect_clicked({
         let app = Rc::clone(app);
         move |_| {
-            if crate::files::ops::is_in_trash(&app.current_dir()) {
+            if app.location().is_trash() {
                 super::window::restore_selection(&app);
             } else {
                 super::window::stage_transfer(&app, crate::files::ops::TransferKind::Move);
@@ -698,7 +698,7 @@ fn connect_multi(app: &App) {
     multi.trash.connect_clicked({
         let app = Rc::clone(app);
         move |_| {
-            if crate::files::ops::is_in_trash(&app.current_dir()) {
+            if app.location().is_trash() {
                 super::window::delete_permanently(&app);
             } else {
                 super::window::trash_selection(&app);
@@ -882,11 +882,8 @@ pub fn update(app: &App) {
             "Accessed" => data.accessed.as_ref().map(format_time).unwrap_or_default(),
             "Owner" => owner.clone(),
             "Permissions" => data.mode.map(format_permissions).unwrap_or_default(),
-            "Links to" => data
-                .symlink_target
-                .as_ref()
-                .map(|target| target.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            // A link whose target is gone still names what it pointed at, and says so.
+            "Links to" => data.link_summary().unwrap_or_default(),
             "Path" => data.path.to_string_lossy().into_owned(),
             _ => String::new(),
         };
@@ -898,7 +895,7 @@ pub fn update(app: &App) {
     rebuild_tag_chips(app, entry);
 
     let actions = &details.actions;
-    let in_trash = crate::files::ops::is_in_trash(&app.current_dir());
+    let in_trash = app.location().is_trash();
 
     relabel(&actions.cut, if in_trash { "Restore" } else { "Cut" });
     relabel(&actions.trash, if in_trash { "Delete" } else { "Trash" });
@@ -923,7 +920,11 @@ pub fn update(app: &App) {
     // The popover is built when it is opened, not on every selection: building it
     // eagerly meant every click paid for icon lookups it usually never showed.
     let applications = crate::files::ops::applications_for(data.content_type.as_deref());
-    let can_open_with = !entry.is_directory() && !applications.is_empty();
+    let can_open_with = !entry.is_directory() && entry.is_openable() && !applications.is_empty();
     actions.open_with.set_sensitive(can_open_with);
     actions.open_with.set_popover(None::<&gtk::Popover>);
+
+    // A broken link has nothing behind it, and a FIFO or device would hang whatever
+    // opened it, so the action is refused up front rather than failing on the click.
+    actions.open.set_sensitive(entry.is_openable());
 }

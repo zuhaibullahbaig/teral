@@ -30,8 +30,9 @@ pub enum TransferKind {
     Link,
 }
 
-/// Every filesystem mutation is named up front so later stages can use this same
-/// result/coordinator contract instead of inventing operation-specific status types.
+/// Every filesystem mutation is named up front so trash, restore, deletion and archive
+/// work share this result/coordinator contract instead of inventing their own status
+/// types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationKind {
     Copy,
@@ -41,8 +42,23 @@ pub enum OperationKind {
     Trash,
     Restore,
     PermanentDelete,
-    ArchiveExtract,
-    ArchiveCreate,
+    SetExecutable,
+}
+
+impl OperationKind {
+    /// How a finished job of this kind describes itself.
+    pub const fn past_tense(self) -> &'static str {
+        match self {
+            Self::Copy => "Copied",
+            Self::Move => "Moved",
+            Self::Link => "Linked",
+            Self::Duplicate => "Duplicated",
+            Self::Trash => "Moved to the trash",
+            Self::Restore => "Restored",
+            Self::PermanentDelete => "Deleted",
+            Self::SetExecutable => "Updated",
+        }
+    }
 }
 
 impl From<TransferKind> for OperationKind {
@@ -126,6 +142,16 @@ impl ItemResult {
     pub fn completed(&self) -> bool {
         self.state == ItemState::Completed
     }
+
+    /// True when the job could not use the destination that was asked for.
+    ///
+    /// A conflict-renamed file is a success, but a silent one: the user asked for one
+    /// name and got another, and has to be told so they can find it.
+    pub fn was_renamed(&self) -> bool {
+        self.actual_destination
+            .as_deref()
+            .is_some_and(|actual| actual != self.requested_destination)
+    }
 }
 
 /// Snapshot emitted by a running job. Updates are deliberately coarse enough not to
@@ -158,6 +184,14 @@ impl JobReport {
 
     pub fn succeeded(&self) -> usize {
         self.items.iter().filter(|item| item.completed()).count()
+    }
+
+    /// Completed items that had to take a different name than the one requested.
+    pub fn renamed(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.completed() && item.was_renamed())
+            .count()
     }
 
     pub fn skipped(&self) -> usize {
@@ -986,7 +1020,7 @@ fn copy_entry(
         let link = fs::read_link(source)?;
         std::os::unix::fs::symlink(link, target)?;
         created.push(target.to_path_buf());
-        copy_metadata(source, target)?;
+        copy_metadata(source, target);
         return Ok(());
     }
 
@@ -1007,7 +1041,7 @@ fn copy_entry(
                 created,
             )?;
         }
-        copy_metadata(source, target)?;
+        copy_metadata(source, target);
         return Ok(());
     }
 
@@ -1054,19 +1088,47 @@ fn copy_entry(
     }
     output.set_len(logical_length)?;
     output.sync_all()?;
-    copy_metadata(source, target)
+    // The handle is closed before metadata is applied, so a copied modification time is
+    // not immediately overwritten by the final write.
+    drop(output);
+    copy_metadata(source, target);
+    Ok(())
 }
 
-fn copy_metadata(source: &Path, target: &Path) -> io::Result<()> {
+/// Metadata worth carrying from a source to its copy.
+///
+/// Ownership is deliberately absent: only root can change it, and a copy made by an
+/// ordinary user belongs to that user, which is what every other file manager does.
+const COPIED_ATTRIBUTES: &str = "unix::mode,time::modified,time::modified-usec,\
+time::access,time::access-usec,xattr::*";
+
+/// Carry a source's metadata onto its copy, as far as the destination allows.
+///
+/// `g_file_copy_attributes` asks the destination for attributes it never advertised as
+/// settable — `standard::size` among them — and fails outright when one is refused,
+/// which would abort an otherwise complete copy. Asking for a known set instead keeps
+/// the request to things a filesystem can actually accept.
+///
+/// Failure here is never fatal. A FAT or NTFS destination has no Unix mode, and a
+/// network mount may refuse extended attributes; the file's contents still copied, and
+/// reporting that as a failed transfer would be untrue.
+fn copy_metadata(source: &Path, target: &Path) {
     let source = gio::File::for_path(source);
     let target = gio::File::for_path(target);
-    source
-        .copy_attributes(
-            &target,
-            gio::FileCopyFlags::ALL_METADATA | gio::FileCopyFlags::NOFOLLOW_SYMLINKS,
-            gio::Cancellable::NONE,
-        )
-        .map_err(|error| io::Error::other(error.message().trim().to_owned()))
+
+    let Ok(info) = source.query_info(
+        COPIED_ATTRIBUTES,
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        gio::Cancellable::NONE,
+    ) else {
+        return;
+    };
+
+    let _ = target.set_attributes_from_info(
+        &info,
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        gio::Cancellable::NONE,
+    );
 }
 
 fn cleanup_created(paths: &[PathBuf]) {
@@ -1480,7 +1542,7 @@ mod tests {
 
         let report = run(
             TransferKind::Move,
-            &[source.clone()],
+            std::slice::from_ref(&source),
             &destination,
             ConflictPolicy::Skip,
         );
