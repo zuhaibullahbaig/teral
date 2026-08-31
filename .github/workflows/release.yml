@@ -1,0 +1,70 @@
+name: Release
+
+# Cutting a release is pushing a tag. The job refuses to build unless the tag matches
+# the version in Cargo.toml, so a release can never ship the previous version's number.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag must match Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$tag" != "$crate" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $crate."
+            echo "Bump the version in Cargo.toml (and CHANGELOG.md), then retag."
+            exit 1
+          fi
+          echo "Releasing $crate"
+
+      - name: The changelog must mention this version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          grep -q "## $tag" CHANGELOG.md || {
+            echo "CHANGELOG.md has no '## $tag' section."
+            exit 1
+          }
+
+      - name: Install GTK4 and VTE
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev libvte-2.91-gtk4-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Checks
+        run: ./scripts/check.sh
+
+      - name: Package
+        run: ./scripts/package.sh
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

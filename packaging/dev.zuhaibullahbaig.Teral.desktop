@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Teral
+GenericName=File Manager
+Comment=Browse, search and manage files
+Exec=teral %U
+Icon=dev.zuhaibullahbaig.Teral
+Terminal=false
+Categories=System;FileTools;FileManager;Utility;
+Keywords=files;folders;browser;manager;explorer;
+MimeType=inode/directory;
+StartupNotify=true
+StartupWMClass=dev.zuhaibullahbaig.Teral

@@ -70,6 +70,35 @@ Ctrl+= / Ctrl+-     Larger / smaller icons
 Escape              Close search, cancel a transfer, or hide the console
 ```
 
+## Installing
+
+Every release publishes a binary tarball and a `.deb`, and every push to GitHub builds
+the same artifacts so any commit can be tried without waiting for a release.
+
+**Any distribution** — download `teral-<version>-x86_64-linux.tar.gz` from the releases
+page, then:
+
+```bash
+tar -xzf teral-<version>-x86_64-linux.tar.gz
+cd teral-<version>
+./scripts/install.sh                 # /usr/local, needs sudo
+PREFIX=~/.local ./scripts/install.sh # just for you, no root
+```
+
+`./scripts/install.sh --uninstall` removes it again.
+
+**Debian and Ubuntu** — `sudo apt install ./teral_<version>_amd64.deb`.
+
+**Arch and Omarchy** — build the package from the checkout:
+
+```bash
+cd packaging && makepkg -si
+```
+
+Teral needs GTK 4.12 or newer and VTE's GTK4 build at runtime; the packages declare
+that, and the tarball expects `gtk4` and `vte4` (Arch) or `libgtk-4-1` and
+`libvte-2.91-gtk4-0` (Debian/Ubuntu) to be installed.
+
 ## Ubuntu development setup
 
 Install the native GTK4 development dependencies:
@@ -138,7 +167,15 @@ Bookmarked folders are stored separately, in `~/.local/share/teral/places.toml`.
 ./scripts/check.sh
 ```
 
-That runs formatting checks, Clippy with warnings treated as errors, and tests.
+That runs formatting checks, Clippy with warnings treated as errors, and tests. CI runs
+exactly the same script on every push, then builds and packages.
+
+## Releasing
+
+`RELEASING.md` is the process, and the release workflow enforces it: the tag must match
+`version` in `Cargo.toml` and `CHANGELOG.md` must have a section for it, or nothing is
+published. Cutting a release is bumping the version, writing the changelog entry, and
+pushing a `v<version>` tag.
 
 ## Theming
 
@@ -178,8 +215,15 @@ on the desktop's own colours, not just its light/dark preference.
 Configuration files written before Omarchy became part of "follow the system" still work:
 `mode = "omarchy"` is read as `mode = "system"`.
 
-Teral watches both its own configuration file and the active Omarchy theme, so changing
-either restyles a running Teral without a restart.
+Teral looks for Omarchy's active theme link under `~/.config/omarchy/current/theme`,
+then the XDG state and data locations, since Omarchy has moved it between them.
+`TERAL_OMARCHY_THEME` overrides the search when a theme lives somewhere else.
+
+Teral watches its own configuration file, the active theme's directory, and the
+directory holding the theme link — Omarchy switches themes by repointing that link, and
+a watch on the link alone would keep following the theme it pointed at when Teral
+started. So switching Omarchy themes restyles a running Teral without a restart, and so
+does editing the theme in place.
 
 Invalid colors and out-of-range layout values are discarded or clamped, so a broken theme can never make Teral unusable.
 

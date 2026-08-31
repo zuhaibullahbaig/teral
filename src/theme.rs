@@ -462,10 +462,51 @@ fn derive_omarchy_theme(colors_path: &Path) -> Option<ThemeConfig> {
     })
 }
 
+/// Where an Omarchy installation can keep the link to its active theme.
+///
+/// Omarchy has moved this between XDG directories over its life, and Teral cannot ask
+/// it, so Teral looks in each place rather than betting on one. `TERAL_OMARCHY_THEME`
+/// overrides all of them, which is also how the behaviour is exercised off Omarchy.
+fn omarchy_theme_links() -> Vec<PathBuf> {
+    if let Some(override_path) = env::var_os("TERAL_OMARCHY_THEME").filter(|v| !v.is_empty()) {
+        return vec![PathBuf::from(override_path)];
+    }
+
+    vec![
+        config_home().join("omarchy/current/theme"),
+        state_home().join("omarchy/current/theme"),
+        data_home().join("omarchy/current/theme"),
+    ]
+}
+
 /// The directory holding Omarchy's active theme, when Teral is running under Omarchy.
 pub fn omarchy_active_theme_dir() -> Option<PathBuf> {
-    let path = state_home().join("omarchy/current/theme");
-    path.is_dir().then_some(path)
+    omarchy_theme_links().into_iter().find(|path| path.is_dir())
+}
+
+/// Paths to watch so a theme change restyles a running Teral.
+///
+/// Omarchy switches themes by repointing a symlink, and a monitor on the link follows
+/// it to the theme it pointed at when the monitor was created — so the swap is invisible
+/// there. Watching the directory that *holds* the link is what sees the switch; watching
+/// the theme directory itself is what sees a theme edited in place. Teral watches both.
+pub fn omarchy_watch_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    for link in omarchy_theme_links() {
+        if let Some(parent) = link.parent().filter(|parent| parent.is_dir()) {
+            paths.push(parent.to_path_buf());
+        }
+    }
+
+    if let Some(directory) = omarchy_active_theme_dir()
+        && let Ok(resolved) = fs::canonicalize(&directory)
+    {
+        paths.push(resolved);
+    }
+
+    paths.dedup();
+    paths
 }
 
 // ------------------------------------------------------- desktop integration ----

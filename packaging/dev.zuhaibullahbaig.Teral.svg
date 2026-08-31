@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Teral's application icon: a folder carrying a terminal prompt, drawn flat so it
+     reads at 16px as well as at 512px. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="teral-body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2f3a"/>
+      <stop offset="1" stop-color="#1b1e26"/>
+    </linearGradient>
+    <linearGradient id="teral-folder" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f2c368"/>
+      <stop offset="1" stop-color="#e0a63c"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#teral-body)"/>
+
+  <path d="M30 44a6 6 0 0 1 6-6h17l8 9h31a6 6 0 0 1 6 6v4H30z" fill="#c98f2c"/>
+  <path d="M28 55h72a6 6 0 0 1 5.9 7.1l-5.9 29.4A8 8 0 0 1 92.1 98H35.9a8 8 0 0 1-7.9-6.5L22.1 62.1A6 6 0 0 1 28 55z" fill="url(#teral-folder)"/>
+
+  <path d="M48 69l9 9-9 9" fill="none" stroke="#1b1e26" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M64 87h16" fill="none" stroke="#1b1e26" stroke-width="6" stroke-linecap="round"/>
+</svg>

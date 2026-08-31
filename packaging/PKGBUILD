@@ -1,0 +1,42 @@
+# Maintainer: Zuhaib Ullah Baig
+#
+# Arch and Omarchy build. From a release tag:
+#
+#   makepkg -si
+#
+# To build the checkout you have instead of a downloaded tag, use PKGBUILD.local
+# semantics: set _localbuild=1 in the environment.
+pkgname=teral
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="A modern native Linux file manager written in Rust with GTK4"
+arch=('x86_64' 'aarch64')
+url="https://github.com/zuhaibullahbaig/teral"
+license=('MIT')
+depends=('gtk4' 'vte4' 'glib2')
+makedepends=('rust' 'cargo' 'pkgconf')
+options=('!lto')  # the release profile already does full LTO
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  export CARGO_TARGET_DIR=target
+  cargo build --release --locked
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  # The GUI tests need no display: they cover configuration, themes and file logic.
+  cargo test --release --locked
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/teral "$pkgdir/usr/bin/teral"
+  install -Dm644 packaging/dev.zuhaibullahbaig.Teral.desktop \
+    "$pkgdir/usr/share/applications/dev.zuhaibullahbaig.Teral.desktop"
+  install -Dm644 packaging/dev.zuhaibullahbaig.Teral.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.zuhaibullahbaig.Teral.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

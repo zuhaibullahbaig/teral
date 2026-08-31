@@ -1,6 +1,9 @@
 # Rust
 /target/
 
+# Release artifacts built by scripts/package.sh
+/dist/
+
 # Editors / IDEs
 .idea/
 .vscode/
@@ -11,6 +14,11 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Per-filesystem trash directories. The desktop creates these at the root of any
+# filesystem other than the one $HOME lives on, as soon as something on it is trashed.
+.Trash-*
+.Trash/
 
 # Local development / agent workflow files
 /AGENT_INSTRUCTIONS.md

@@ -1,6 +1,6 @@
 [package]
 name = "teral"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 authors = ["Zuhaib Ullah Baig"]
 license = "MIT"
@@ -13,6 +13,17 @@ gtk = { package = "gtk4", version = "0.11.3", features = ["v4_12"] }
 vte = { package = "vte4", version = "0.10" }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9"
+
+# Release builds are what people download, so they are tuned for a small binary that is
+# still fast: whole-program optimisation across one code generation unit, and no debug
+# symbols. Panics still unwind — worker threads report a failed transfer rather than
+# taking the whole file manager down with them.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"
 
 [lints.rust]
 unsafe_code = "forbid"

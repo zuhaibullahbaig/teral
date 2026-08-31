@@ -121,11 +121,15 @@ pub mod names {
 
 /// The window icon Teral should wear on this desktop.
 ///
-/// Until Teral is installed with an icon of its own, a window with no icon shows the
-/// desktop's blank placeholder. Rather than invent artwork, Teral asks the desktop which
-/// application it opens folders with and borrows that application's icon — the file
-/// manager icon people already recognise — falling back to the standard names for one.
+/// An installed Teral has an icon of its own, and that always wins. Running from a build
+/// directory it has none, and a window with no icon shows the desktop's blank
+/// placeholder — so rather than invent artwork, Teral asks the desktop which application
+/// it opens folders with and borrows that icon, then falls back to the standard names.
 pub fn file_manager_icon_name() -> Option<String> {
+    if theme_has_icon(crate::APP_ID) {
+        return Some(crate::APP_ID.to_owned());
+    }
+
     let handler = gio::AppInfo::default_for_type("inode/directory", false)
         .and_then(|application| application.icon())
         .and_downcast::<gio::ThemedIcon>()

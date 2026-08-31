@@ -324,11 +324,14 @@ pub fn build_window_at(
 
 /// Re-apply the theme when the configuration file or the active Omarchy theme changes,
 /// so switching desktop themes restyles a running Teral.
-fn watch_configuration(app: &App) {
+pub fn watch_configuration(app: &App) {
+    // Rebuilt from scratch each time: switching Omarchy themes changes which directory
+    // holds the active theme, so the old monitors would be watching the theme that was
+    // in use a moment ago.
+    app.state.config_monitors.borrow_mut().clear();
+
     let mut watched = vec![crate::config::config_path()];
-    if let Some(directory) = crate::theme::omarchy_active_theme_dir() {
-        watched.push(directory);
-    }
+    watched.extend(crate::theme::omarchy_watch_paths());
 
     for path in watched {
         let file = gio::File::for_path(&path);
@@ -343,9 +346,16 @@ fn watch_configuration(app: &App) {
             let app = Rc::clone(app);
             move |_, _, _, _| {
                 // The Settings window owns the file while it is open; do not fight it.
-                if app.widgets.settings_window.borrow().is_none() {
-                    app.reload_theme();
+                if app.widgets.settings_window.borrow().is_some() {
+                    return;
                 }
+                // The handler must not still be running when its own monitor is
+                // dropped by the rebuild below, so both happen on the next idle.
+                let app = Rc::clone(&app);
+                super::defer(move || {
+                    app.reload_theme();
+                    watch_configuration(&app);
+                });
             }
         });
         app.state.config_monitors.borrow_mut().push(monitor);

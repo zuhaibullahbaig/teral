@@ -1,0 +1,57 @@
+name: CI
+
+# Every push and every pull request: the same checks a release has to pass, plus a
+# release build, so a binary exists for any commit without waiting for a tag.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check and build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK4 and VTE
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev libvte-2.91-gtk4-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --all-targets
+
+      - name: Release build
+        run: cargo build --release
+
+      - name: Report binary size
+        run: ls -l target/release/teral
+
+      - name: Package
+        run: ./scripts/package.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: teral-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
