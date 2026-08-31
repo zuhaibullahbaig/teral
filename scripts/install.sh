@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install Teral: the binary, its desktop entry and its icon.
 #
-#   ./scripts/install.sh                 # build and install into /usr/local (needs sudo)
+#   sudo ./scripts/install.sh            # build and install into /usr/local
 #   PREFIX=~/.local ./scripts/install.sh # install for one user, no root needed
 #   ./scripts/install.sh --uninstall     # remove what was installed
 #
@@ -45,7 +45,7 @@ fi
 BINARY="${TERAL_BINARY:-$ROOT/target/release/teral}"
 if [[ ! -x "$BINARY" ]]; then
   echo "Building Teral in release mode…"
-  (cd "$ROOT" && cargo build --release)
+  (cd "$ROOT" && cargo build --release --locked)
   BINARY="$ROOT/target/release/teral"
 fi
 

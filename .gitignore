@@ -24,6 +24,7 @@ Thumbs.db
 /AGENT_INSTRUCTIONS.md
 /TERAL_PRODUCT_SPEC.md
 /IMPLEMENTATION_PLAN.md
+/TERAL_MASTER_ROADMAP.md
 
 # Local-only configuration overrides
 /teral.local.toml

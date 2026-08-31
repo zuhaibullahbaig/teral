@@ -1,7 +1,7 @@
 name: CI
 
-# Every push and every pull request: the same checks a release has to pass, plus a
-# release build, so a binary exists for any commit without waiting for a tag.
+# Every push and every pull request runs the same checks and builds as local development,
+# then creates candidate artifacts without publishing a release.
 on:
   push:
     branches: ['**']
@@ -30,17 +30,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Formatting
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Tests
-        run: cargo test --all-targets
-
-      - name: Release build
-        run: cargo build --release
+      - name: Checks
+        run: ./scripts/check.sh
 
       - name: Report binary size
         run: ls -l target/release/teral

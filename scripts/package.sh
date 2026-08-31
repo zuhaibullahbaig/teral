@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the release artifacts Teral ships:
+# Build candidate release artifacts from the current checkout:
 #
 #   dist/teral-<version>-x86_64-linux.tar.gz   binary + desktop entry + icon + installer
 #   dist/teral_<version>_amd64.deb             Debian/Ubuntu package (needs dpkg-deb)
@@ -16,7 +16,7 @@ APP_ID="dev.zuhaibullahbaig.Teral"
 DIST="$ROOT/dist"
 
 echo "Packaging Teral $VERSION"
-cargo build --release
+cargo build --release --locked
 
 rm -rf "$DIST"
 mkdir -p "$DIST"

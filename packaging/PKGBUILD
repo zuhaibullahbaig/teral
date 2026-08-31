@@ -1,19 +1,16 @@
 # Maintainer: Zuhaib Ullah Baig
 #
-# Arch and Omarchy build. From a release tag:
+# Arch and Omarchy build from a release tag:
 #
 #   makepkg -si
-#
-# To build the checkout you have instead of a downloaded tag, use PKGBUILD.local
-# semantics: set _localbuild=1 in the environment.
 pkgname=teral
-pkgver=1.0.0
+pkgver=0.1.0
 pkgrel=1
 pkgdesc="A modern native Linux file manager written in Rust with GTK4"
 arch=('x86_64' 'aarch64')
 url="https://github.com/zuhaibullahbaig/teral"
 license=('MIT')
-depends=('gtk4' 'vte4' 'glib2')
+depends=('gtk4>=4.12' 'vte4>=0.66' 'glib2')
 makedepends=('rust' 'cargo' 'pkgconf')
 options=('!lto')  # the release profile already does full LTO
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")

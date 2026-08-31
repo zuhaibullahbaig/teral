@@ -1,102 +1,99 @@
 <h1 align="center">Teral</h1>
 
 <p align="center">
-  A fast, native file manager for Linux — written in Rust with GTK4.
+  A native Linux file manager written in Rust with GTK4.
 </p>
 
 <p align="center">
-  <a href="https://github.com/zuhaibullahbaig/teral/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/zuhaibullahbaig/teral?label=release"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <img alt="Development status" src="https://img.shields.io/badge/status-pre--release%200.1-orange">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux-informational">
 </p>
 
-Teral is a file manager for people who live in their files: a dense three-pane window
-that shows you what you are looking at, a command line built into the folder you are
-browsing, and colours that follow the desktop you already set up.
+Teral is an information-rich three-pane file manager with native Linux integration, a
+details panel, and a command console rooted in the folder being browsed. It is one GTK4
+application for Ubuntu, Omarchy, Arch, and other Linux desktops.
 
-It is one application on every Linux desktop — no separate editions, no web view, no
-Electron. Just GTK4.
+## Development status
 
----
+Teral is currently an unreleased `0.1.0` application. It is suitable for development and
+testing with non-critical files; it is not yet recommended as a primary file manager for
+important data.
 
-## Install
+No public binaries or GitHub release have been published. The first public `0.1.0` release
+will happen only after the core filesystem-safety and Linux-integration test gates pass.
 
-### Ubuntu and Debian
+## Verified development foundation
 
-Download the `.deb` from the [latest release](https://github.com/zuhaibullahbaig/teral/releases/latest), then:
+The current source implements:
+
+- asynchronous directory enumeration through GIO;
+- Back, Forward, Parent, clickable breadcrumbs, and `Ctrl+L` location editing;
+- grid and list views sharing multi-selection;
+- current-folder filename filtering, sorting, and hidden-file visibility;
+- tabs with separate location and navigation history;
+- existing XDG user locations and currently mounted local filesystems;
+- bookmarks, tags, and a selected-item details panel;
+- system MIME icons, image thumbnails, Open, and Open With;
+- create folder, rename, copy, cut, paste, move, duplicate, Trash, restore, permanent
+  deletion, archive extraction, and archive creation code paths;
+- a VTE terminal for interactive Quick Commands;
+- built-in, system-derived, and Omarchy-aware appearance layers;
+- a Settings window backed by `~/.config/teral/teral.toml`.
+
+This list means the behavior exists in the source. It does not claim that every failure,
+race, cancellation, device, or cross-filesystem case is finished.
+
+## Core work still in progress
+
+Before the first public release, Teral is hardening:
+
+- atomic conflict handling and protection against destination races;
+- metadata-preserving copy and safe cross-filesystem move;
+- operation progress, cancellation, partial-result cleanup, and truthful failure reporting;
+- file clipboard interoperability with other Linux file managers;
+- drag-and-drop Copy/Move negotiation;
+- specification-correct Trash, restore, Empty Trash, and secondary-filesystem behavior;
+- exact non-UTF-8 filename handling throughout operations and Trash;
+- directory symlinks and special filesystem entries;
+- desktop `%U`/`xdg-open` directory handling;
+- mounted-volume actions, removable devices, MTP/GVfs, and disconnected-media behavior;
+- large-directory responsiveness and off-main-thread thumbnail decoding;
+- consistent persistence for tags, bookmarks, and view preferences.
+
+Richer document/media previews, advanced search, and other expansion work come after the
+core file manager is trustworthy.
+
+## Build from source
+
+Teral currently targets GTK 4.12 or newer and VTE's GTK4 build.
+
+Ubuntu and Debian development dependencies:
 
 ```bash
-sudo apt install ./teral_1.0.0_amd64.deb
+sudo apt update
+sudo apt install -y build-essential pkg-config libgtk-4-dev libvte-2.91-gtk4-dev
 ```
 
-Teral appears in your launcher straight away. To make it the default file manager:
+Arch and Omarchy development dependencies:
 
 ```bash
-xdg-mime default dev.zuhaibullahbaig.Teral.desktop inode/directory
+sudo pacman -S --needed base-devel gtk4 vte4 pkgconf
 ```
 
-### Any other distribution
-
-Download `teral-1.0.0-x86_64-linux.tar.gz` from the same page:
+Install Rust through [rustup](https://rustup.rs), then run:
 
 ```bash
-tar -xzf teral-1.0.0-x86_64-linux.tar.gz
-cd teral-1.0.0
-./scripts/install.sh                  # system-wide, asks for sudo
-PREFIX=~/.local ./scripts/install.sh  # just for you, no root
+cargo run --locked
 ```
 
-`./scripts/install.sh --uninstall` removes it again.
-
-### Arch and Omarchy
+Run the complete baseline checks with:
 
 ```bash
-git clone https://github.com/zuhaibullahbaig/teral
-cd teral/packaging && makepkg -si
+./scripts/check.sh
 ```
 
-### What it needs
-
-GTK 4.12 or newer and VTE's GTK4 build — `libgtk-4-1` and `libvte-2.91-gtk4-0` on
-Ubuntu, `gtk4` and `vte4` on Arch. The packages declare these, so a normal install pulls
-them in.
-
----
-
-## What Teral does
-
-**Browsing.** Sidebar with your XDG locations, mounted drives with capacity meters,
-bookmarks you drag folders onto, and your own tags. Grid and list views over one
-selection, live icon sizing, image thumbnails, tabs, breadcrumbs, real back/forward
-history, and a details panel with type, size, owner, permissions, timestamps and symlink
-target.
-
-**File work.** Copy, cut, paste, duplicate, rename, new folder, and drag and drop —
-between Teral's own folders and to and from other applications. Recursive transfers run
-off the UI thread, so a big copy never freezes the window, and they never overwrite
-anything: a name collision becomes a new name, not a lost file.
-
-**Trash that works.** Browse it, restore an item to where it came from, empty it, or
-delete permanently.
-
-**Archives.** Extract here or into a folder — zip, tar, 7z, rar — and compress a
-selection into a zip.
-
-**Tags.** Give one a name and a colour, attach it to anything, and click it in the
-sidebar to see everything carrying it. Tags follow their files when Teral renames or
-moves them.
-
-**Quick Command.** Type a command and it runs in the folder you are browsing, in a real
-terminal — `vim`, `git rebase -i`, anything interactive. Drag the console's title bar to
-resize it. Commands run only when you type them; Teral never escalates privileges on its
-own.
-
-**Theming.** Teral's own dark palette, or the desktop's. Following the system means the
-GTK theme's real colours and the desktop's accent — and, on Omarchy, the active theme
-itself: its `teral.toml` if it ships one, otherwise colours derived from its
-`colors.toml`. Switching your desktop theme restyles a running Teral, no restart.
-
----
+See [DEVELOPMENT.md](DEVELOPMENT.md) for build, check, packaging, and local-install details.
 
 ## Keyboard
 
@@ -105,7 +102,7 @@ Enter               Open
 Backspace           Parent folder
 Alt+Left/Right      Back / Forward
 Ctrl+L              Edit the location
-Ctrl+F              Search this folder
+Ctrl+F              Filter this folder
 Ctrl+H              Show hidden files
 Ctrl+A              Select all
 Ctrl+C / Ctrl+X     Copy / Cut
@@ -119,30 +116,27 @@ Ctrl+T / Ctrl+W     New tab / close tab
 Ctrl+Tab            Next tab (add Shift for previous)
 Ctrl+,              Settings
 Ctrl+I              Show or hide the details panel
-Ctrl+= / Ctrl+-     Larger / smaller icons
-Ctrl+0              Reset the icon size
+Ctrl+= / Ctrl+-     Larger / smaller grid icons
+Ctrl+0              Reset the grid icon size
 F2                  Rename
-Delete              Move to trash
+Delete              Move to Trash
 Shift+Delete        Delete permanently
 F5 / Ctrl+R         Refresh
 F1                  Keyboard shortcuts
-Escape              Close search, cancel a transfer, or hide the console
+Escape              Close search, request transfer cancellation, or hide the console
 ```
-
----
 
 ## Configuration
 
-Everything lives in one file, `~/.config/teral/teral.toml`. Teral's Settings window
-(`Ctrl+,`) writes exactly that file, so the GUI and hand-editing never disagree, and
-Teral restyles itself as soon as the file changes.
+User configuration lives in `~/.config/teral/teral.toml`. Bookmarks live in
+`~/.local/share/teral/places.toml`, and tags live in `~/.local/share/teral/tags.toml`.
 
 ```toml
 version = 1
 
 [appearance]
 mode = "teral"        # "teral" or "system"
-accent = "#e0a63c"    # optional, overrides the palette's accent
+accent = "#e0a63c"    # optional palette override
 
 [layout]
 grid_icon_size = 64
@@ -160,50 +154,23 @@ shell = ""            # empty: $SHELL, then /bin/sh
 terminal = ""         # empty: detected from PATH
 ```
 
-A `[colors]` table can override any semantic colour individually. Invalid colours and
-out-of-range layout values are discarded or clamped, so a broken file can never make
-Teral unusable.
+Invalid colors and out-of-range layout values fall back or are clamped when the
+configuration is loaded.
 
-Bookmarks live in `~/.local/share/teral/places.toml`, tags in
-`~/.local/share/teral/tags.toml`.
+## Themes and Omarchy
 
-### Themes
+Teral includes dark and light semantic palettes. In system mode it derives colors from
+GTK where available. Under Omarchy it looks for the active theme and reads `teral.toml`,
+falling back to colors derived from `colors.toml`.
 
-Teral ships `themes/default/teral.toml`, `teral-light.toml` and `teral.css`. The TOML
-files carry the semantic palette; the CSS is written entirely against those values and
-stable `.teral-*` classes, so a theme only supplies colours — never GTK widget
-selectors.
+Omarchy theme and Teral configuration files are monitored while the application runs.
+Complete live desktop-theme monitoring outside Omarchy remains part of the pre-release
+work.
 
-Themes resolve in layers, each overriding only what it sets:
+## Contributing
 
-```text
-built-in Teral palette (dark, or light when the desktop asks for light)
-        ↓
-the environment, when the mode is "system"
-        ↓
-~/.config/teral/teral.toml
-```
-
-On Omarchy, Teral looks for the active theme link under `~/.config/omarchy/current/theme`,
-then the XDG state and data locations. `TERAL_OMARCHY_THEME` overrides that search.
-
----
-
-## Not there yet
-
-Teral is honest about what it does not do, rather than shipping buttons that do nothing:
-
-- richer previews (PDF, video, text) — files show their MIME icon instead
-- a paste conflict dialog: a collision always becomes a new name, never a prompt
-- trash on secondary drives — Teral's trash view only covers your home filesystem
-- network locations, and a command palette
-
----
-
-## Building and contributing
-
-See [DEVELOPMENT.md](DEVELOPMENT.md) to build from source, and
-[RELEASING.md](RELEASING.md) for how a release is cut.
+Read [DEVELOPMENT.md](DEVELOPMENT.md) before changing the project. Filesystem changes
+must include failure-oriented tests, not only happy-path tests.
 
 ## License
 

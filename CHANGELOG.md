@@ -1,31 +1,21 @@
 # Changelog
 
-Teral follows semantic versioning. See `RELEASING.md` for how a release is cut.
+Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
-## 1.0.0
+## Unreleased
 
-The first release.
+Teral is in active `0.1.0` development. No public release has been published.
 
-Teral is a native Linux file manager written in Rust with GTK4: one application and one
-codebase, at home on any desktop.
+Current development work is focused on making core filesystem operations, Trash,
+cross-application clipboard behavior, drag and drop, Linux device integration, and
+failure handling trustworthy before the first public test release.
 
-- A dark, dense three-pane window: sidebar, file view, details and actions panel, with
-  tabs, breadcrumbs, a `Ctrl+L` location entry and real back/forward history.
-- Grid and list views over one selection, with live icon sizing, image thumbnails and
-  system MIME icons through GIO.
-- The file work: copy, cut, paste, duplicate, rename, new folder, drag and drop between
-  Teral folders and other applications, and recursive transfers that run off the GTK
-  main thread and never overwrite an existing file.
-- Trash you can browse, restore from, empty, or delete from permanently.
-- Archives: extract here or into a folder, and compress a selection into a zip.
-- User tags with a name and colour that follow their files when Teral moves or renames
-  them, and a sidebar entry per tag.
-- Quick Command: run a command in the browsed folder in a real terminal, interactive
-  programs included, in a console you can drag to resize.
-- Bookmarks you can drag folders onto, mounted devices with capacity meters, and XDG
-  user locations.
-- Theming: Teral's own palette, or the desktop's — under Omarchy that means the active
-  theme's `teral.toml`, or colours derived from its `colors.toml`, live-reloaded when the
-  theme changes; elsewhere the GTK theme's own colours and the desktop's accent.
-- A Settings window that writes the same `~/.config/teral/teral.toml` you can hand-edit,
-  plus Shortcuts and About windows.
+### Existing foundation
+
+- Native Rust and GTK4 application with grid and list browsing.
+- Back, Forward, Parent, breadcrumbs, tabs, filtering, sorting, and hidden-file controls.
+- XDG locations, currently mounted local filesystems, bookmarks, tags, and a details panel.
+- GIO MIME icons, image thumbnails, Open, Open With, and a VTE-based Quick Command console.
+- Built-in, system, and Omarchy-aware appearance layers.
+
+These items describe the current development foundation, not a stable-release guarantee.

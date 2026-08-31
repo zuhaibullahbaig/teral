@@ -1,9 +1,8 @@
 //! File operations.
 //!
 //! Metadata-only operations use GIO's asynchronous APIs. Recursive copies and moves run
-//! on a worker thread through [`gio::spawn_blocking`] so a large transfer can never
-//! stall the GTK main loop, and they resolve name conflicts by picking a free name
-//! rather than by overwriting anything.
+//! on a worker thread through [`gio::spawn_blocking`]. The current transfer engine uses
+//! conflict-renamed destinations, but it remains under safety hardening for the 0.1 release.
 
 use gtk::gio;
 use gtk::gio::prelude::*;
@@ -683,8 +682,8 @@ fn compress_command(directory: &Path, archive: &Path, names: &[OsString]) -> Opt
 
 /// Pack `paths` into a new zip archive beside them, and return the archive.
 ///
-/// The archive never overwrites an existing file, and `zip` is run with the folder as
-/// its working directory so the archive holds plain relative names.
+/// The output path is conflict-renamed before the archiver starts, and `zip` is run with
+/// the folder as its working directory so the archive holds plain relative names.
 pub async fn compress(directory: PathBuf, paths: Vec<PathBuf>) -> Result<PathBuf, String> {
     if paths.is_empty() {
         return Err("nothing was selected to compress".to_owned());
