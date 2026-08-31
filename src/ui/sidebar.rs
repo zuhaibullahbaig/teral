@@ -119,12 +119,17 @@ pub fn connect(app: &App) {
         monitor.connect_local(signal, false, move |_| {
             rebuild_devices(&app);
             mark_active(&app, &app.current_dir());
+            // A disk that has just appeared may carry its own trash, and one that has
+            // gone takes its trash with it. Probing the mounts cannot happen here, so
+            // the sidebar's trash entries are rebuilt when the scan comes back.
+            let for_trash = Rc::clone(&app);
+            crate::files::ops::refresh_trash_dirs(move || rebuild_places(&for_trash));
             None
         });
     }
 }
 
-fn rebuild_places(app: &App) {
+pub fn rebuild_places(app: &App) {
     clear(&app.widgets.places_box);
     for place in places::user_places() {
         let row = place_row(app, &place.label, &place.icon_name, &place.path);

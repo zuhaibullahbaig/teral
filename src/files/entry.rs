@@ -46,7 +46,7 @@ impl EntryData {
         let is_symlink = info.is_symlink() || file_type == gio::FileType::SymbolicLink;
 
         let content_type = info.content_type().map(|value| value.to_string());
-        let resolved = Resolution::of(&path, is_symlink, file_type);
+        let resolved = Resolution::of_plain(is_symlink, file_type);
 
         let kind = if resolved.is_directory {
             "Folder".to_owned()
@@ -131,22 +131,36 @@ impl EntryData {
 /// content type `inode/symlink`, so a link to a folder would never be recognised as one.
 /// Following the link once, here, is what makes it navigable, and a failure to follow it
 /// is exactly what identifies a broken link. Only symlinks pay for the extra look.
-struct Resolution {
-    is_directory: bool,
-    is_broken_symlink: bool,
-    is_special: bool,
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Resolution {
+    pub is_directory: bool,
+    pub is_broken_symlink: bool,
+    pub is_special: bool,
 }
 
 impl Resolution {
-    fn of(path: &Path, is_symlink: bool, file_type: gio::FileType) -> Self {
-        if !is_symlink {
-            return Self {
-                is_directory: file_type == gio::FileType::Directory,
-                is_broken_symlink: false,
-                is_special: file_type == gio::FileType::Special,
-            };
+    /// What the listing itself already knows, without following anything.
+    ///
+    /// A symlink comes out of here unresolved — not a directory, not broken, not
+    /// special — because deciding which it is means touching the target, and that
+    /// cannot happen on the thread drawing the window.
+    fn of_plain(is_symlink: bool, file_type: gio::FileType) -> Self {
+        if is_symlink {
+            return Self::default();
         }
+        Self {
+            is_directory: file_type == gio::FileType::Directory,
+            is_broken_symlink: false,
+            is_special: file_type == gio::FileType::Special,
+        }
+    }
 
+    /// Follow a symlink and see what is actually on the other end.
+    ///
+    /// Only ever called from a worker. A link can point into a filesystem that has been
+    /// unplugged or has stopped answering, and resolving it then blocks for as long as
+    /// that filesystem takes — on a hard NFS mount, indefinitely.
+    pub fn follow(path: &Path) -> Self {
         match std::fs::metadata(path) {
             Ok(target) => Self {
                 is_directory: target.is_dir(),
@@ -161,6 +175,25 @@ impl Resolution {
                 is_special: false,
             },
         }
+    }
+}
+
+impl EntryData {
+    /// Apply what following this entry's symlink found.
+    pub(super) fn apply(&mut self, resolved: Resolution) {
+        self.is_directory = resolved.is_directory;
+        self.is_broken_symlink = resolved.is_broken_symlink;
+        self.is_special = resolved.is_special;
+        self.kind = if resolved.is_directory {
+            "Folder".to_owned()
+        } else if resolved.is_broken_symlink {
+            "Broken link".to_owned()
+        } else {
+            self.content_type
+                .as_deref()
+                .map(|value| gio::content_type_get_description(value).to_string())
+                .unwrap_or_else(|| "Unknown".to_owned())
+        };
     }
 }
 
@@ -279,7 +312,7 @@ mod tests {
     use super::*;
     use gtk::gio::prelude::*;
 
-    /// Enumerate a directory the way the file view does, and find one entry by name.
+    /// Read one entry the way the file view does, links resolved.
     fn entry(dir: &Path, name: &str) -> EntryData {
         let info = gio::File::for_path(dir.join(name))
             .query_info(
@@ -289,7 +322,13 @@ standard::content-type,standard::is-symlink,standard::symlink-target",
                 gio::Cancellable::NONE,
             )
             .expect("query");
-        EntryData::from_info(dir, &info)
+        let mut data = EntryData::from_info(dir, &info);
+        // The listing itself never follows a link; the file view resolves them on a
+        // worker afterwards, so the tests below check the same resolved result.
+        if data.is_symlink {
+            data.apply(Resolution::follow(&data.path.clone()));
+        }
+        data
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -297,6 +336,29 @@ standard::content-type,standard::is-symlink,standard::symlink-target",
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");
         dir
+    }
+
+    #[test]
+    fn a_listing_never_follows_a_link_by_itself() {
+        let dir = scratch("unresolved");
+        std::fs::create_dir(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+
+        // Straight out of the enumeration a link is deliberately unresolved: following
+        // it can block on an unreachable filesystem, so it never happens here.
+        let info = gio::File::for_path(dir.join("link"))
+            .query_info(
+                "standard::name,standard::display-name,standard::type,standard::size,\
+standard::content-type,standard::is-symlink,standard::symlink-target",
+                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                gio::Cancellable::NONE,
+            )
+            .expect("query");
+        let raw = EntryData::from_info(&dir, &info);
+        assert!(raw.is_symlink);
+        assert!(!raw.is_directory, "resolution is deferred to a worker");
+        assert!(!raw.is_broken_symlink);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

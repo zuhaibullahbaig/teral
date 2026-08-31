@@ -3,11 +3,12 @@
 //! Enumeration goes through GIO's asynchronous file APIs, so a slow or unresponsive
 //! mount never blocks the GTK main loop.
 
-use super::entry::EntryData;
+use super::entry::{EntryData, Resolution};
 use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
 use std::path::Path;
+use std::path::PathBuf;
 
 /// Attributes Teral needs for a directory listing and for the details panel.
 const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,\
@@ -79,7 +80,46 @@ pub async fn scan_directory(path: &Path) -> Result<Vec<EntryData>, glib::Error> 
         entries.extend(batch.iter().map(|info| EntryData::from_info(path, info)));
     }
 
+    resolve_links(&mut entries).await;
     Ok(entries)
+}
+
+/// Follow the symlinks in a listing on a worker thread.
+///
+/// A listing is read without following symlinks, so a link to a folder would otherwise
+/// not be enterable and a broken link would not be recognised. Following one means a
+/// `stat` on its target, which can block for a long time — or forever, on a hard mount
+/// that has stopped answering — so every link in the batch is resolved in one hop off
+/// the GTK thread rather than one at a time on it.
+async fn resolve_links(entries: &mut [EntryData]) {
+    let links: Vec<(usize, PathBuf)> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.is_symlink)
+        .map(|(index, entry)| (index, entry.path.clone()))
+        .collect();
+
+    if links.is_empty() {
+        return;
+    }
+
+    let paths: Vec<PathBuf> = links.iter().map(|(_, path)| path.clone()).collect();
+    let Ok(resolved) = gio::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|path| Resolution::follow(path))
+            .collect::<Vec<_>>()
+    })
+    .await
+    else {
+        // The worker stopped. Every link stays unresolved, which shows it as a plain
+        // entry rather than claiming it is a folder or that it is broken.
+        return;
+    };
+
+    for ((index, _), resolution) in links.into_iter().zip(resolved) {
+        entries[index].apply(resolution);
+    }
 }
 
 /// Read metadata for an explicit list of files, for views that are not a directory.
@@ -105,6 +145,7 @@ pub async fn scan_paths(paths: &[std::path::PathBuf]) -> Vec<EntryData> {
         }
     }
 
+    resolve_links(&mut entries).await;
     entries
 }
 

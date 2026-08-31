@@ -26,5 +26,22 @@ fn main() -> glib::ExitCode {
         .build();
     application.connect_activate(app::activate);
     application.connect_open(app::open);
+
+    // Registering claims Teral's name on the session bus, which is how a second launch
+    // finds the copy already running. GLib's own failure message is one line with no
+    // indication of what to do about it, and the usual cause — an earlier Teral that is
+    // still holding the name but no longer answering — is fixable in one command.
+    if let Err(error) = application.register(gtk::gio::Cancellable::NONE) {
+        eprintln!(
+            "teral: could not register with the desktop session bus: {}",
+            error.message().trim()
+        );
+        eprintln!(
+            "       An earlier Teral may still be running and unresponsive. \
+             Try `pkill -f teral`, then start Teral again."
+        );
+        return glib::ExitCode::FAILURE;
+    }
+
     application.run()
 }

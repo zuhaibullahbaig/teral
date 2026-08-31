@@ -181,6 +181,14 @@ Run with disposable data after `./scripts/check.sh` succeeds.
   each tab returns to its own view, with its own back and forward history.
 - [ ] In a tag view and in the trash, confirm New Folder, Paste, Open Terminal Here and
   Quick Command are not offered, and that dropping files there is refused.
+- [ ] Mount a network share, disconnect it without unmounting, then browse an unrelated
+  folder and click through several files. The window stays responsive, and the trash
+  entries for reachable disks still work.
+- [ ] Put a symlink in a folder pointing into a network share, then disconnect the share
+  without unmounting it. Opening that folder still draws the window and stays
+  responsive; the link resolves, or shows as broken, without blocking the view.
+- [ ] Start Teral, close the window, and confirm the process exits. Repeat ten times and
+  confirm no `teral` processes are left behind (`pgrep -f teral`).
 
 ## Packaging
 

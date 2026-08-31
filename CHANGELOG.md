@@ -96,6 +96,22 @@ These items describe the current development foundation, not a stable-release gu
   that lands but cannot clear its record is reported as partial rather than as success.
 - Recursive deletion no longer risks following a directory symlink. A symlink is
   unlinked and whatever it points at is untouched.
+- Teral no longer freezes on start-up, or when opening any folder containing a symlink,
+  if the link's target is on a filesystem that is slow or has stopped answering.
+  Resolving a link means a `stat` on its target, and that was happening on the thread
+  that draws the window, once per link in the folder. Links are now followed in one
+  batch on a worker thread.
+- Teral no longer freezes while browsing when a mounted filesystem is slow or gone.
+  Deciding whether a location is in the trash probed every mount on the UI thread, and
+  ran on every selection change; a `stat` on a disconnected network share or an unplugged
+  drive blocked the whole window. Trash directories are now found on a worker thread and
+  cached, refreshed when a disk is mounted or unmounted. A frozen window also stopped
+  answering the session bus, which is why a later `teral` could fail to start with
+  "Failed to register: Timeout was reached".
+- Emptying the trash counts its contents on a worker thread instead of blocking the
+  window while it measures a possibly-slow disk.
+- A failure to register on the session bus now says what happened and what to do about
+  it, instead of GLib's bare one-line message.
 - Copying a file no longer fails after the data has been written. `g_file_copy_attributes`
   requests attributes such as `standard::size` that a local filesystem refuses, which
   aborted the copy and removed the result.

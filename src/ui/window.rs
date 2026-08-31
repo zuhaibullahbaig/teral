@@ -313,6 +313,11 @@ pub fn build_window_at(
     if app.state.view_mode.get() == ViewMode::List {
         app.widgets.list_toggle.set_active(true);
     }
+    // Finding trash directories means probing every mount, which cannot happen on this
+    // thread. The first scan starts here and the sidebar catches up when it lands.
+    let for_start = Rc::clone(&app);
+    ops::refresh_trash_dirs(move || sidebar::rebuild_places(&for_start));
+
     app.load(&start, None);
 
     app
@@ -826,6 +831,10 @@ fn run_trash_job<Fut>(
         apply_tag_results(&report);
         sidebar::rebuild_tags(&app);
         report_job(&app, &report, &extra_problems);
+        // Trashing something on another disk creates that disk's trash directory, so
+        // the sidebar should learn about it without waiting for a remount.
+        let for_refresh = Rc::clone(&app);
+        ops::refresh_trash_dirs(move || sidebar::rebuild_places(&for_refresh));
         app.reload();
     });
 }
@@ -1462,31 +1471,37 @@ fn start_restore(
 /// Permanently delete everything in every trash Teral can see, after confirmation.
 pub fn empty_trash(app: &App) {
     let dirs = ops::trash_dirs();
-    let scope = ops::trash_scope();
-    if scope.is_empty() {
-        app.set_message("The trash is already empty", false);
-        return;
-    }
+    let app = Rc::clone(app);
 
-    let app_for_action = Rc::clone(app);
-    dialogs::confirm(
-        app,
-        "Empty Trash",
-        &format!(
-            "{} will be deleted permanently. This cannot be undone.",
-            scope.describe()
-        ),
-        "Delete Permanently",
-        move || {
-            let dirs = dirs.clone();
-            run_trash_job(
-                &app_for_action,
-                "Emptying the trash",
-                Vec::new(),
-                move |cancel, progress| ops::empty_trash(dirs, cancel, progress),
-            );
-        },
-    );
+    // Counting reads every trash location, one of which may be a slow or already
+    // disconnected disk, so the window keeps responding while it is measured.
+    glib::spawn_future_local(async move {
+        let scope = ops::trash_scope(dirs.clone()).await;
+        if scope.is_empty() {
+            app.set_message("The trash is already empty", false);
+            return;
+        }
+
+        let app_for_action = Rc::clone(&app);
+        dialogs::confirm(
+            &app,
+            "Empty Trash",
+            &format!(
+                "{} will be deleted permanently. This cannot be undone.",
+                scope.describe()
+            ),
+            "Delete Permanently",
+            move || {
+                let dirs = dirs.clone();
+                run_trash_job(
+                    &app_for_action,
+                    "Emptying the trash",
+                    Vec::new(),
+                    move |cancel, progress| ops::empty_trash(dirs, cancel, progress),
+                );
+            },
+        );
+    });
 }
 
 /// A popover of tag checkboxes for a set of paths.

@@ -104,26 +104,66 @@ fn mount_points() -> Vec<PathBuf> {
     points
 }
 
-/// Every trash directory that exists right now, home first.
-///
-/// Must be called from the GTK thread, because it reads the volume monitor.
+thread_local! {
+    /// Trash directories found by the last scan.
+    ///
+    /// Finding them means asking every mounted filesystem whether it has one, and a
+    /// `stat` on a disconnected network share or a removed USB stick can block for a
+    /// long time — or, on a hard NFS mount, indefinitely. That is intolerable here,
+    /// because the answer is wanted on every selection change and every context menu,
+    /// on the GTK thread. The scan runs on a worker and everything on screen reads this.
+    static TRASH_DIRS: std::cell::RefCell<Vec<trash::TrashDir>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The trash directories the last scan found. Never touches the filesystem.
 pub fn trash_dirs() -> Vec<trash::TrashDir> {
-    let Some(uid) = trash::current_uid() else {
-        // Without a user id the per-filesystem naming scheme cannot be applied, so only
-        // the home trash is known. Guessing an id would point at another user's trash.
-        let home = trash::home_trash(&crate::theme::data_home());
-        return if home.is_present() {
-            vec![home]
-        } else {
-            Vec::new()
-        };
-    };
-    trash::discover(&crate::theme::data_home(), &mount_points(), uid)
+    TRASH_DIRS.with_borrow(Clone::clone)
+}
+
+/// Rescan for trash directories on a worker thread, then run `finished` on the GTK
+/// thread so what is on screen can catch up.
+///
+/// Worth doing at start-up, whenever a filesystem is mounted or unmounted, and after
+/// anything that could have created a trash directory on another disk.
+pub fn refresh_trash_dirs(finished: impl FnOnce() + 'static) {
+    let data_home = crate::theme::data_home();
+    // The volume monitor belongs to the GTK thread, but only reports what is already
+    // mounted, so this part is cheap. The per-mount probing is what moves off it.
+    let mounts = mount_points();
+
+    glib::spawn_future_local(async move {
+        let found = gio::spawn_blocking(move || match trash::current_uid() {
+            Some(uid) => trash::discover(&data_home, &mounts, uid),
+            // Without a user id the per-filesystem naming scheme cannot be applied, and
+            // guessing an id would point at another user's trash.
+            None => {
+                let home = trash::home_trash(&data_home);
+                if home.is_present() {
+                    vec![home]
+                } else {
+                    Vec::new()
+                }
+            }
+        })
+        .await
+        .unwrap_or_default();
+
+        TRASH_DIRS.with_borrow_mut(|dirs| *dirs = found);
+        finished();
+    });
 }
 
 /// True when `path` is inside any trash Teral knows about, so restore and permanent
 /// deletion are the meaningful actions for it.
+///
+/// Answered from the path alone. The home trash sits at a location that can be derived
+/// without asking the filesystem anything, and every other trash comes from the cached
+/// scan, so this stays instant no matter what is mounted or how badly it is behaving.
 pub fn is_in_trash(path: &Path) -> bool {
+    if path.starts_with(trash::home_trash(&crate::theme::data_home()).files()) {
+        return true;
+    }
     trash::is_in_trash(path, &trash_dirs())
 }
 
@@ -161,11 +201,13 @@ impl TrashScope {
     }
 }
 
-/// Measure the trash. Cheap enough for a confirmation dialog: one directory read per
-/// trash location.
-pub fn trash_scope() -> TrashScope {
-    let dirs = trash_dirs();
-    TrashScope {
+/// Measure the trash, off the GTK thread.
+///
+/// One directory read per trash location, and one of those locations may be a removable
+/// disk that is slow or already gone, so the confirmation waits for a worker rather
+/// than freezing the window while it counts.
+pub async fn trash_scope(dirs: Vec<trash::TrashDir>) -> TrashScope {
+    gio::spawn_blocking(move || TrashScope {
         items: trash::count(&dirs),
         records: dirs
             .iter()
@@ -176,7 +218,9 @@ pub fn trash_scope() -> TrashScope {
             })
             .sum(),
         locations: dirs.len(),
-    }
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Move entries to the trash through GIO, which implements the FreeDesktop model for

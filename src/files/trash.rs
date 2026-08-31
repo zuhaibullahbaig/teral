@@ -877,6 +877,29 @@ mod tests {
     }
 
     #[test]
+    fn the_home_trash_is_located_without_asking_the_filesystem() {
+        // Deciding whether a path is in the trash happens on every selection change, so
+        // it must not depend on a directory existing, on a disk being reachable, or on
+        // any `stat` at all. A path that has never been created still resolves.
+        let never_created = PathBuf::from("/nonexistent-for-this-test/share");
+        let home = home_trash(&never_created);
+        assert_eq!(
+            home.files(),
+            never_created.join("Trash/files"),
+            "the home trash location is derived from the path alone"
+        );
+        assert!(!home.is_present(), "and it is not there");
+        assert!(is_in_trash(
+            &never_created.join("Trash/files/deleted.txt"),
+            std::slice::from_ref(&home)
+        ));
+        assert!(!is_in_trash(
+            &never_created.join("Documents/kept.txt"),
+            &[home]
+        ));
+    }
+
+    #[test]
     fn trash_membership_covers_every_discovered_location() {
         let root = scratch("membership");
         let data_home = root.join("data");
