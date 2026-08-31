@@ -18,6 +18,8 @@ use std::cell::{Cell, RefCell};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// Every widget Teral needs to reach again after construction.
 pub struct Widgets {
@@ -393,6 +395,19 @@ fn connect_window(app: &App) {
     });
     app.widgets.window.add_controller(escape_hatch);
 
+    // Clipboard ownership can change in another application. Clear only Teral's visual
+    // cut marker; Paste reads the new desktop clipboard directly when invoked.
+    app.widgets.window.clipboard().connect_changed({
+        let app = Rc::clone(app);
+        move |clipboard| {
+            if !clipboard.is_local() {
+                app.state.clipboard.borrow_mut().take();
+                fileview::refresh_cut_state(&app);
+                app.update_details();
+            }
+        }
+    });
+
     // Clicking empty space clears the selection, the way every file manager behaves.
     let clear = gtk::GestureClick::new();
     clear.set_button(gdk::BUTTON_PRIMARY);
@@ -426,16 +441,25 @@ fn connect_window(app: &App) {
     // Dropping on empty space puts files into the folder being browsed.
     let drop = gtk::DropTarget::new(
         gdk::FileList::static_type(),
-        gdk::DragAction::COPY | gdk::DragAction::MOVE,
+        gdk::DragAction::COPY | gdk::DragAction::MOVE | gdk::DragAction::LINK,
     );
+    drop.connect_enter({
+        let app = Rc::clone(app);
+        move |target, _, _| {
+            let action = drop_action(target);
+            show_drop_action(&app, action);
+            action
+        }
+    });
     drop.connect_drop({
         let app = Rc::clone(app);
-        move |_, value, _, _| {
+        move |target, value, _, _| {
             let Ok(files) = value.get::<gdk::FileList>() else {
                 return false;
             };
             let destination = app.current_dir();
-            drop_files(&app, &files, &destination)
+            let action = drop_action(target);
+            drop_files(&app, &files, &destination, action)
         }
     });
     app.widgets.view_stack.add_controller(drop);
@@ -690,7 +714,12 @@ pub fn stage_transfer(app: &App, kind: TransferKind) {
     }
 
     let count = sources.len();
-    *app.state.clipboard.borrow_mut() = Some(Clipboard { kind, sources });
+    let staged = Clipboard { kind, sources };
+    if let Err(error) = ops::write_clipboard(&app.widgets.window.clipboard(), &staged) {
+        app.show_error(&format!("Could not update the desktop clipboard: {error}"));
+        return;
+    }
+    *app.state.clipboard.borrow_mut() = Some(staged);
     // Cut entries are dimmed until they are pasted, the way desktops normally show it.
     fileview::refresh_cut_state(app);
     app.set_message(
@@ -700,6 +729,7 @@ pub fn stage_transfer(app: &App, kind: TransferKind) {
             match kind {
                 TransferKind::Copy => "copy",
                 TransferKind::Move => "cut",
+                TransferKind::Link => "link",
             }
         ),
         false,
@@ -708,53 +738,25 @@ pub fn stage_transfer(app: &App, kind: TransferKind) {
 
 /// Paste whatever Copy or Move staged into the current directory.
 pub fn paste(app: &App) {
-    let Some(clipboard) = app.state.clipboard.borrow().clone() else {
-        app.set_message("Nothing has been copied yet", false);
-        return;
-    };
-
     if app.state.running_transfer.borrow().is_some() {
         app.show_error("Another transfer is still running");
         return;
     }
+    if !ops::clipboard_has_files(&app.widgets.window.clipboard()) {
+        app.set_message("The clipboard does not contain files", false);
+        return;
+    }
 
+    let system_clipboard = app.widgets.window.clipboard();
     let destination = app.current_dir();
-    let cancel = CancelFlag::new();
-    *app.state.running_transfer.borrow_mut() = Some(cancel.clone());
-
-    let count = clipboard.sources.len();
-    app.set_message(
-        &format!(
-            "{} {}… (Esc to cancel)",
-            clipboard.kind.verb(),
-            crate::files::item_count_label(count)
-        ),
-        false,
-    );
-
     let app = Rc::clone(app);
     glib::spawn_future_local(async move {
-        let kind = clipboard.kind;
-        let report = ops::transfer(kind, clipboard.sources, destination, cancel).await;
-        app.state.running_transfer.borrow_mut().take();
-
-        if kind == TransferKind::Move && report.failures.is_empty() {
-            app.state.clipboard.borrow_mut().take();
+        match ops::read_clipboard(&system_clipboard).await {
+            Ok(clipboard) => {
+                prepare_transfer(&app, clipboard.kind, clipboard.sources, destination, true)
+            }
+            Err(error) => app.show_error(&format!("Could not read the desktop clipboard: {error}")),
         }
-
-        if report.failures.is_empty() {
-            app.set_message(
-                &format!(
-                    "{} {}",
-                    kind.past_tense(),
-                    crate::files::item_count_label(report.succeeded)
-                ),
-                false,
-            );
-        } else {
-            app.show_error(&report.failures.join("; "));
-        }
-        app.reload();
     });
 }
 
@@ -787,12 +789,13 @@ pub fn trash_selection(app: &App) {
             let app = Rc::clone(&app_for_action);
             let paths = paths.clone();
             glib::spawn_future_local(async move {
+                let report = ops::trash(paths).await;
                 crate::tags::edit(|tags| {
-                    for path in &paths {
+                    for path in &report.completed_paths {
                         tags.forget(path);
                     }
                 });
-                let report = ops::trash(paths).await;
+                sidebar::rebuild_tags(&app);
                 if report.failures.is_empty() {
                     app.set_message(
                         &format!(
@@ -812,9 +815,14 @@ pub fn trash_selection(app: &App) {
 
 /// Handle files dropped onto a folder or onto the current folder's background.
 ///
-/// Dropping inside the same filesystem moves, the way desktops normally behave;
-/// dropping across filesystems copies, so nothing is lost if the source goes away.
-pub fn drop_files(app: &App, files: &gdk::FileList, destination: &Path) -> bool {
+/// The negotiated desktop drag action wins. If a backend supplies no action, Teral
+/// uses the non-destructive Copy action; it never guesses that a drop should move data.
+pub fn drop_files(
+    app: &App,
+    files: &gdk::FileList,
+    destination: &Path,
+    requested_action: gdk::DragAction,
+) -> bool {
     let sources: Vec<PathBuf> = files
         .files()
         .iter()
@@ -826,18 +834,117 @@ pub fn drop_files(app: &App, files: &gdk::FileList, destination: &Path) -> bool 
         return false;
     }
 
-    let kind = if ops::same_filesystem(&sources[0], destination) {
+    let kind = if requested_action.contains(gdk::DragAction::LINK) {
+        TransferKind::Link
+    } else if requested_action.contains(gdk::DragAction::MOVE) {
         TransferKind::Move
     } else {
         TransferKind::Copy
     };
 
-    run_transfer(app, kind, sources, destination.to_path_buf());
+    prepare_transfer(app, kind, sources, destination.to_path_buf(), false);
     true
 }
 
-/// Copy or move `sources` into `destination`, reporting progress in the status bar.
-fn run_transfer(app: &App, kind: TransferKind, sources: Vec<PathBuf>, destination: PathBuf) {
+/// Tell the user what a pending drop will do before they release the pointer.
+pub fn show_drop_action(app: &App, action: gdk::DragAction) {
+    let label = if action.contains(gdk::DragAction::LINK) {
+        "link"
+    } else if action.contains(gdk::DragAction::MOVE) {
+        "move"
+    } else {
+        "copy"
+    };
+    app.set_message(&format!("Drop to {label}"), false);
+}
+
+/// Resolve the action chosen for the current drop. `selected_action` belongs to the
+/// source-side `Drag`, not the destination-side `Drop`; external drops may not expose a
+/// `Drag`, so a unique offered action is used and ambiguous offers safely prefer Copy.
+pub fn drop_action(target: &gtk::DropTarget) -> gdk::DragAction {
+    let Some(drop) = target.current_drop() else {
+        return gdk::DragAction::COPY;
+    };
+
+    if let Some(action) = drop
+        .drag()
+        .map(|drag| drag.selected_action())
+        .filter(|action| !action.is_empty())
+    {
+        return action;
+    }
+
+    let offered = drop.actions();
+    if offered.is_unique() {
+        offered
+    } else if offered.contains(gdk::DragAction::COPY) {
+        gdk::DragAction::COPY
+    } else if offered.contains(gdk::DragAction::LINK) {
+        gdk::DragAction::LINK
+    } else if offered.contains(gdk::DragAction::MOVE) {
+        gdk::DragAction::MOVE
+    } else {
+        gdk::DragAction::COPY
+    }
+}
+
+/// Check conflicts away from GTK, then either start immediately or ask once for the
+/// policy that applies to the whole batch.
+fn prepare_transfer(
+    app: &App,
+    kind: TransferKind,
+    sources: Vec<PathBuf>,
+    destination: PathBuf,
+    from_clipboard: bool,
+) {
+    if app.state.running_transfer.borrow().is_some() {
+        app.show_error("Another transfer is still running");
+        return;
+    }
+
+    app.set_message("Checking destination…", false);
+    let app = Rc::clone(app);
+    glib::spawn_future_local(async move {
+        match ops::conflicts(sources.clone(), destination.clone()).await {
+            Ok(conflicts) if conflicts.is_empty() => start_transfer(
+                &app,
+                kind,
+                sources,
+                destination,
+                ops::ConflictPolicy::RenameIncoming,
+                from_clipboard,
+            ),
+            Ok(conflicts) => {
+                let app_for_choice = Rc::clone(&app);
+                dialogs::resolve_transfer_conflicts(&app, conflicts.len(), move |policy| {
+                    if policy == ops::ConflictPolicy::Cancel {
+                        app_for_choice.set_message("Transfer cancelled", false);
+                        return;
+                    }
+                    start_transfer(
+                        &app_for_choice,
+                        kind,
+                        sources,
+                        destination,
+                        policy,
+                        from_clipboard,
+                    );
+                });
+            }
+            Err(error) => app.show_error(&format!("Could not inspect the destination: {error}")),
+        }
+    });
+}
+
+/// Copy or move `sources` through the authoritative job runner.
+fn start_transfer(
+    app: &App,
+    kind: TransferKind,
+    sources: Vec<PathBuf>,
+    destination: PathBuf,
+    policy: ops::ConflictPolicy,
+    from_clipboard: bool,
+) {
     if app.state.running_transfer.borrow().is_some() {
         app.show_error("Another transfer is still running");
         return;
@@ -845,6 +952,9 @@ fn run_transfer(app: &App, kind: TransferKind, sources: Vec<PathBuf>, destinatio
 
     let cancel = CancelFlag::new();
     *app.state.running_transfer.borrow_mut() = Some(cancel.clone());
+
+    let (progress, updates) = mpsc::sync_channel(1);
+    watch_transfer_progress(app, kind, updates);
 
     let count = sources.len();
     app.set_message(
@@ -858,45 +968,137 @@ fn run_transfer(app: &App, kind: TransferKind, sources: Vec<PathBuf>, destinatio
 
     let app = Rc::clone(app);
     glib::spawn_future_local(async move {
-        let moved: Vec<(PathBuf, PathBuf)> = if kind == TransferKind::Move {
-            sources
-                .iter()
-                .filter_map(|source| {
-                    source
-                        .file_name()
-                        .map(|name| (source.clone(), destination.join(name)))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let report = ops::transfer(kind, sources, destination, cancel).await;
+        let report = ops::transfer(kind, sources, destination, policy, cancel, progress).await;
         app.state.running_transfer.borrow_mut().take();
 
-        if report.failures.is_empty() && !moved.is_empty() {
+        if kind == TransferKind::Move {
             crate::tags::edit(|tags| {
-                for (from, to) in &moved {
+                for (from, to) in report.completed_moves() {
                     tags.relocate(from, to);
                 }
             });
             sidebar::rebuild_tags(&app);
         }
 
-        if report.failures.is_empty() {
+        if from_clipboard && kind == TransferKind::Move {
+            update_cut_clipboard(&app, &report);
+        }
+
+        if report.is_complete() {
             app.set_message(
                 &format!(
                     "{} {}",
                     kind.past_tense(),
-                    crate::files::item_count_label(report.succeeded)
+                    crate::files::item_count_label(report.succeeded())
+                ),
+                false,
+            );
+        } else if report.cancelled
+            && report
+                .problems()
+                .iter()
+                .all(|problem| problem.ends_with("cancelled"))
+        {
+            app.set_message(
+                &format!(
+                    "Transfer cancelled after {}",
+                    crate::files::item_count_label(report.succeeded())
+                ),
+                false,
+            );
+        } else if report.problems().is_empty() {
+            app.set_message(
+                &format!(
+                    "{} {}; skipped {} existing",
+                    kind.past_tense(),
+                    crate::files::item_count_label(report.succeeded()),
+                    crate::files::item_count_label(report.skipped())
                 ),
                 false,
             );
         } else {
-            app.show_error(&report.failures.join("; "));
+            let problems = report.problems();
+            app.show_error(&format!(
+                "{} completed; {}",
+                crate::files::item_count_label(report.succeeded()),
+                problems.join("; ")
+            ));
         }
         app.reload();
     });
+}
+
+fn watch_transfer_progress(
+    app: &App,
+    kind: TransferKind,
+    updates: mpsc::Receiver<ops::JobProgress>,
+) {
+    let app = Rc::clone(app);
+    glib::timeout_add_local(Duration::from_millis(120), move || {
+        let mut latest = None;
+        let mut disconnected = false;
+        loop {
+            match updates.try_recv() {
+                Ok(update) => latest = Some(update),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        if let Some(update) = latest {
+            let bytes = if update.total_bytes > 0 {
+                format!(
+                    " · {} / {}",
+                    crate::files::format_size(update.completed_bytes),
+                    crate::files::format_size(update.total_bytes)
+                )
+            } else {
+                String::new()
+            };
+            app.set_message(
+                &format!(
+                    "{} {} of {}{bytes} (Esc to cancel)",
+                    kind.verb(),
+                    update.processed_items,
+                    update.total_items
+                ),
+                false,
+            );
+        }
+
+        if disconnected {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+}
+
+fn update_cut_clipboard(app: &App, report: &ops::JobReport) {
+    let remaining = report.remaining_sources();
+    if remaining.is_empty() {
+        app.state.clipboard.borrow_mut().take();
+        let _ = app
+            .widgets
+            .window
+            .clipboard()
+            .set_content(None::<&gdk::ContentProvider>);
+    } else {
+        let staged = Clipboard {
+            kind: TransferKind::Move,
+            sources: remaining,
+        };
+        if let Err(error) = ops::write_clipboard(&app.widgets.window.clipboard(), &staged) {
+            app.show_error(&format!(
+                "Could not preserve the remaining cut files: {error}"
+            ));
+        }
+        *app.state.clipboard.borrow_mut() = Some(staged);
+    }
+    fileview::refresh_cut_state(app);
 }
 
 /// Open whatever is selected, following folders and launching files.
@@ -940,12 +1142,13 @@ pub fn delete_permanently(app: &App) {
             let app = Rc::clone(&app_for_action);
             let paths = paths.clone();
             glib::spawn_future_local(async move {
+                let report = ops::delete_permanently(paths).await;
                 crate::tags::edit(|tags| {
-                    for path in &paths {
+                    for path in &report.completed_paths {
                         tags.forget(path);
                     }
                 });
-                let report = ops::delete_permanently(paths).await;
+                sidebar::rebuild_tags(&app);
                 if report.failures.is_empty() {
                     app.set_message(
                         &format!(
@@ -976,19 +1179,39 @@ pub fn duplicate_selection(app: &App) {
         return;
     }
 
+    if app.state.running_transfer.borrow().is_some() {
+        app.show_error("Another transfer is still running");
+        return;
+    }
+
+    let cancel = CancelFlag::new();
+    *app.state.running_transfer.borrow_mut() = Some(cancel.clone());
+    let (progress, updates) = mpsc::sync_channel(1);
+    watch_transfer_progress(app, TransferKind::Copy, updates);
+    app.set_message("Duplicating selection… (Esc to cancel)", false);
+
     let app = Rc::clone(app);
     glib::spawn_future_local(async move {
-        let report = ops::duplicate(paths).await;
-        if report.failures.is_empty() {
+        let report = ops::duplicate(paths, cancel, progress).await;
+        app.state.running_transfer.borrow_mut().take();
+        if report.is_complete() {
             app.set_message(
                 &format!(
                     "Duplicated {}",
-                    crate::files::item_count_label(report.succeeded)
+                    crate::files::item_count_label(report.succeeded())
+                ),
+                false,
+            );
+        } else if report.cancelled {
+            app.set_message(
+                &format!(
+                    "Duplication cancelled after {}",
+                    crate::files::item_count_label(report.succeeded())
                 ),
                 false,
             );
         } else {
-            app.show_error(&report.failures.join("; "));
+            app.show_error(&report.problems().join("; "));
         }
         app.reload();
     });
@@ -1556,7 +1779,7 @@ fn background_menu_content(app: &App) -> gtk::Box {
         ));
 
         let paste = header::menu_item(icons::ui(icons::names::PASTE), "Paste");
-        paste.set_sensitive(app.state.clipboard.borrow().is_some());
+        paste.set_sensitive(ops::clipboard_has_files(&app.widgets.window.clipboard()));
         items.push((paste, ContextAction::Paste));
         items.push((
             header::menu_item(icons::ui(icons::names::TERMINAL), "Open Terminal Here"),

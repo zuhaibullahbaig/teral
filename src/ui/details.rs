@@ -816,7 +816,9 @@ pub fn update(app: &App) {
         let folder = &details.folder_actions;
         folder
             .paste
-            .set_sensitive(app.state.clipboard.borrow().is_some());
+            .set_sensitive(crate::files::ops::clipboard_has_files(
+                &app.widgets.window.clipboard(),
+            ));
         relabel(
             &folder.bookmark,
             if app.is_pinned(&current) {

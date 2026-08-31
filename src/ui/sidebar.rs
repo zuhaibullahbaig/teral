@@ -151,7 +151,7 @@ fn connect_pin_target(app: &App) {
 
     target.connect_drop({
         let app = Rc::clone(app);
-        move |_, value, _, _| {
+        move |_target, value, _, _| {
             show_drop_hint(&app, false);
             let Ok(files) = value.get::<gtk::gdk::FileList>() else {
                 return false;
@@ -491,27 +491,31 @@ fn device_row(app: &App, device: &Device) -> gtk::Button {
 fn attach_drop_target(app: &App, button: &gtk::Button, path: PathBuf) {
     let target = gtk::DropTarget::new(
         gtk::gdk::FileList::static_type(),
-        gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
+        gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::LINK,
     );
 
     target.connect_drop({
         let app = Rc::clone(app);
         let path = path.clone();
         let button = button.clone();
-        move |_, value, _, _| {
+        move |target, value, _, _| {
             button.remove_css_class("drop-target");
             let Ok(files) = value.get::<gtk::gdk::FileList>() else {
                 return false;
             };
-            super::window::drop_files(&app, &files, &path)
+            let action = super::window::drop_action(target);
+            super::window::drop_files(&app, &files, &path, action)
         }
     });
 
     target.connect_enter({
+        let app = Rc::clone(app);
         let button = button.clone();
-        move |_, _, _| {
+        move |target, _, _| {
             button.add_css_class("drop-target");
-            gtk::gdk::DragAction::COPY
+            let action = super::window::drop_action(target);
+            super::window::show_drop_action(&app, action);
+            action
         }
     });
 

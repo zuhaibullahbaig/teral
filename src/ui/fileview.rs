@@ -495,7 +495,7 @@ fn text_column_factory(
 /// Let a grid item be dragged, into another Teral folder or into another application.
 fn attach_drag_source(app: &App, widget: &gtk::Box, item: &gtk::ListItem) {
     let source = gtk::DragSource::new();
-    source.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
+    source.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE | gdk::DragAction::LINK);
 
     let app = Rc::clone(app);
     let item = item.clone();
@@ -523,7 +523,7 @@ fn attach_drag_source(app: &App, widget: &gtk::Box, item: &gtk::ListItem) {
 fn attach_drop_target(app: &App, widget: &gtk::Box, item: &gtk::ListItem) {
     let target = gtk::DropTarget::new(
         gdk::FileList::static_type(),
-        gdk::DragAction::COPY | gdk::DragAction::MOVE,
+        gdk::DragAction::COPY | gdk::DragAction::MOVE | gdk::DragAction::LINK,
     );
 
     let accept_item = item.clone();
@@ -534,10 +534,11 @@ fn attach_drop_target(app: &App, widget: &gtk::Box, item: &gtk::ListItem) {
             .is_some_and(|entry| entry.is_directory())
     });
 
+    let app_for_enter = Rc::clone(app);
     let app = Rc::clone(app);
     let item = item.clone();
     let widget_for_drop = widget.clone();
-    target.connect_drop(move |_, value, _, _| {
+    target.connect_drop(move |target, value, _, _| {
         widget_for_drop.remove_css_class("drop-target");
 
         let Some(entry) = item.item().and_downcast::<FileEntry>() else {
@@ -550,13 +551,16 @@ fn attach_drop_target(app: &App, widget: &gtk::Box, item: &gtk::ListItem) {
         let Ok(files) = value.get::<gdk::FileList>() else {
             return false;
         };
-        super::window::drop_files(&app, &files, entry.path())
+        let action = super::window::drop_action(target);
+        super::window::drop_files(&app, &files, entry.path(), action)
     });
 
     let enter_widget = widget.clone();
-    target.connect_enter(move |_, _, _| {
+    target.connect_enter(move |target, _, _| {
         enter_widget.add_css_class("drop-target");
-        gdk::DragAction::COPY
+        let action = super::window::drop_action(target);
+        super::window::show_drop_action(&app_for_enter, action);
+        action
     });
 
     let leave_widget = widget.clone();

@@ -70,6 +70,36 @@ Record the distribution, desktop session, GTK version, VTE version, and any fail
 the commit or release-candidate notes. This smoke test is required on Ubuntu; repeat it on
 Omarchy for changes that affect desktop integration, themes, packaging, or file operations.
 
+## Filesystem transfer gate
+
+Run this matrix with disposable test data after `./scripts/check.sh` succeeds. A Stage 1–2
+candidate does not pass merely because its unit tests pass.
+
+- [ ] Copy, Cut/Paste, Move, Duplicate, and Link work on files, folders, empty files,
+  deep trees, relative symlinks, absolute symlinks, and broken symlinks.
+- [ ] Permissions, timestamps, xattrs/ACLs where supported, and sparse allocation are
+  retained to the extent supported by the source and destination filesystems.
+- [ ] Replace, Rename Incoming, Skip, and Cancel preserve the old destination correctly;
+  repeat while another process creates the requested destination during the operation.
+- [ ] Cancel a multi-gigabyte copy while bytes are moving. The source and any unrelated
+  destination remain intact, and no hidden `.teral-*` partial is left behind.
+- [ ] Copy and Move on one filesystem, then Move between two filesystems. Unmount or
+  disconnect disposable removable media during a copy and confirm the failure is explicit.
+- [ ] Repeat failure cases with an unreadable source child, a read-only destination, and a
+  nearly full disposable filesystem. No completed item may be reported as failed or vice versa.
+- [ ] Copy and Cut in Teral and paste into Nautilus, Dolphin, and Thunar; then copy and Cut
+  in each of those file managers and paste into Teral.
+- [ ] Drag into a folder tile, empty background, sidebar location, and bookmark. Verify
+  Copy, Move, and Link modifiers show the chosen action before release and perform it.
+- [ ] Attempt same-folder, self, descendant, and symlink-mediated recursive drops. No source
+  is deleted and no recursive tree is created.
+- [ ] Confirm tags follow only completed Moves, including conflict-renamed destinations,
+  and an incomplete Cut remains available with only its uncompleted sources.
+
+Record filesystem types, desktop/file-manager versions, available free space, and the
+exact failed row. Ubuntu coverage is mandatory; repeat the desktop-integration rows on
+Omarchy/Arch before treating the stage as accepted.
+
 ## Packaging
 
 ```bash

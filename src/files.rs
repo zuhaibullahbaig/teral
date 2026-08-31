@@ -6,6 +6,7 @@
 pub mod entry;
 pub mod ops;
 pub mod scan;
+pub mod transfer;
 
 pub use entry::{EntryData, FileEntry};
 pub use scan::{SortKey, Sorting};

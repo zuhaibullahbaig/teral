@@ -417,7 +417,9 @@ fn folder_popover(app: &App) -> gtk::Popover {
         let paste = paste.clone();
         let pin = pin.clone();
         move |_| {
-            paste.set_sensitive(app.state.clipboard.borrow().is_some());
+            paste.set_sensitive(crate::files::ops::clipboard_has_files(
+                &app.widgets.window.clipboard(),
+            ));
             empty_trash.set_visible(crate::files::ops::is_in_trash(&app.current_dir()));
             let pinned = app.is_pinned(&app.current_dir());
             if let Some(row) = pin.child().and_downcast::<gtk::Box>()

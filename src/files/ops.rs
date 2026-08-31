@@ -1,8 +1,7 @@
 //! File operations.
 //!
-//! Metadata-only operations use GIO's asynchronous APIs. Recursive copies and moves run
-//! on a worker thread through [`gio::spawn_blocking`]. The current transfer engine uses
-//! conflict-renamed destinations, but it remains under safety hardening for the 0.1 release.
+//! Metadata-only operations use GIO's asynchronous APIs. Copy, move and duplicate jobs
+//! live in [`super::transfer`], which is the one authoritative transfer implementation.
 
 use gtk::gio;
 use gtk::gio::prelude::*;
@@ -11,62 +10,30 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Whether a pending transfer copies or moves its sources.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransferKind {
-    Copy,
-    Move,
-}
+use super::transfer::OperationLease;
 
-impl TransferKind {
-    pub const fn verb(self) -> &'static str {
-        match self {
-            Self::Copy => "Copying",
-            Self::Move => "Moving",
-        }
-    }
-
-    pub const fn past_tense(self) -> &'static str {
-        match self {
-            Self::Copy => "Copied",
-            Self::Move => "Moved",
-        }
-    }
-}
-
-/// Sources staged by Copy or Move, waiting for a Paste.
-#[derive(Debug, Clone)]
-pub struct Clipboard {
-    pub kind: TransferKind,
-    pub sources: Vec<PathBuf>,
-}
+pub use super::transfer::{
+    CancelFlag, Clipboard, ConflictPolicy, JobProgress, JobReport, TransferKind,
+    clipboard_has_files, conflicts, duplicate, read_clipboard, transfer, write_clipboard,
+};
 
 /// Outcome of a completed transfer.
 #[derive(Debug, Default)]
 pub struct TransferReport {
     pub succeeded: usize,
+    pub completed_paths: Vec<PathBuf>,
     pub failures: Vec<String>,
     pub cancelled: bool,
 }
 
-/// Cancellation flag shared with a running transfer.
-#[derive(Debug, Clone, Default)]
-pub struct CancelFlag(Arc<AtomicBool>);
-
-impl CancelFlag {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+fn blocked_report(paths: &[PathBuf], error: &str) -> TransferReport {
+    TransferReport {
+        failures: paths
+            .iter()
+            .map(|path| format!("{}: {error}", display_name(path)))
+            .collect(),
+        ..TransferReport::default()
     }
 }
 
@@ -92,6 +59,10 @@ pub async fn rename(path: &Path, new_name: &str) -> Result<PathBuf, glib::Error>
 
 /// Move entries to the FreeDesktop trash.
 pub async fn trash(paths: Vec<PathBuf>) -> TransferReport {
+    let _lease = match OperationLease::acquire(&paths) {
+        Ok(lease) => lease,
+        Err(error) => return blocked_report(&paths, &error),
+    };
     let mut report = TransferReport::default();
 
     for path in paths {
@@ -99,7 +70,10 @@ pub async fn trash(paths: Vec<PathBuf>) -> TransferReport {
             .trash_future(glib::Priority::DEFAULT)
             .await
         {
-            Ok(()) => report.succeeded += 1,
+            Ok(()) => {
+                report.succeeded += 1;
+                report.completed_paths.push(path);
+            }
             Err(error) => report.failures.push(format!(
                 "{}: {}",
                 display_name(&path),
@@ -109,80 +83,6 @@ pub async fn trash(paths: Vec<PathBuf>) -> TransferReport {
     }
 
     report
-}
-
-/// Copy or move `sources` into `destination` on a worker thread.
-pub async fn transfer(
-    kind: TransferKind,
-    sources: Vec<PathBuf>,
-    destination: PathBuf,
-    cancel: CancelFlag,
-) -> TransferReport {
-    gio::spawn_blocking(move || run_transfer(kind, &sources, &destination, &cancel))
-        .await
-        .unwrap_or_else(|_| TransferReport {
-            failures: vec!["the transfer worker stopped unexpectedly".to_owned()],
-            ..TransferReport::default()
-        })
-}
-
-fn run_transfer(
-    kind: TransferKind,
-    sources: &[PathBuf],
-    destination: &Path,
-    cancel: &CancelFlag,
-) -> TransferReport {
-    let mut report = TransferReport::default();
-
-    for source in sources {
-        if cancel.is_cancelled() {
-            report.cancelled = true;
-            break;
-        }
-
-        if let Err(error) = transfer_one(kind, source, destination, cancel) {
-            report
-                .failures
-                .push(format!("{}: {error}", display_name(source)));
-        } else {
-            report.succeeded += 1;
-        }
-    }
-
-    report
-}
-
-fn transfer_one(
-    kind: TransferKind,
-    source: &Path,
-    destination_dir: &Path,
-    cancel: &CancelFlag,
-) -> io::Result<()> {
-    let Some(name) = source.file_name() else {
-        return Err(io::Error::other("the source has no file name"));
-    };
-
-    if source.parent() == Some(destination_dir) && kind == TransferKind::Move {
-        return Ok(());
-    }
-
-    if destination_dir.starts_with(source) {
-        return Err(io::Error::other("a folder cannot be copied into itself"));
-    }
-
-    let target = unique_destination(destination_dir, name)?;
-
-    if kind == TransferKind::Move && fs::rename(source, &target).is_ok() {
-        return Ok(());
-    }
-
-    copy_recursively(source, &target, cancel)?;
-
-    if kind == TransferKind::Move && !cancel.is_cancelled() {
-        remove_recursively(source)?;
-    }
-
-    Ok(())
 }
 
 fn copy_recursively(source: &Path, target: &Path, cancel: &CancelFlag) -> io::Result<()> {
@@ -252,59 +152,6 @@ fn unique_destination(directory: &Path, name: &OsStr) -> io::Result<PathBuf> {
     ))
 }
 
-/// True when both paths live on the same filesystem, so a move can be a rename.
-pub fn same_filesystem(source: &Path, destination: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-
-    let source = source
-        .parent()
-        .and_then(|parent| fs::metadata(parent).ok())
-        .map(|metadata| metadata.dev());
-    let destination = fs::metadata(destination)
-        .ok()
-        .map(|metadata| metadata.dev());
-
-    matches!((source, destination), (Some(a), Some(b)) if a == b)
-}
-
-/// Copy entries beside themselves under a free name.
-pub async fn duplicate(paths: Vec<PathBuf>) -> TransferReport {
-    let cancel = CancelFlag::new();
-    gio::spawn_blocking(move || {
-        let mut report = TransferReport::default();
-        for source in paths {
-            let Some(parent) = source.parent().map(Path::to_path_buf) else {
-                report.failures.push(format!(
-                    "{}: it has no parent folder",
-                    display_name(&source)
-                ));
-                continue;
-            };
-
-            match duplicate_one(&source, &parent, &cancel) {
-                Ok(()) => report.succeeded += 1,
-                Err(error) => report
-                    .failures
-                    .push(format!("{}: {error}", display_name(&source))),
-            }
-        }
-        report
-    })
-    .await
-    .unwrap_or_else(|_| TransferReport {
-        failures: vec!["the copy worker stopped unexpectedly".to_owned()],
-        ..TransferReport::default()
-    })
-}
-
-fn duplicate_one(source: &Path, parent: &Path, cancel: &CancelFlag) -> io::Result<()> {
-    let Some(name) = source.file_name() else {
-        return Err(io::Error::other("the source has no file name"));
-    };
-    let target = unique_destination(parent, name)?;
-    copy_recursively(source, &target, cancel)
-}
-
 // -------------------------------------------------------------------- trash ----
 
 /// The FreeDesktop trash directory for the home filesystem.
@@ -320,10 +167,17 @@ pub fn is_in_trash(path: &Path) -> bool {
 /// Restore trashed entries to the locations recorded in their `.trashinfo` files.
 pub async fn restore_from_trash(paths: Vec<PathBuf>) -> TransferReport {
     gio::spawn_blocking(move || {
+        let _lease = match OperationLease::acquire(&paths) {
+            Ok(lease) => lease,
+            Err(error) => return blocked_report(&paths, &error),
+        };
         let mut report = TransferReport::default();
         for path in paths {
             match restore_one(&path) {
-                Ok(()) => report.succeeded += 1,
+                Ok(()) => {
+                    report.succeeded += 1;
+                    report.completed_paths.push(path);
+                }
                 Err(error) => report
                     .failures
                     .push(format!("{}: {error}", display_name(&path))),
@@ -392,10 +246,17 @@ fn restore_one(path: &Path) -> io::Result<()> {
 /// Delete entries without going through the trash.
 pub async fn delete_permanently(paths: Vec<PathBuf>) -> TransferReport {
     gio::spawn_blocking(move || {
+        let _lease = match OperationLease::acquire(&paths) {
+            Ok(lease) => lease,
+            Err(error) => return blocked_report(&paths, &error),
+        };
         let mut report = TransferReport::default();
         for path in paths {
             match remove_with_trash_record(&path) {
-                Ok(()) => report.succeeded += 1,
+                Ok(()) => {
+                    report.succeeded += 1;
+                    report.completed_paths.push(path);
+                }
                 Err(error) => report
                     .failures
                     .push(format!("{}: {error}", display_name(&path))),
@@ -429,6 +290,10 @@ fn remove_with_trash_record(path: &Path) -> io::Result<()> {
 pub async fn empty_trash() -> TransferReport {
     gio::spawn_blocking(move || {
         let root = trash_root();
+        let _lease = match OperationLease::acquire(std::slice::from_ref(&root)) {
+            Ok(lease) => lease,
+            Err(error) => return blocked_report(std::slice::from_ref(&root), &error),
+        };
         let mut report = TransferReport::default();
 
         for directory in ["files", "info"] {
@@ -437,8 +302,12 @@ pub async fn empty_trash() -> TransferReport {
                 continue;
             };
             for entry in entries.flatten() {
-                match remove_recursively(&entry.path()) {
-                    Ok(()) => report.succeeded += 1,
+                let path = entry.path();
+                match remove_recursively(&path) {
+                    Ok(()) => {
+                        report.succeeded += 1;
+                        report.completed_paths.push(path);
+                    }
                     Err(error) => report
                         .failures
                         .push(format!("{}: {error}", display_name(&entry.path()))),
@@ -591,6 +460,7 @@ pub async fn extract(
     destination: PathBuf,
     content_type: String,
 ) -> Result<PathBuf, String> {
+    let _lease = OperationLease::acquire(&[archive.clone(), destination.clone()])?;
     let Some(command) = extract_command(&archive, &destination, &content_type) else {
         return Err("no extraction tool was found; install bsdtar, unzip, 7z or unrar".to_owned());
     };
@@ -691,6 +561,9 @@ pub async fn compress(directory: PathBuf, paths: Vec<PathBuf>) -> Result<PathBuf
 
     let archive = unique_destination(&directory, &archive_name(&directory, &paths))
         .map_err(|error| format!("{}: {error}", directory.display()))?;
+    let mut lease_paths = paths.clone();
+    lease_paths.push(archive.clone());
+    let _lease = OperationLease::acquire(&lease_paths)?;
 
     let names: Vec<OsString> = paths
         .iter()
@@ -791,6 +664,10 @@ pub fn can_be_executable(is_directory: bool, content_type: Option<&str>) -> bool
 /// Add or remove the execute bits on a set of files, leaving read/write alone.
 pub async fn set_executable(paths: Vec<PathBuf>, executable: bool) -> TransferReport {
     gio::spawn_blocking(move || {
+        let _lease = match OperationLease::acquire(&paths) {
+            Ok(lease) => lease,
+            Err(error) => return blocked_report(&paths, &error),
+        };
         use std::os::unix::fs::PermissionsExt;
 
         let mut report = TransferReport::default();
@@ -809,7 +686,10 @@ pub async fn set_executable(paths: Vec<PathBuf>, executable: bool) -> TransferRe
             });
 
             match result {
-                Ok(()) => report.succeeded += 1,
+                Ok(()) => {
+                    report.succeeded += 1;
+                    report.completed_paths.push(path);
+                }
                 Err(error) => report
                     .failures
                     .push(format!("{}: {error}", display_name(&path))),
@@ -932,56 +812,6 @@ mod tests {
     }
 
     #[test]
-    fn directories_copy_recursively() {
-        let dir = scratch("recursive");
-        let source = dir.join("source");
-        fs::create_dir_all(source.join("nested")).expect("tree");
-        fs::write(source.join("nested/file.txt"), b"payload").expect("write");
-
-        let destination = dir.join("destination");
-        fs::create_dir(&destination).expect("destination");
-
-        let report = run_transfer(
-            TransferKind::Copy,
-            std::slice::from_ref(&source),
-            &destination,
-            &CancelFlag::new(),
-        );
-
-        assert_eq!(report.succeeded, 1);
-        assert!(report.failures.is_empty(), "{:?}", report.failures);
-        assert_eq!(
-            fs::read(destination.join("source/nested/file.txt")).expect("copied file"),
-            b"payload"
-        );
-        assert!(source.exists(), "a copy must leave the source in place");
-        fs::remove_dir_all(&dir).expect("cleanup");
-    }
-
-    #[test]
-    fn moves_remove_the_source() {
-        let dir = scratch("move");
-        let source = dir.join("source");
-        fs::create_dir(&source).expect("source");
-        fs::write(source.join("file.txt"), b"payload").expect("write");
-
-        let destination = dir.join("destination");
-        fs::create_dir(&destination).expect("destination");
-
-        let report = run_transfer(
-            TransferKind::Move,
-            std::slice::from_ref(&source),
-            &destination,
-            &CancelFlag::new(),
-        );
-
-        assert_eq!(report.succeeded, 1);
-        assert!(!source.exists());
-        assert!(destination.join("source/file.txt").exists());
-        fs::remove_dir_all(&dir).expect("cleanup");
-    }
-
-    #[test]
     fn only_runnable_files_are_offered_the_execute_bit() {
         assert!(can_be_executable(false, Some("application/x-shellscript")));
         assert!(can_be_executable(false, Some("text/x-python")));
@@ -1013,39 +843,5 @@ mod tests {
         );
         assert_eq!(percent_decode("/home/a/100%"), "/home/a/100%");
         assert_eq!(percent_decode("/home/a/plain"), "/home/a/plain");
-    }
-
-    #[test]
-    fn duplicating_keeps_the_original() {
-        let dir = scratch("duplicate");
-        let source = dir.join("report.txt");
-        fs::write(&source, b"payload").expect("write");
-
-        let report = duplicate_one(&source, &dir, &CancelFlag::new());
-        assert!(report.is_ok(), "{report:?}");
-        assert!(source.exists());
-        assert_eq!(
-            fs::read(dir.join("report (copy).txt")).expect("duplicate"),
-            b"payload"
-        );
-        fs::remove_dir_all(&dir).expect("cleanup");
-    }
-
-    #[test]
-    fn a_folder_cannot_be_copied_into_itself() {
-        let dir = scratch("self");
-        let source = dir.join("source");
-        fs::create_dir_all(source.join("inner")).expect("tree");
-
-        let report = run_transfer(
-            TransferKind::Copy,
-            std::slice::from_ref(&source),
-            &source.join("inner"),
-            &CancelFlag::new(),
-        );
-
-        assert_eq!(report.succeeded, 0);
-        assert_eq!(report.failures.len(), 1);
-        fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

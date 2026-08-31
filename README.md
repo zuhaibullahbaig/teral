@@ -44,15 +44,22 @@ The current source implements:
 This list means the behavior exists in the source. It does not claim that every failure,
 race, cancellation, device, or cross-filesystem case is finished.
 
+## Stage 1–2 candidate awaiting its gate
+
+The current source now contains one transfer coordinator for Paste and drag-and-drop,
+structured per-item results, atomic no-overwrite destination reservation, safe conflict
+choices, byte-level cancellation, partial-output cleanup, metadata-aware recursive copy,
+same- and cross-filesystem move paths, desktop file clipboard formats, and negotiated
+Copy/Move/Link drops. Duplicate uses the same transfer engine.
+
+This is an implementation candidate, not a verified guarantee. It moves into the
+verified list only after the automated checks and the Ubuntu/Omarchy interoperability
+matrix in `DEVELOPMENT.md` pass.
+
 ## Core work still in progress
 
 Before the first public release, Teral is hardening:
 
-- atomic conflict handling and protection against destination races;
-- metadata-preserving copy and safe cross-filesystem move;
-- operation progress, cancellation, partial-result cleanup, and truthful failure reporting;
-- file clipboard interoperability with other Linux file managers;
-- drag-and-drop Copy/Move negotiation;
 - specification-correct Trash, restore, Empty Trash, and secondary-filesystem behavior;
 - exact non-UTF-8 filename handling throughout operations and Trash;
 - directory symlinks and special filesystem entries;
