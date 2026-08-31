@@ -112,7 +112,7 @@ pub struct ItemResult {
 }
 
 impl ItemResult {
-    fn new(source: PathBuf, requested_destination: PathBuf) -> Self {
+    pub(super) fn new(source: PathBuf, requested_destination: PathBuf) -> Self {
         Self {
             source,
             requested_destination,
@@ -148,7 +148,7 @@ pub struct JobReport {
 }
 
 impl JobReport {
-    fn new(kind: OperationKind) -> Self {
+    pub(super) fn new(kind: OperationKind) -> Self {
         Self {
             kind,
             items: Vec::new(),
@@ -187,6 +187,28 @@ impl JobReport {
             .iter()
             .filter(|item| !item.completed())
             .map(|item| item.source.clone())
+            .collect()
+    }
+
+    /// The tag updates this report justifies, and nothing more.
+    ///
+    /// Only completed items appear. An item that landed somewhere carries its tags to
+    /// the destination the job actually reported — never a requested or guessed one. An
+    /// item that completed without landing anywhere was destroyed, so its tags go with
+    /// it. Failed, partial, skipped and cancelled items are absent, because none of them
+    /// has an authoritative outcome to act on.
+    pub fn tag_updates(&self) -> Vec<(&Path, Option<&Path>)> {
+        self.items
+            .iter()
+            .filter(|item| item.completed())
+            .map(|item| {
+                (
+                    item.source.as_path(),
+                    item.actual_destination
+                        .as_deref()
+                        .filter(|destination| *destination != item.source.as_path()),
+                )
+            })
             .collect()
     }
 
@@ -261,7 +283,10 @@ pub fn write_clipboard(clipboard: &gdk::Clipboard, staged: &Clipboard) -> Result
             return Err("link operations cannot be stored in the clipboard".to_owned());
         }
     };
-    let special = format!("{action}\n{}\n", uris.join("\n"));
+    // GNOME's own producer writes "copy" or "cut" followed by one newline-prefixed URI
+    // per file, and no trailing newline. A trailing newline leaves an empty final field
+    // that several consumers turn into an invalid empty URI, so it is deliberately absent.
+    let special = format!("{action}\n{}", uris.join("\n"));
     let uri_list = format!("{}\r\n", uris.join("\r\n"));
     let kde_cut = if staged.kind == TransferKind::Move {
         "1"
@@ -651,14 +676,19 @@ fn transfer_one(
     result
 }
 
-enum Execution {
+pub(super) enum Execution {
     Completed(PathBuf),
     Partial(PathBuf, String),
     Skipped(PathBuf),
 }
 
+/// Place `source` inside `destination` under `name`, honouring `policy`.
+///
+/// Restore reuses this directly: a trashed item's name inside `files/` is not
+/// necessarily the name it must be restored under, so the target name is passed in
+/// rather than derived from the source.
 #[allow(clippy::too_many_arguments)]
-fn execute_with_policy(
+pub(super) fn execute_with_policy(
     kind: TransferKind,
     source: &Path,
     destination: &Path,
@@ -1143,7 +1173,11 @@ fn measure(path: &Path, cancel: &CancelFlag) -> io::Result<u64> {
     Ok(0)
 }
 
-fn append_cancelled(report: &mut JobReport, sources: &[PathBuf], destination: Option<&Path>) {
+pub(super) fn append_cancelled(
+    report: &mut JobReport,
+    sources: &[PathBuf],
+    destination: Option<&Path>,
+) {
     for source in sources {
         let requested = destination
             .and_then(|directory| source.file_name().map(|name| directory.join(name)))
@@ -1618,6 +1652,196 @@ mod tests {
     }
 
     #[test]
+    fn the_gnome_clipboard_payload_has_no_trailing_newline() {
+        // Consumers split this payload on "\n" and treat every field after the first as
+        // a URI. A trailing newline produces an empty field, which Thunar and several
+        // other file managers turn into an invalid entry when pasting from Teral.
+        let uris = ["file:///tmp/one", "file:///tmp/two"];
+        let payload = format!("cut\n{}", uris.join("\n"));
+        assert_eq!(payload, "cut\nfile:///tmp/one\nfile:///tmp/two");
+        assert!(!payload.ends_with('\n'));
+
+        // It must still survive a round trip through Teral's own reader.
+        let clipboard = parse_gnome_clipboard(payload.as_bytes()).unwrap();
+        assert_eq!(clipboard.kind, TransferKind::Move);
+        assert_eq!(
+            clipboard.sources,
+            [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
+        );
+    }
+
+    #[test]
+    fn a_trailing_newline_from_another_application_is_still_accepted() {
+        // Teral is strict about what it writes and lenient about what it reads.
+        let clipboard = parse_gnome_clipboard(b"copy\nfile:///tmp/one\n\n").unwrap();
+        assert_eq!(clipboard.kind, TransferKind::Copy);
+        assert_eq!(clipboard.sources, [PathBuf::from("/tmp/one")]);
+    }
+
+    /// Place `source` into `destination` under `name`, the way a restore does.
+    fn place(
+        source: &Path,
+        destination: &Path,
+        name: &OsStr,
+        policy: ConflictPolicy,
+    ) -> io::Result<Execution> {
+        let (progress, _) = mpsc::sync_channel(1);
+        let mut completed_bytes = 0;
+        execute_with_policy(
+            TransferKind::Move,
+            source,
+            destination,
+            name,
+            policy,
+            &CancelFlag::new(),
+            &progress,
+            &mut completed_bytes,
+            0,
+            0,
+            1,
+        )
+    }
+
+    #[test]
+    fn a_restore_uses_the_recorded_name_not_the_name_in_the_trash() {
+        let root = scratch("restore-name");
+        let trash = root.join("files");
+        let home = root.join("home");
+        fs::create_dir(&trash).unwrap();
+        fs::create_dir(&home).unwrap();
+        // The desktop de-duplicated the name when it was trashed.
+        let trashed = trash.join("notes.2.txt");
+        fs::write(&trashed, b"payload").unwrap();
+
+        let placed = place(
+            &trashed,
+            &home,
+            OsStr::new("notes.txt"),
+            ConflictPolicy::RenameIncoming,
+        )
+        .unwrap();
+        match placed {
+            Execution::Completed(path) => assert_eq!(path, home.join("notes.txt")),
+            _ => panic!("the restore should have completed"),
+        }
+        assert_eq!(fs::read(home.join("notes.txt")).unwrap(), b"payload");
+        assert!(!trashed.exists(), "the item must leave the trash");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_occupied_restore_destination_is_renamed_rather_than_replaced() {
+        let root = scratch("restore-occupied");
+        let trash = root.join("files");
+        let home = root.join("home");
+        fs::create_dir(&trash).unwrap();
+        fs::create_dir(&home).unwrap();
+        let trashed = trash.join("notes.txt");
+        fs::write(&trashed, b"restored").unwrap();
+        fs::write(home.join("notes.txt"), b"newer file").unwrap();
+
+        let placed = place(
+            &trashed,
+            &home,
+            OsStr::new("notes.txt"),
+            ConflictPolicy::RenameIncoming,
+        )
+        .unwrap();
+        match placed {
+            Execution::Completed(path) => assert_eq!(path, home.join("notes (copy).txt")),
+            _ => panic!("the restore should have completed"),
+        }
+        // The file that was already there is untouched.
+        assert_eq!(fs::read(home.join("notes.txt")).unwrap(), b"newer file");
+        assert_eq!(
+            fs::read(home.join("notes (copy).txt")).unwrap(),
+            b"restored"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_skipped_restore_leaves_the_item_in_the_trash() {
+        let root = scratch("restore-skip");
+        let trash = root.join("files");
+        let home = root.join("home");
+        fs::create_dir(&trash).unwrap();
+        fs::create_dir(&home).unwrap();
+        let trashed = trash.join("notes.txt");
+        fs::write(&trashed, b"restored").unwrap();
+        fs::write(home.join("notes.txt"), b"newer file").unwrap();
+
+        let placed = place(
+            &trashed,
+            &home,
+            OsStr::new("notes.txt"),
+            ConflictPolicy::Skip,
+        )
+        .unwrap();
+        assert!(matches!(placed, Execution::Skipped(_)));
+        // Skipping must never lose the trashed copy, or its restore record would be
+        // removed for an item that is still sitting in the trash.
+        assert_eq!(fs::read(&trashed).unwrap(), b"restored");
+        assert_eq!(fs::read(home.join("notes.txt")).unwrap(), b"newer file");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_restored_non_utf8_name_keeps_its_exact_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let root = scratch("restore-non-utf8");
+        let trash = root.join("files");
+        let home = root.join("home");
+        fs::create_dir(&trash).unwrap();
+        fs::create_dir(&home).unwrap();
+        let trashed = trash.join("plain-trash-name");
+        fs::write(&trashed, b"payload").unwrap();
+
+        let original = OsString::from_vec(b"na\xffme.txt".to_vec());
+        let placed = place(&trashed, &home, &original, ConflictPolicy::RenameIncoming).unwrap();
+        let Execution::Completed(path) = placed else {
+            panic!("the restore should have completed");
+        };
+        assert_eq!(
+            path.file_name().unwrap().as_bytes(),
+            b"na\xffme.txt".as_slice()
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"payload");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_restored_directory_keeps_its_contents() {
+        let root = scratch("restore-directory");
+        let trash = root.join("files");
+        let home = root.join("home");
+        fs::create_dir(&trash).unwrap();
+        fs::create_dir(&home).unwrap();
+        let trashed = trash.join("project");
+        fs::create_dir_all(trashed.join("src")).unwrap();
+        fs::write(trashed.join("src/main.rs"), b"fn main() {}").unwrap();
+        std::os::unix::fs::symlink("src/main.rs", trashed.join("link")).unwrap();
+
+        let placed = place(
+            &trashed,
+            &home,
+            OsStr::new("project"),
+            ConflictPolicy::RenameIncoming,
+        )
+        .unwrap();
+        let Execution::Completed(path) = placed else {
+            panic!("the restore should have completed");
+        };
+        assert_eq!(fs::read(path.join("src/main.rs")).unwrap(), b"fn main() {}");
+        assert_eq!(
+            fs::read_link(path.join("link")).unwrap(),
+            PathBuf::from("src/main.rs")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn gnome_clipboard_preserves_cut_and_local_uris() {
         let clipboard = parse_gnome_clipboard(b"cut\nfile:///tmp/one\nfile:///tmp/two\n").unwrap();
         assert_eq!(clipboard.kind, TransferKind::Move);
@@ -1634,5 +1858,52 @@ mod tests {
         assert!(OperationLease::acquire(&[root.join("child")]).is_err());
         drop(first);
         assert!(OperationLease::acquire(&[root.join("child")]).is_ok());
+    }
+    #[test]
+    fn tag_updates_follow_only_completed_items() {
+        let mut report = JobReport::new(OperationKind::Restore);
+
+        let mut completed = ItemResult::new(PathBuf::from("/trash/a"), PathBuf::from("/home/a"));
+        completed.actual_destination = Some(PathBuf::from("/home/a (copy)"));
+        completed.state = ItemState::Completed;
+
+        let mut destroyed = ItemResult::new(PathBuf::from("/home/b"), PathBuf::from("/home/b"));
+        destroyed.state = ItemState::Completed;
+
+        let mut partial = ItemResult::new(PathBuf::from("/trash/c"), PathBuf::from("/home/c"));
+        partial.actual_destination = Some(PathBuf::from("/home/c"));
+        partial.state = ItemState::Partial;
+
+        let mut skipped = ItemResult::new(PathBuf::from("/trash/d"), PathBuf::from("/home/d"));
+        skipped.actual_destination = Some(PathBuf::from("/home/d"));
+        skipped.state = ItemState::Skipped;
+
+        let mut cancelled = ItemResult::new(PathBuf::from("/trash/e"), PathBuf::from("/home/e"));
+        cancelled.state = ItemState::Cancelled;
+
+        let mut failed = ItemResult::new(PathBuf::from("/trash/f"), PathBuf::from("/home/f"));
+        failed.error = Some("nope".to_owned());
+
+        report.items = vec![completed, destroyed, partial, skipped, cancelled, failed];
+
+        let updates = report.tag_updates();
+        assert_eq!(updates.len(), 2, "only completed items may move tags");
+        // A completed item moves its tags to the destination the job really used.
+        assert_eq!(updates[0].0, Path::new("/trash/a"));
+        assert_eq!(updates[0].1, Some(Path::new("/home/a (copy)")));
+        // A completed item that landed nowhere was destroyed, so its tags go.
+        assert_eq!(updates[1].0, Path::new("/home/b"));
+        assert_eq!(updates[1].1, None);
+    }
+
+    #[test]
+    fn an_item_that_did_not_move_is_not_treated_as_a_relocation() {
+        let mut report = JobReport::new(OperationKind::PermanentDelete);
+        let mut item = ItemResult::new(PathBuf::from("/home/a"), PathBuf::from("/home/a"));
+        item.actual_destination = Some(PathBuf::from("/home/a"));
+        item.state = ItemState::Completed;
+        report.items = vec![item];
+
+        assert_eq!(report.tag_updates(), vec![(Path::new("/home/a"), None)]);
     }
 }

@@ -10,8 +10,13 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
-use super::transfer::OperationLease;
+use super::transfer::{
+    Execution, ItemResult, ItemState, OperationKind, OperationLease, append_cancelled,
+    execute_with_policy,
+};
+use super::trash;
 
 pub use super::transfer::{
     CancelFlag, Clipboard, ConflictPolicy, JobProgress, JobReport, TransferKind,
@@ -57,67 +62,6 @@ pub async fn rename(path: &Path, new_name: &str) -> Result<PathBuf, glib::Error>
         .unwrap_or_else(|| path.with_file_name(new_name)))
 }
 
-/// Move entries to the FreeDesktop trash.
-pub async fn trash(paths: Vec<PathBuf>) -> TransferReport {
-    let _lease = match OperationLease::acquire(&paths) {
-        Ok(lease) => lease,
-        Err(error) => return blocked_report(&paths, &error),
-    };
-    let mut report = TransferReport::default();
-
-    for path in paths {
-        match gio::File::for_path(&path)
-            .trash_future(glib::Priority::DEFAULT)
-            .await
-        {
-            Ok(()) => {
-                report.succeeded += 1;
-                report.completed_paths.push(path);
-            }
-            Err(error) => report.failures.push(format!(
-                "{}: {}",
-                display_name(&path),
-                error.message().trim()
-            )),
-        }
-    }
-
-    report
-}
-
-fn copy_recursively(source: &Path, target: &Path, cancel: &CancelFlag) -> io::Result<()> {
-    if cancel.is_cancelled() {
-        return Err(io::Error::other("cancelled"));
-    }
-
-    let metadata = fs::symlink_metadata(source)?;
-
-    if metadata.file_type().is_symlink() {
-        let link = fs::read_link(source)?;
-        return std::os::unix::fs::symlink(link, target);
-    }
-
-    if metadata.is_dir() {
-        fs::create_dir(target)?;
-        for child in fs::read_dir(source)? {
-            let child = child?;
-            copy_recursively(&child.path(), &target.join(child.file_name()), cancel)?;
-        }
-        return Ok(());
-    }
-
-    fs::copy(source, target).map(|_| ())
-}
-
-fn remove_recursively(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    }
-}
-
 /// Pick a free path inside `directory`, never replacing an existing entry.
 fn unique_destination(directory: &Path, name: &OsStr) -> io::Result<PathBuf> {
     let candidate = directory.join(name);
@@ -154,196 +98,617 @@ fn unique_destination(directory: &Path, name: &OsStr) -> io::Result<PathBuf> {
 
 // -------------------------------------------------------------------- trash ----
 
-/// The FreeDesktop trash directory for the home filesystem.
-pub fn trash_root() -> PathBuf {
-    crate::theme::data_home().join("Trash")
+/// Mount points whose trash directories Teral should consider.
+///
+/// The volume monitor lives on the GTK thread, so this is gathered before any worker
+/// starts and the resulting list is handed to the worker. A device unplugged after
+/// something was trashed on it simply stops appearing, which is what makes its items
+/// disappear from Teral until it is mounted again — the data and its records stay on
+/// the device.
+fn mount_points() -> Vec<PathBuf> {
+    let mut points = vec![PathBuf::from("/")];
+    if let Some(home) = crate::theme::home_dir() {
+        points.push(home);
+    }
+    for mount in gio::VolumeMonitor::get().mounts() {
+        if mount.is_shadowed() {
+            continue;
+        }
+        if let Some(path) = mount.root().path()
+            && !points.contains(&path)
+        {
+            points.push(path);
+        }
+    }
+    points
 }
 
-/// True when `path` is inside the trash, so restore and emptying make sense.
+/// Every trash directory that exists right now, home first.
+///
+/// Must be called from the GTK thread, because it reads the volume monitor.
+pub fn trash_dirs() -> Vec<trash::TrashDir> {
+    let Some(uid) = trash::current_uid() else {
+        // Without a user id the per-filesystem naming scheme cannot be applied, so only
+        // the home trash is known. Guessing an id would point at another user's trash.
+        let home = trash::home_trash(&crate::theme::data_home());
+        return if home.is_present() {
+            vec![home]
+        } else {
+            Vec::new()
+        };
+    };
+    trash::discover(&crate::theme::data_home(), &mount_points(), uid)
+}
+
+/// Where trashed data can be browsed, in the order the sidebar should offer it.
+pub fn trash_locations() -> Vec<PathBuf> {
+    trash_dirs().iter().map(trash::TrashDir::files).collect()
+}
+
+/// True when `path` is inside any trash Teral knows about, so restore and permanent
+/// deletion are the meaningful actions for it.
 pub fn is_in_trash(path: &Path) -> bool {
-    path.starts_with(trash_root().join("files"))
+    trash::is_in_trash(path, &trash_dirs())
 }
 
-/// Restore trashed entries to the locations recorded in their `.trashinfo` files.
-pub async fn restore_from_trash(paths: Vec<PathBuf>) -> TransferReport {
-    gio::spawn_blocking(move || {
-        let _lease = match OperationLease::acquire(&paths) {
-            Ok(lease) => lease,
-            Err(error) => return blocked_report(&paths, &error),
-        };
-        let mut report = TransferReport::default();
-        for path in paths {
-            match restore_one(&path) {
-                Ok(()) => {
-                    report.succeeded += 1;
-                    report.completed_paths.push(path);
-                }
-                Err(error) => report
-                    .failures
-                    .push(format!("{}: {error}", display_name(&path))),
-            }
-        }
-        report
-    })
-    .await
-    .unwrap_or_else(|_| TransferReport {
-        failures: vec!["the restore worker stopped unexpectedly".to_owned()],
-        ..TransferReport::default()
-    })
+/// What Empty Trash would actually remove, so the confirmation can name real numbers.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TrashScope {
+    pub items: usize,
+    pub records: usize,
+    pub locations: usize,
 }
 
-fn restore_one(path: &Path) -> io::Result<()> {
-    let Some(name) = path.file_name() else {
-        return Err(io::Error::other("the entry has no file name"));
-    };
-
-    let mut info_name = OsString::from(name);
-    info_name.push(".trashinfo");
-    let info_path = trash_root().join("info").join(&info_name);
-
-    let info = fs::read_to_string(&info_path)
-        .map_err(|error| io::Error::other(format!("its trash record is unreadable: {error}")))?;
-
-    let original = info
-        .lines()
-        .find_map(|line| line.strip_prefix("Path="))
-        .map(percent_decode)
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::other("its trash record has no original path"))?;
-
-    // A relative Path= is relative to the trash directory's filesystem root.
-    let original = if original.is_absolute() {
-        original
-    } else {
-        crate::theme::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/"))
-            .join(original)
-    };
-
-    let Some(parent) = original.parent() else {
-        return Err(io::Error::other("its original folder is unknown"));
-    };
-    fs::create_dir_all(parent)?;
-
-    let target = if original.symlink_metadata().is_ok() {
-        let name = original
-            .file_name()
-            .ok_or_else(|| io::Error::other("its original name is unknown"))?;
-        unique_destination(parent, name)?
-    } else {
-        original
-    };
-
-    if fs::rename(path, &target).is_err() {
-        copy_recursively(path, &target, &CancelFlag::new())?;
-        remove_recursively(path)?;
+impl TrashScope {
+    pub fn is_empty(&self) -> bool {
+        self.items == 0 && self.records == 0
     }
 
-    let _ = fs::remove_file(&info_path);
-    Ok(())
-}
-
-/// Delete entries without going through the trash.
-pub async fn delete_permanently(paths: Vec<PathBuf>) -> TransferReport {
-    gio::spawn_blocking(move || {
-        let _lease = match OperationLease::acquire(&paths) {
-            Ok(lease) => lease,
-            Err(error) => return blocked_report(&paths, &error),
-        };
-        let mut report = TransferReport::default();
-        for path in paths {
-            match remove_with_trash_record(&path) {
-                Ok(()) => {
-                    report.succeeded += 1;
-                    report.completed_paths.push(path);
-                }
-                Err(error) => report
-                    .failures
-                    .push(format!("{}: {error}", display_name(&path))),
-            }
+    /// One sentence naming exactly what will be deleted and from where.
+    pub fn describe(&self) -> String {
+        let mut description = crate::files::item_count_label(self.items);
+        if self.locations > 1 {
+            description.push_str(&format!(" across {} trash locations", self.locations));
         }
-        report
-    })
-    .await
-    .unwrap_or_else(|_| TransferReport {
-        failures: vec!["the delete worker stopped unexpectedly".to_owned()],
-        ..TransferReport::default()
-    })
+        if self.records > 0 {
+            description.push_str(&format!(
+                ", plus {} leftover trash {}",
+                self.records,
+                if self.records == 1 {
+                    "record"
+                } else {
+                    "records"
+                }
+            ));
+        }
+        description
+    }
 }
 
-/// Remove an entry, cleaning up its trash record when it lives in the trash.
-fn remove_with_trash_record(path: &Path) -> io::Result<()> {
-    remove_recursively(path)?;
+/// Measure the trash. Cheap enough for a confirmation dialog: one directory read per
+/// trash location.
+pub fn trash_scope() -> TrashScope {
+    let dirs = trash_dirs();
+    TrashScope {
+        items: trash::count(&dirs),
+        records: dirs
+            .iter()
+            .map(|dir| {
+                trash::orphan_records(dir)
+                    .map(|records| records.len())
+                    .unwrap_or(0)
+            })
+            .sum(),
+        locations: dirs.len(),
+    }
+}
 
-    if is_in_trash(path)
-        && let Some(name) = path.file_name()
-    {
-        let mut info_name = OsString::from(name);
-        info_name.push(".trashinfo");
-        let _ = fs::remove_file(trash_root().join("info").join(info_name));
+/// Move entries to the trash through GIO, which implements the FreeDesktop model for
+/// the home filesystem and for secondary filesystems alike.
+///
+/// GIO does not report the name an item receives inside the trash, so no destination is
+/// claimed for a trashed item. Callers get a completion state per item and nothing more,
+/// which is exactly what they are entitled to act on.
+pub async fn trash(
+    paths: Vec<PathBuf>,
+    cancel: CancelFlag,
+    progress: mpsc::SyncSender<JobProgress>,
+) -> JobReport {
+    let mut report = JobReport::new(OperationKind::Trash);
+    let _lease = match OperationLease::acquire(&paths) {
+        Ok(lease) => lease,
+        Err(error) => return blocked_job(OperationKind::Trash, &paths, &error),
+    };
+
+    let total = paths.len();
+    for (index, path) in paths.iter().enumerate() {
+        if cancel.is_cancelled() {
+            report.cancelled = true;
+            append_cancelled(&mut report, &paths[index..], None);
+            break;
+        }
+
+        let mut item = ItemResult::new(path.clone(), path.clone());
+        match gio::File::for_path(path)
+            .trash_future(glib::Priority::DEFAULT)
+            .await
+        {
+            Ok(()) => item.state = ItemState::Completed,
+            Err(error) => item.error = Some(describe_gio(&error)),
+        }
+        report.items.push(item);
+
+        let _ = progress.try_send(JobProgress {
+            processed_items: index + 1,
+            total_items: total,
+            completed_bytes: 0,
+            total_bytes: 0,
+            current: Some(path.clone()),
+        });
+    }
+    report
+}
+
+/// One trashed item that a restore is prepared to put back.
+#[derive(Debug, Clone)]
+pub struct RestoreTarget {
+    /// The item as it sits in the trash right now.
+    pub file: PathBuf,
+    /// Its restore record, removed only once the item is back in place.
+    pub info: PathBuf,
+    /// The folder it came from.
+    pub parent: PathBuf,
+    /// The name it must be restored under, with its raw bytes intact.
+    pub name: OsString,
+    /// False when the original folder has been removed since the item was trashed.
+    pub parent_exists: bool,
+    /// True when something already occupies the original location.
+    pub occupied: bool,
+    /// Where the record says it came from and when it was deleted. Repeated in failure
+    /// messages, because a filename on its own rarely says which item is meant.
+    pub origin: Option<String>,
+}
+
+/// What a restore will run into before it starts.
+#[derive(Debug, Default)]
+pub struct RestorePlan {
+    pub targets: Vec<RestoreTarget>,
+    /// Items whose record cannot tell Teral where they came from, with the reason.
+    pub unrestorable: Vec<(PathBuf, String)>,
+}
+
+impl RestorePlan {
+    pub fn conflicts(&self) -> usize {
+        self.targets.iter().filter(|target| target.occupied).count()
     }
 
-    Ok(())
+    pub fn missing_parents(&self) -> usize {
+        self.targets
+            .iter()
+            .filter(|target| !target.parent_exists)
+            .count()
+    }
 }
 
-/// Permanently delete everything in the trash.
-pub async fn empty_trash() -> TransferReport {
-    gio::spawn_blocking(move || {
-        let root = trash_root();
-        let _lease = match OperationLease::acquire(std::slice::from_ref(&root)) {
-            Ok(lease) => lease,
-            Err(error) => return blocked_report(std::slice::from_ref(&root), &error),
-        };
-        let mut report = TransferReport::default();
+/// Read the restore records for a selection, off the GTK thread.
+pub async fn plan_restore(paths: Vec<PathBuf>, dirs: Vec<trash::TrashDir>) -> RestorePlan {
+    gio::spawn_blocking(move || build_restore_plan(&paths, &dirs))
+        .await
+        .unwrap_or_else(|_| RestorePlan {
+            targets: Vec::new(),
+            unrestorable: vec![(
+                PathBuf::new(),
+                "the restore worker stopped unexpectedly".to_owned(),
+            )],
+        })
+}
 
-        for directory in ["files", "info"] {
-            let directory = root.join(directory);
-            let Ok(entries) = fs::read_dir(&directory) else {
-                continue;
+fn build_restore_plan(paths: &[PathBuf], dirs: &[trash::TrashDir]) -> RestorePlan {
+    let mut plan = RestorePlan::default();
+
+    for path in paths {
+        let Some(dir) = trash::containing(path, dirs) else {
+            plan.unrestorable.push((
+                path.clone(),
+                "it is not in a trash directory Teral can restore from".to_owned(),
+            ));
+            continue;
+        };
+        // Only a top-level entry in files/ has a record. Something selected further
+        // inside a trashed folder is restored by restoring the folder it lives in.
+        if path.parent() != Some(dir.files().as_path()) {
+            plan.unrestorable.push((
+                path.clone(),
+                "only whole trashed items can be restored; restore the item it is inside"
+                    .to_owned(),
+            ));
+            continue;
+        }
+
+        let item = trash::item_at(path, dir);
+        let (Some(parent), Some(name)) = (item.original_parent(), item.original_name()) else {
+            let reason = match &item.info_result {
+                Err(error) => error.to_string(),
+                Ok(_) => "its trash record does not name a folder to restore into".to_owned(),
             };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                match remove_recursively(&path) {
-                    Ok(()) => {
-                        report.succeeded += 1;
-                        report.completed_paths.push(path);
+            plan.unrestorable.push((path.clone(), reason));
+            continue;
+        };
+
+        let requested = parent.join(name);
+        plan.targets.push(RestoreTarget {
+            file: path.clone(),
+            info: item.info.clone(),
+            parent: parent.to_path_buf(),
+            name: name.to_os_string(),
+            parent_exists: parent.is_dir(),
+            occupied: requested.symlink_metadata().is_ok(),
+            origin: item.origin_summary(),
+        });
+    }
+    plan
+}
+
+/// What to do about a restore whose original folder no longer exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingParent {
+    /// Recreate the folder chain and restore into it.
+    Recreate,
+    /// Leave the item in the trash and say so.
+    Fail,
+}
+
+/// Put trashed items back where their records say they came from.
+///
+/// Placement goes through the same conflict handling, atomic no-overwrite reservation,
+/// replacement backup, cross-filesystem fallback and cancellation as Paste. A record is
+/// discarded only after its item has actually landed somewhere.
+pub async fn restore_from_trash(
+    targets: Vec<RestoreTarget>,
+    policy: ConflictPolicy,
+    missing_parent: MissingParent,
+    cancel: CancelFlag,
+    progress: mpsc::SyncSender<JobProgress>,
+) -> JobReport {
+    let fallback: Vec<PathBuf> = targets.iter().map(|target| target.file.clone()).collect();
+    gio::spawn_blocking(move || run_restore(&targets, policy, missing_parent, &cancel, &progress))
+        .await
+        .unwrap_or_else(|_| {
+            blocked_job(
+                OperationKind::Restore,
+                &fallback,
+                "the restore worker stopped unexpectedly",
+            )
+        })
+}
+
+fn run_restore(
+    targets: &[RestoreTarget],
+    policy: ConflictPolicy,
+    missing_parent: MissingParent,
+    cancel: &CancelFlag,
+    progress: &mpsc::SyncSender<JobProgress>,
+) -> JobReport {
+    let mut lease_paths: Vec<PathBuf> = targets.iter().map(|target| target.file.clone()).collect();
+    lease_paths.extend(
+        targets
+            .iter()
+            .map(|target| target.parent.join(&target.name)),
+    );
+    let sources: Vec<PathBuf> = targets.iter().map(|target| target.file.clone()).collect();
+
+    let _lease = match OperationLease::acquire(&lease_paths) {
+        Ok(lease) => lease,
+        Err(error) => return blocked_job(OperationKind::Restore, &sources, &error),
+    };
+
+    let mut report = JobReport::new(OperationKind::Restore);
+    let mut completed_bytes = 0u64;
+    let total = targets.len();
+
+    for (index, target) in targets.iter().enumerate() {
+        if cancel.is_cancelled() {
+            report.cancelled = true;
+            append_cancelled(&mut report, &sources[index..], None);
+            break;
+        }
+
+        let requested = target.parent.join(&target.name);
+        let mut item = ItemResult::new(target.file.clone(), requested);
+
+        if !target.parent.is_dir() {
+            match missing_parent {
+                MissingParent::Fail => {
+                    item.error = Some(format!(
+                        "its original folder {} no longer exists{}",
+                        target.parent.display(),
+                        describe_origin(target.origin.as_deref())
+                    ));
+                    report.items.push(item);
+                    continue;
+                }
+                MissingParent::Recreate => {
+                    if let Err(error) = fs::create_dir_all(&target.parent) {
+                        item.error = Some(format!(
+                            "its original folder {} could not be recreated: {error}",
+                            target.parent.display()
+                        ));
+                        report.items.push(item);
+                        continue;
                     }
-                    Err(error) => report
-                        .failures
-                        .push(format!("{}: {error}", display_name(&entry.path()))),
                 }
             }
         }
 
-        report
-    })
-    .await
-    .unwrap_or_else(|_| TransferReport {
-        failures: vec!["the delete worker stopped unexpectedly".to_owned()],
-        ..TransferReport::default()
+        let placement = execute_with_policy(
+            TransferKind::Move,
+            &target.file,
+            &target.parent,
+            &target.name,
+            policy,
+            cancel,
+            progress,
+            &mut completed_bytes,
+            0,
+            index,
+            total,
+        );
+
+        match placement {
+            Ok(Execution::Completed(path)) => {
+                // The record goes only now, once the data is demonstrably back.
+                match trash::discard_record(&target.info) {
+                    Ok(()) => {
+                        item.actual_destination = Some(path);
+                        item.state = ItemState::Completed;
+                    }
+                    Err(error) => {
+                        item.actual_destination = Some(path);
+                        item.state = ItemState::Partial;
+                        item.error = Some(format!(
+                            "it was restored, but its trash record could not be removed: {error}"
+                        ));
+                    }
+                }
+            }
+            Ok(Execution::Skipped(path)) => {
+                item.actual_destination = Some(path);
+                item.state = ItemState::Skipped;
+            }
+            Ok(Execution::Partial(path, error)) => {
+                item.actual_destination = Some(path);
+                item.state = ItemState::Partial;
+                item.error = Some(error);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted || cancel.is_cancelled() => {
+                report.cancelled = true;
+                item.state = ItemState::Cancelled;
+                item.error = Some("cancelled".to_owned());
+            }
+            Err(error) => {
+                item.error = Some(format!(
+                    "{error}{}",
+                    describe_origin(target.origin.as_deref())
+                ));
+            }
+        }
+
+        report.items.push(item);
+        let _ = progress.try_send(JobProgress {
+            processed_items: index + 1,
+            total_items: total,
+            completed_bytes,
+            total_bytes: 0,
+            current: Some(target.file.clone()),
+        });
+    }
+    report
+}
+
+/// Delete entries permanently, without going through the trash.
+///
+/// An entry that is itself in the trash keeps its restore record until its data is
+/// actually gone, so a refusal part-way through leaves it restorable.
+pub async fn delete_permanently(
+    paths: Vec<PathBuf>,
+    dirs: Vec<trash::TrashDir>,
+    cancel: CancelFlag,
+    progress: mpsc::SyncSender<JobProgress>,
+) -> JobReport {
+    let fallback = paths.clone();
+    gio::spawn_blocking(move || run_delete(&paths, &dirs, &cancel, &progress))
+        .await
+        .unwrap_or_else(|_| {
+            blocked_job(
+                OperationKind::PermanentDelete,
+                &fallback,
+                "the delete worker stopped unexpectedly",
+            )
+        })
+}
+
+fn run_delete(
+    paths: &[PathBuf],
+    dirs: &[trash::TrashDir],
+    cancel: &CancelFlag,
+    progress: &mpsc::SyncSender<JobProgress>,
+) -> JobReport {
+    let _lease = match OperationLease::acquire(paths) {
+        Ok(lease) => lease,
+        Err(error) => return blocked_job(OperationKind::PermanentDelete, paths, &error),
+    };
+
+    let batch: Vec<(PathBuf, Option<PathBuf>)> = paths
+        .iter()
+        .map(|path| (path.clone(), record_for(path, dirs)))
+        .collect();
+    let outcomes = purge_batch(&batch, cancel, progress, paths.len());
+    collect_removals(OperationKind::PermanentDelete, paths, outcomes)
+}
+
+/// Run a batch removal, reporting progress as it goes.
+fn purge_batch(
+    batch: &[(PathBuf, Option<PathBuf>)],
+    cancel: &CancelFlag,
+    progress: &mpsc::SyncSender<JobProgress>,
+    total: usize,
+) -> Vec<trash::Removal> {
+    trash::purge_batch(batch, &|| cancel.is_cancelled(), |index, path| {
+        let _ = progress.try_send(JobProgress {
+            processed_items: index + 1,
+            total_items: total,
+            completed_bytes: 0,
+            total_bytes: 0,
+            current: Some(path.to_path_buf()),
+        });
     })
 }
 
-/// Decode the percent-encoding the trash specification uses for `Path=`.
-fn percent_decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
-            if let Some(byte) = hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
-                decoded.push(byte);
-                index += 3;
-                continue;
+/// Turn per-item removal outcomes into the structured report the UI reads.
+fn collect_removals(
+    kind: OperationKind,
+    paths: &[PathBuf],
+    outcomes: Vec<trash::Removal>,
+) -> JobReport {
+    let mut report = JobReport::new(kind);
+    for (path, outcome) in paths.iter().zip(outcomes) {
+        let mut item = ItemResult::new(path.clone(), path.clone());
+        match outcome {
+            trash::Removal::Removed => item.state = ItemState::Completed,
+            trash::Removal::RecordRemains(error) => {
+                item.state = ItemState::Partial;
+                item.error = Some(error);
+            }
+            trash::Removal::Failed(error) => item.error = Some(error),
+            trash::Removal::Cancelled => {
+                report.cancelled = true;
+                item.state = ItemState::Cancelled;
+                item.error = Some("cancelled".to_owned());
             }
         }
-        decoded.push(bytes[index]);
-        index += 1;
+        report.items.push(item);
+    }
+    report
+}
+
+/// The restore record belonging to `path`, when `path` is a whole trashed item.
+///
+/// Anything deeper inside a trashed folder has no record of its own, and the folder's
+/// record must not be removed just because one child was deleted.
+fn record_for(path: &Path, dirs: &[trash::TrashDir]) -> Option<PathBuf> {
+    let dir = trash::containing(path, dirs)?;
+    if path.parent() != Some(dir.files().as_path()) {
+        return None;
+    }
+    Some(dir.info_path(path.file_name()?))
+}
+
+/// Permanently delete everything in every trash Teral can see.
+///
+/// Items are removed one at a time so a refusal on one leaves the rest of the trash —
+/// and every remaining restore record — exactly as it was.
+pub async fn empty_trash(
+    dirs: Vec<trash::TrashDir>,
+    cancel: CancelFlag,
+    progress: mpsc::SyncSender<JobProgress>,
+) -> JobReport {
+    gio::spawn_blocking(move || run_empty_trash(&dirs, &cancel, &progress))
+        .await
+        .unwrap_or_else(|_| {
+            blocked_job(
+                OperationKind::PermanentDelete,
+                &[],
+                "the delete worker stopped unexpectedly",
+            )
+        })
+}
+
+fn run_empty_trash(
+    dirs: &[trash::TrashDir],
+    cancel: &CancelFlag,
+    progress: &mpsc::SyncSender<JobProgress>,
+) -> JobReport {
+    let roots: Vec<PathBuf> = dirs.iter().map(|dir| dir.root.clone()).collect();
+    let _lease = match OperationLease::acquire(&roots) {
+        Ok(lease) => lease,
+        Err(error) => return blocked_job(OperationKind::PermanentDelete, &roots, &error),
+    };
+
+    let mut report = JobReport::new(OperationKind::PermanentDelete);
+
+    // Records whose data was already gone before this run started. Anything that becomes
+    // a record without data during the run is a reported partial failure, and clearing it
+    // here would quietly contradict that report.
+    let mut stale_records = Vec::new();
+    let mut batch: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    for dir in dirs {
+        stale_records.extend(trash::orphan_records(dir).unwrap_or_default());
+        match trash::list(dir) {
+            Ok(items) => batch.extend(items.into_iter().map(|item| (item.file, Some(item.info)))),
+            Err(error) => {
+                let mut failed = ItemResult::new(dir.files(), dir.files());
+                failed.error = Some(format!("its contents could not be read: {error}"));
+                report.items.push(failed);
+            }
+        }
     }
 
-    String::from_utf8_lossy(&decoded).into_owned()
+    let total = batch.len() + stale_records.len();
+    let paths: Vec<PathBuf> = batch.iter().map(|(file, _)| file.clone()).collect();
+    let outcomes = purge_batch(&batch, cancel, progress, total);
+    let removals = collect_removals(OperationKind::PermanentDelete, &paths, outcomes);
+    report.cancelled |= removals.cancelled;
+    report.items.extend(removals.items);
+
+    for record in &stale_records {
+        if cancel.is_cancelled() {
+            report.cancelled = true;
+            break;
+        }
+        let mut item = ItemResult::new(record.clone(), record.clone());
+        match trash::discard_record(record) {
+            Ok(()) => item.state = ItemState::Completed,
+            Err(error) => item.error = Some(format!("a leftover trash record remains: {error}")),
+        }
+        report.items.push(item);
+    }
+    report
+}
+
+/// A job that never started because another operation owns the same paths.
+fn blocked_job(kind: OperationKind, paths: &[PathBuf], error: &str) -> JobReport {
+    let mut report = JobReport::new(kind);
+    report.items = paths
+        .iter()
+        .map(|path| {
+            let mut item = ItemResult::new(path.clone(), path.clone());
+            item.error = Some(error.to_owned());
+            item
+        })
+        .collect();
+    report
+}
+
+/// Append what a trash record knows about an item, when it knows anything.
+fn describe_origin(origin: Option<&str>) -> String {
+    match origin {
+        Some(origin) => format!(" ({origin})"),
+        None => String::new(),
+    }
+}
+
+/// Turn a GIO failure into something that says what actually went wrong.
+fn describe_gio(error: &glib::Error) -> String {
+    let message = error.message().trim().to_owned();
+    if error.matches(gio::IOErrorEnum::NotFound) {
+        format!("it no longer exists ({message})")
+    } else if error.matches(gio::IOErrorEnum::PermissionDenied) {
+        format!("permission was denied ({message})")
+    } else if error.matches(gio::IOErrorEnum::NotSupported) {
+        format!("this filesystem has no trash Teral can use ({message})")
+    } else {
+        message
+    }
 }
 
 // ------------------------------------------------------------------ archives ----
@@ -833,15 +1198,5 @@ mod tests {
         assert!(is_archive(Some("application/zip")));
         assert!(!is_archive(Some("text/plain")));
         assert!(!is_archive(None));
-    }
-
-    #[test]
-    fn trash_paths_are_percent_decoded() {
-        assert_eq!(
-            percent_decode("/home/a/My%20File.txt"),
-            "/home/a/My File.txt"
-        );
-        assert_eq!(percent_decode("/home/a/100%"), "/home/a/100%");
-        assert_eq!(percent_decode("/home/a/plain"), "/home/a/plain");
     }
 }

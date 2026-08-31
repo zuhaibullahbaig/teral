@@ -56,12 +56,32 @@ This is an implementation candidate, not a verified guarantee. It moves into the
 verified list only after the automated checks and the Ubuntu/Omarchy interoperability
 matrix in `DEVELOPMENT.md` pass.
 
+## Stage 3 candidate awaiting its gate
+
+Trash now follows the FreeDesktop trash model rather than assuming a single home trash.
+Teral discovers the home trash and the trash directories of mounted secondary
+filesystems, shows each of them in the sidebar, and reads `.trashinfo` records as raw
+bytes so a filename that is not valid UTF-8 is restored exactly as it was.
+
+Restore puts an item back under the name its record holds, resolves an occupied original
+location through the same conflict handling as Paste, and asks before recreating an
+original folder that has since been removed. A restore record is discarded only once its
+item has actually been placed.
+
+Empty Trash and permanent deletion report a result for every item, keep the restore
+record of anything they failed to remove, can be cancelled between items, and never
+follow a directory symlink while deleting.
+
+This is also an implementation candidate. It moves into the verified list only after the
+automated checks and the trash matrix in `DEVELOPMENT.md` pass.
+
 ## Core work still in progress
 
 Before the first public release, Teral is hardening:
 
-- specification-correct Trash, restore, Empty Trash, and secondary-filesystem behavior;
-- exact non-UTF-8 filename handling throughout operations and Trash;
+- one aggregated Trash view instead of one sidebar entry per trash location;
+- deletion time and original location shown in the details panel for trashed items;
+- exact non-UTF-8 filename handling throughout the remaining operations;
 - directory symlinks and special filesystem entries;
 - desktop `%U`/`xdg-open` directory handling;
 - mounted-volume actions, removable devices, MTP/GVfs, and disconnected-media behavior;

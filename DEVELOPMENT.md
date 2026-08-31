@@ -100,6 +100,52 @@ Record filesystem types, desktop/file-manager versions, available free space, an
 exact failed row. Ubuntu coverage is mandatory; repeat the desktop-integration rows on
 Omarchy/Arch before treating the stage as accepted.
 
+## Trash gate
+
+Run this with disposable data on a scratch filesystem after `./scripts/check.sh`
+succeeds. Never point it at a trash that holds anything you want back. A Stage 3
+candidate does not pass merely because its unit tests pass.
+
+- [ ] Trash a file, an empty folder, a deep folder, a relative symlink, an absolute
+  symlink, and a broken symlink. Each appears in the trash and restores to its original
+  path.
+- [ ] Trash a file whose name is not valid UTF-8, one containing spaces, and one
+  containing a newline. Each restores under exactly its original name.
+- [ ] Trash something on a second filesystem — a disposable USB stick or loopback mount.
+  Confirm `.Trash-$uid` is created there, that the location appears in the sidebar
+  labelled by that disk, and that the item restores to that filesystem.
+- [ ] Where an administrator has created a sticky `$topdir/.Trash`, confirm the per-user
+  subdirectory inside it is used. Replace it with a symlink and confirm Teral falls back
+  to `.Trash-$uid` instead.
+- [ ] Unmount the second filesystem with items still in its trash. Its sidebar entry
+  disappears, Teral stays usable, and remounting brings the items and their records back.
+- [ ] Restore into an occupied original location. Verify Replace, Rename Incoming, Skip
+  and Cancel each behave as they do for Paste, and that Skip leaves the item and its
+  record in the trash.
+- [ ] Delete an original folder, then restore an item from it. Verify the choice between
+  recreating the folder, leaving that item in the trash, and cancelling, and that
+  closing the dialog changes nothing.
+- [ ] Corrupt one `.trashinfo` record and delete another. Both items stay listed, both
+  say why they cannot be restored, and everything else in the same selection restores.
+- [ ] Empty Trash with items in two trash locations. The confirmation names the real
+  count and the number of locations before anything is deleted.
+- [ ] Make one trashed item undeletable — a read-only parent, or an unreadable child.
+  Empty Trash removes everything else, reports that item by name, and leaves its
+  `.trashinfo` record in place so it is still restorable.
+- [ ] Trash a folder containing a symlink to a directory outside the trash. Delete it
+  permanently and confirm the directory it pointed at is untouched.
+- [ ] Cancel Empty Trash with `Esc` part-way through a large trash. Items not yet reached
+  and all of their records survive, and the message says how many were deleted.
+- [ ] Tag a file, trash it, and confirm the tag is not left pointing at a path that no
+  longer exists. Repeat with a restore into a conflict-renamed destination and confirm
+  the tag follows the actual destination.
+- [ ] Repeat the failure rows with a read-only filesystem and with permission denied.
+  No item may be reported as deleted when it still exists, or as failed when it is gone.
+
+Record filesystem types, desktop versions, the exact failed row, and whether the second
+filesystem was removable. Ubuntu coverage is mandatory; repeat the device rows on
+Omarchy/Arch before treating the stage as accepted.
+
 ## Packaging
 
 ```bash
@@ -143,6 +189,8 @@ src/
   theme.rs      palette resolution, desktop and Omarchy integration
   style.rs      generated CSS, applied through one live provider
   files/        entries, sorting, and file operations (files/ops.rs)
+                transfer.rs is the one copy/move/placement engine; trash.rs is the
+                GTK-free FreeDesktop trash model
   icons.rs      icon and thumbnail resolution
   places.rs     XDG locations, mounts, bookmarks
   tags.rs       the tag store

@@ -519,7 +519,7 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
                 .map(|transfer| transfer.cancel())
                 .is_some();
             if cancelled {
-                app.set_message("Cancelling the transfer…", false);
+                app.set_message("Cancelling…", false);
             } else if statusbar::console_visible(app) {
                 statusbar::hide_console(app);
             } else {
@@ -760,6 +760,94 @@ pub fn paste(app: &App) {
     });
 }
 
+/// Run one trash, restore or permanent-delete job.
+///
+/// Every one of them shares the same rules: only one may run at a time, progress and
+/// cancellation go through the same channel as a transfer, tags follow only the items
+/// the job actually completed, and the closing message describes what happened rather
+/// than what was asked for.
+fn run_trash_job<Fut>(
+    app: &App,
+    verb: &'static str,
+    past: &'static str,
+    extra_problems: Vec<String>,
+    start: impl FnOnce(CancelFlag, mpsc::SyncSender<ops::JobProgress>) -> Fut,
+) where
+    Fut: std::future::Future<Output = ops::JobReport> + 'static,
+{
+    if app.state.running_transfer.borrow().is_some() {
+        app.show_error("Another operation is still running");
+        return;
+    }
+
+    let cancel = CancelFlag::new();
+    *app.state.running_transfer.borrow_mut() = Some(cancel.clone());
+    let (progress, updates) = mpsc::sync_channel(1);
+    watch_transfer_progress(app, verb, updates);
+    app.set_message(&format!("{verb}… (Esc to cancel)"), false);
+
+    let job = start(cancel, progress);
+    let app = Rc::clone(app);
+    glib::spawn_future_local(async move {
+        let report = job.await;
+        app.state.running_transfer.borrow_mut().take();
+        apply_tag_results(&report);
+        sidebar::rebuild_tags(&app);
+        report_job(&app, past, &report, &extra_problems);
+        app.reload();
+    });
+}
+
+/// Apply the tag updates a finished job justifies.
+///
+/// The decision about which items may move tags belongs to the report itself, where it
+/// is tested; this only carries it out.
+fn apply_tag_results(report: &ops::JobReport) {
+    let updates = report.tag_updates();
+    if updates.is_empty() {
+        return;
+    }
+    crate::tags::edit(|tags| {
+        for (source, destination) in updates {
+            match destination {
+                Some(destination) => tags.relocate(source, destination),
+                None => tags.forget(source),
+            }
+        }
+    });
+}
+
+/// Say what a finished job actually did.
+fn report_job(app: &App, past: &str, report: &ops::JobReport, extra_problems: &[String]) {
+    let done = crate::files::item_count_label(report.succeeded());
+    let mut problems = report.problems();
+    problems.extend(extra_problems.iter().cloned());
+
+    if problems.is_empty() && report.is_complete() {
+        app.set_message(&format!("{past} {done}"), false);
+        return;
+    }
+    if report.cancelled
+        && problems
+            .iter()
+            .all(|problem| problem.ends_with("cancelled"))
+    {
+        app.set_message(&format!("Cancelled — {past} {done}"), false);
+        return;
+    }
+    if problems.is_empty() {
+        app.set_message(
+            &format!(
+                "{past} {done}; skipped {}",
+                crate::files::item_count_label(report.skipped())
+            ),
+            false,
+        );
+        return;
+    }
+    app.show_error(&format!("{past} {done}; {}", problems.join("; ")));
+}
+
 /// Move the selection to the trash after confirmation.
 pub fn trash_selection(app: &App) {
     let entries = app.selected_entries();
@@ -786,29 +874,14 @@ pub fn trash_selection(app: &App) {
         &format!("{summary} will be moved to the trash."),
         "Move to Trash",
         move || {
-            let app = Rc::clone(&app_for_action);
             let paths = paths.clone();
-            glib::spawn_future_local(async move {
-                let report = ops::trash(paths).await;
-                crate::tags::edit(|tags| {
-                    for path in &report.completed_paths {
-                        tags.forget(path);
-                    }
-                });
-                sidebar::rebuild_tags(&app);
-                if report.failures.is_empty() {
-                    app.set_message(
-                        &format!(
-                            "Moved {} to the trash",
-                            crate::files::item_count_label(report.succeeded)
-                        ),
-                        false,
-                    );
-                } else {
-                    app.show_error(&report.failures.join("; "));
-                }
-                app.reload();
-            });
+            run_trash_job(
+                &app_for_action,
+                "Moving to the trash",
+                "Moved to the trash",
+                Vec::new(),
+                move |cancel, progress| ops::trash(paths, cancel, progress),
+            );
         },
     );
 }
@@ -954,7 +1027,7 @@ fn start_transfer(
     *app.state.running_transfer.borrow_mut() = Some(cancel.clone());
 
     let (progress, updates) = mpsc::sync_channel(1);
-    watch_transfer_progress(app, kind, updates);
+    watch_transfer_progress(app, kind.verb(), updates);
 
     let count = sources.len();
     app.set_message(
@@ -1030,7 +1103,7 @@ fn start_transfer(
 
 fn watch_transfer_progress(
     app: &App,
-    kind: TransferKind,
+    verb: &'static str,
     updates: mpsc::Receiver<ops::JobProgress>,
 ) {
     let app = Rc::clone(app);
@@ -1060,10 +1133,8 @@ fn watch_transfer_progress(
             };
             app.set_message(
                 &format!(
-                    "{} {} of {}{bytes} (Esc to cancel)",
-                    kind.verb(),
-                    update.processed_items,
-                    update.total_items
+                    "{verb} {} of {}{bytes} (Esc to cancel)",
+                    update.processed_items, update.total_items
                 ),
                 false,
             );
@@ -1132,36 +1203,37 @@ pub fn delete_permanently(app: &App) {
         crate::files::item_count_label(paths.len())
     };
 
+    // Naming the scope means saying that deleting from the trash also gives up the
+    // ability to restore, which is the part people do not expect.
+    let dirs = ops::trash_dirs();
+    let from_trash = paths
+        .iter()
+        .any(|path| crate::files::trash::is_in_trash(path, &dirs));
+    let body = if from_trash {
+        format!(
+            "{summary} will be deleted permanently, and can no longer be restored from \
+             the trash. This cannot be undone."
+        )
+    } else {
+        format!("{summary} will be deleted permanently. This cannot be undone.")
+    };
+
     let app_for_action = Rc::clone(app);
     dialogs::confirm(
         app,
         "Delete Permanently",
-        &format!("{summary} will be deleted permanently. This cannot be undone."),
+        &body,
         "Delete Permanently",
         move || {
-            let app = Rc::clone(&app_for_action);
             let paths = paths.clone();
-            glib::spawn_future_local(async move {
-                let report = ops::delete_permanently(paths).await;
-                crate::tags::edit(|tags| {
-                    for path in &report.completed_paths {
-                        tags.forget(path);
-                    }
-                });
-                sidebar::rebuild_tags(&app);
-                if report.failures.is_empty() {
-                    app.set_message(
-                        &format!(
-                            "Deleted {}",
-                            crate::files::item_count_label(report.succeeded)
-                        ),
-                        false,
-                    );
-                } else {
-                    app.show_error(&report.failures.join("; "));
-                }
-                app.reload();
-            });
+            let dirs = dirs.clone();
+            run_trash_job(
+                &app_for_action,
+                "Deleting",
+                "Deleted",
+                Vec::new(),
+                move |cancel, progress| ops::delete_permanently(paths, dirs, cancel, progress),
+            );
         },
     );
 }
@@ -1187,7 +1259,7 @@ pub fn duplicate_selection(app: &App) {
     let cancel = CancelFlag::new();
     *app.state.running_transfer.borrow_mut() = Some(cancel.clone());
     let (progress, updates) = mpsc::sync_channel(1);
-    watch_transfer_progress(app, TransferKind::Copy, updates);
+    watch_transfer_progress(app, TransferKind::Copy.verb(), updates);
     app.set_message("Duplicating selection… (Esc to cancel)", false);
 
     let app = Rc::clone(app);
@@ -1217,7 +1289,11 @@ pub fn duplicate_selection(app: &App) {
     });
 }
 
-/// Put trashed entries back where they came from.
+/// Put trashed entries back where their trash records say they came from.
+///
+/// The records are read off the GTK thread first, so Teral can say how many original
+/// folders are gone and how many original locations are occupied before it moves any
+/// data. Occupied locations go through the same conflict dialog as a paste.
 pub fn restore_selection(app: &App) {
     let paths: Vec<PathBuf> = app
         .selected_entries()
@@ -1229,44 +1305,133 @@ pub fn restore_selection(app: &App) {
         app.set_message("Select something to restore", false);
         return;
     }
+    if app.state.running_transfer.borrow().is_some() {
+        app.show_error("Another operation is still running");
+        return;
+    }
 
+    let dirs = ops::trash_dirs();
+    app.set_message("Reading trash records…", false);
     let app = Rc::clone(app);
     glib::spawn_future_local(async move {
-        let report = ops::restore_from_trash(paths).await;
-        if report.failures.is_empty() {
-            app.set_message(
-                &format!(
-                    "Restored {}",
-                    crate::files::item_count_label(report.succeeded)
-                ),
-                false,
-            );
-        } else {
-            app.show_error(&report.failures.join("; "));
-        }
-        app.reload();
+        let plan = ops::plan_restore(paths, dirs).await;
+        ask_about_missing_parents(&app, plan);
     });
 }
 
-/// Permanently delete everything in the trash, after confirmation.
+/// A folder that no longer exists is a decision, not something to guess at.
+fn ask_about_missing_parents(app: &App, plan: ops::RestorePlan) {
+    let missing = plan.missing_parents();
+    if missing == 0 {
+        ask_about_restore_conflicts(app, plan, ops::MissingParent::Fail);
+        return;
+    }
+
+    let app_for_choice = Rc::clone(app);
+    dialogs::resolve_missing_parents(app, missing, move |choice| match choice {
+        Some(missing_parent) => ask_about_restore_conflicts(&app_for_choice, plan, missing_parent),
+        None => app_for_choice.set_message("Restore cancelled", false),
+    });
+}
+
+fn ask_about_restore_conflicts(
+    app: &App,
+    plan: ops::RestorePlan,
+    missing_parent: ops::MissingParent,
+) {
+    let conflicts = plan.conflicts();
+    if conflicts == 0 {
+        start_restore(
+            app,
+            plan,
+            ops::ConflictPolicy::RenameIncoming,
+            missing_parent,
+        );
+        return;
+    }
+
+    let app_for_choice = Rc::clone(app);
+    dialogs::resolve_transfer_conflicts(app, conflicts, move |policy| {
+        if policy == ops::ConflictPolicy::Cancel {
+            app_for_choice.set_message("Restore cancelled", false);
+            return;
+        }
+        start_restore(&app_for_choice, plan, policy, missing_parent);
+    });
+}
+
+fn start_restore(
+    app: &App,
+    plan: ops::RestorePlan,
+    policy: ops::ConflictPolicy,
+    missing_parent: ops::MissingParent,
+) {
+    let ops::RestorePlan {
+        targets,
+        unrestorable,
+    } = plan;
+
+    // Items whose record cannot say where they came from are reported by name and left
+    // in the trash. They are never quietly dropped from the count.
+    let problems: Vec<String> = unrestorable
+        .iter()
+        .map(|(path, reason)| {
+            format!(
+                "{}: {reason}",
+                path.file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+            )
+        })
+        .collect();
+
+    if targets.is_empty() {
+        if problems.is_empty() {
+            app.set_message("There is nothing here to restore", false);
+        } else {
+            app.show_error(&problems.join("; "));
+        }
+        return;
+    }
+
+    run_trash_job(
+        app,
+        "Restoring",
+        "Restored",
+        problems,
+        move |cancel, progress| {
+            ops::restore_from_trash(targets, policy, missing_parent, cancel, progress)
+        },
+    );
+}
+
+/// Permanently delete everything in every trash Teral can see, after confirmation.
 pub fn empty_trash(app: &App) {
+    let dirs = ops::trash_dirs();
+    let scope = ops::trash_scope();
+    if scope.is_empty() {
+        app.set_message("The trash is already empty", false);
+        return;
+    }
+
     let app_for_action = Rc::clone(app);
     dialogs::confirm(
         app,
         "Empty Trash",
-        "Everything in the trash will be deleted permanently. This cannot be undone.",
+        &format!(
+            "{} will be deleted permanently. This cannot be undone.",
+            scope.describe()
+        ),
         "Delete Permanently",
         move || {
-            let app = Rc::clone(&app_for_action);
-            glib::spawn_future_local(async move {
-                let report = ops::empty_trash().await;
-                if report.failures.is_empty() {
-                    app.set_message("Trash emptied", false);
-                } else {
-                    app.show_error(&report.failures.join("; "));
-                }
-                app.reload();
-            });
+            let dirs = dirs.clone();
+            run_trash_job(
+                &app_for_action,
+                "Emptying the trash",
+                "Deleted",
+                Vec::new(),
+                move |cancel, progress| ops::empty_trash(dirs, cancel, progress),
+            );
         },
     );
 }

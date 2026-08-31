@@ -80,21 +80,42 @@ pub fn user_places() -> Vec<Place> {
         });
     }
 
-    if let Some(trash) = trash_directory() {
-        places.push(Place {
-            label: "Trash".to_owned(),
-            icon_name: "user-trash-symbolic".to_owned(),
-            path: trash,
-        });
-    }
-
+    places.extend(trash_places());
     places
 }
 
-/// The FreeDesktop trash directory for the home filesystem, when it exists.
-pub fn trash_directory() -> Option<PathBuf> {
-    let path = data_home().join("Trash/files");
-    path.is_dir().then_some(path)
+/// Every trash Teral can currently browse.
+///
+/// The home trash keeps the plain "Trash" label. A trash on another filesystem is
+/// labelled by the mount it belongs to, because two entries called "Trash" would give
+/// no way to tell which disk's deleted files are being looked at. A device that is
+/// unplugged simply stops appearing.
+pub fn trash_places() -> Vec<Place> {
+    let home = crate::files::trash::home_trash(&data_home()).files();
+    crate::files::ops::trash_locations()
+        .into_iter()
+        .map(|path| Place {
+            label: trash_label(&path, &home),
+            icon_name: "user-trash-symbolic".to_owned(),
+            path,
+        })
+        .collect()
+}
+
+/// The label one trash location should carry in the sidebar.
+fn trash_label(path: &Path, home: &Path) -> String {
+    if path == home {
+        return "Trash".to_owned();
+    }
+    // `<mount>/.Trash-1000/files` — the mount point is three components up.
+    match path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+    {
+        Some(mount) => format!("Trash on {}", mount.to_string_lossy()),
+        None => "Trash".to_owned(),
+    }
 }
 
 /// Mounted filesystems discovered through GIO, plus the root filesystem.
@@ -200,8 +221,19 @@ pub fn display_label(path: &Path) -> String {
         return "Home".to_owned();
     }
 
-    if Some(path) == trash_directory().as_deref() {
-        return "Trash".to_owned();
+    // Every browsable trash path ends in "files". Checking that first keeps the
+    // volume-monitor lookup out of ordinary breadcrumb and title rendering.
+    if path.file_name() == Some(std::ffi::OsStr::new("files")) {
+        let home_trash = crate::files::trash::home_trash(&data_home()).files();
+        if path == home_trash {
+            return "Trash".to_owned();
+        }
+        if crate::files::ops::trash_locations()
+            .iter()
+            .any(|location| location == path)
+        {
+            return trash_label(path, &home_trash);
+        }
     }
 
     path.file_name()
@@ -212,6 +244,20 @@ pub fn display_label(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_secondary_trash_is_labelled_by_the_disk_it_belongs_to() {
+        let home = Path::new("/home/zub/.local/share/Trash/files");
+        assert_eq!(trash_label(home, home), "Trash");
+        assert_eq!(
+            trash_label(Path::new("/media/zub/backup/.Trash-1000/files"), home),
+            "Trash on backup"
+        );
+        assert_eq!(
+            trash_label(Path::new("/media/zub/backup/.Trash/1000/files"), home),
+            "Trash on 1000"
+        );
+    }
 
     #[test]
     fn labels_prefer_the_final_component() {

@@ -264,6 +264,91 @@ pub fn resolve_transfer_conflicts(
     window.present();
 }
 
+/// Ask what to do about restores whose original folder no longer exists.
+///
+/// Recreating a folder chain is a real change to the filesystem, so it is never assumed.
+/// The three answers are deliberately the same shape as the conflict dialog: cancel the
+/// whole thing, leave the affected items alone, or go ahead.
+pub fn resolve_missing_parents(
+    app: &App,
+    count: usize,
+    action: impl FnOnce(Option<ops::MissingParent>) + 'static,
+) {
+    let heading = gtk::Label::new(Some("Original folders are missing"));
+    heading.set_xalign(0.0);
+    heading.add_css_class("teral-dialog-title");
+
+    let subject = if count == 1 {
+        "One item's original folder no longer exists".to_owned()
+    } else {
+        format!("{count} items' original folders no longer exist")
+    };
+    let text = gtk::Label::new(Some(&format!(
+        "{subject}. Teral can recreate the folders and restore into them, or leave those \
+         items in the trash and restore everything else."
+    )));
+    text.set_xalign(0.0);
+    text.set_wrap(true);
+    text.add_css_class("teral-status-item");
+
+    let cancel = gtk::Button::with_label("Cancel Restore");
+    cancel.add_css_class("teral-secondary");
+    let skip = gtk::Button::with_label("Leave Those in Trash");
+    skip.add_css_class("teral-secondary");
+    let recreate = gtk::Button::with_label("Recreate Folders");
+    recreate.add_css_class("teral-primary");
+
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk::Align::End);
+    buttons.set_margin_top(6);
+    buttons.append(&cancel);
+    buttons.append(&skip);
+    buttons.append(&recreate);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    content.append(&heading);
+    content.append(&text);
+    content.append(&buttons);
+
+    let window = window(app, "Restore From Trash", 560, -1, &content);
+    window.set_resizable(false);
+
+    type Decision = Box<dyn FnOnce(Option<ops::MissingParent>)>;
+    let action: Rc<RefCell<Option<Decision>>> = Rc::new(RefCell::new(Some(Box::new(action))));
+    let decide = |button: &gtk::Button, choice| {
+        button.connect_clicked({
+            let action = Rc::clone(&action);
+            let window = window.clone();
+            move |_| {
+                let action = action.borrow_mut().take();
+                window.close();
+                if let Some(action) = action {
+                    action(choice);
+                }
+            }
+        });
+    };
+
+    decide(&cancel, None);
+    decide(&skip, Some(ops::MissingParent::Fail));
+    decide(&recreate, Some(ops::MissingParent::Recreate));
+    // Closing the window is never an instruction to change the filesystem.
+    window.connect_close_request({
+        let action = Rc::clone(&action);
+        move |_| {
+            if let Some(action) = action.borrow_mut().take() {
+                action(None);
+            }
+            glib::Propagation::Proceed
+        }
+    });
+    window.present();
+}
+
 /// Create a tag, or edit an existing one's name and colour.
 pub fn edit_tag(app: &App, existing: Option<&str>) {
     let store = crate::tags::current();
