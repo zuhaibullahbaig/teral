@@ -309,6 +309,12 @@ gridview.teral-grid > child:selected .teral-item-name {
   color: @teral_text_bright;
 }
 
+/* Entries waiting to be moved read as "already gone from here". */
+gridview.teral-grid > child .teral-item.cut,
+columnview.teral-list > listview > row .teral-item.cut {
+  opacity: 0.45;
+}
+
 .teral-tile {
   background: none;
   border: 1px solid transparent;
@@ -465,6 +471,12 @@ columnview.teral-list > listview > row:selected > cell .teral-item-subtitle {
   font-size: 10.5px;
 }
 
+.teral-meta-value:selected,
+.teral-meta-value selection {
+  background-color: alpha(@teral_accent, 0.3);
+  color: @teral_text_bright;
+}
+
 menubutton.teral-action > button {
   background: none;
   background-image: none;
@@ -558,13 +570,78 @@ entry.teral-search-entry > text > placeholder {
   padding: 0 2px;
 }
 
+.teral-bookmarks {
+  margin-bottom: 10px;
+}
+
+/* Only shown while a folder is being dragged over the bookmarks area. */
 .teral-pin-target {
-  border: 1px dashed alpha(@teral_muted, 0.45);
+  background-color: alpha(@teral_accent, 0.12);
+  border: 1px dashed alpha(@teral_accent, 0.6);
   border-radius: 9px;
-  color: @teral_muted;
+  color: @teral_accent;
   font-size: 10.5px;
-  margin: 4px 6px 0 6px;
-  padding: 10px 8px;
+  margin: 4px 2px;
+  padding: 12px 8px;
+}
+
+.teral-pin-target.drop-target {
+  background-color: alpha(@teral_accent, 0.25);
+}
+
+/* ------------------------------------------------------------------ tags ---- */
+
+.teral-tag-dot {
+  font-size: 9px;
+}
+
+.teral-tag-row .teral-tag-controls {
+  margin: 0;
+}
+
+.teral-tag-chips {
+  background: none;
+}
+
+.teral-tag-chip {
+  background-color: @teral_elevated;
+  border: 1px solid @teral_border;
+  border-radius: 999px;
+  font-size: 11px;
+  min-height: 22px;
+  padding: 1px 4px 1px 9px;
+}
+
+menubutton.teral-tag-chip {
+  padding: 0;
+  min-width: 26px;
+}
+
+menubutton.teral-tag-chip > button {
+  background: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 999px;
+  color: @teral_muted;
+  min-height: 22px;
+  min-width: 26px;
+  padding: 0;
+}
+
+button.teral-tag-remove {
+  background: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 999px;
+  color: @teral_muted;
+  min-height: 16px;
+  min-width: 16px;
+  padding: 0;
+}
+
+button.teral-tag-remove:hover {
+  background-color: alpha(@teral_danger, 0.25);
+  color: @teral_text;
 }
 
 .teral-shortcut-key {
@@ -802,13 +879,6 @@ vte-terminal.teral-terminal {
   padding: 8px 12px;
 }
 
-.teral-console-grip {
-  color: alpha(@teral_muted, 0.8);
-  font-size: 13px;
-  letter-spacing: -2px;
-  padding: 0 2px;
-}
-
 /* A one-pixel drag handle is unusable, so the handle is a real target and the whole
  * console title bar drags as well. */
 paned.teral-file-paned > separator {
@@ -856,6 +926,21 @@ popover.menu modelbutton:hover {
 }
 
 .teral-menu-item:hover {
+  background-color: @teral_surface_alt;
+}
+
+menubutton.teral-menu-item > button {
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 7px;
+  color: inherit;
+  min-height: 26px;
+  padding: 3px 8px;
+}
+
+menubutton.teral-menu-item > button:hover {
   background-color: @teral_surface_alt;
 }
 

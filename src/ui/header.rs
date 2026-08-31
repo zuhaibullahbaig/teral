@@ -201,6 +201,30 @@ pub fn hide_location(app: &App) {
     super::window::focus_file_view(app);
 }
 
+/// Replace the breadcrumbs with a single crumb naming the tag being shown.
+pub fn show_tag_crumb(app: &App, tag: &str) {
+    let crumbs = &app.widgets.crumbs;
+    while let Some(child) = crumbs.first_child() {
+        crumbs.remove(&child);
+    }
+
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let dot = gtk::Label::new(Some("●"));
+    dot.add_css_class("teral-tag-dot");
+    if let Some(color) = crate::tags::current().get(tag).map(|tag| tag.color.clone()) {
+        super::apply_color(&dot, &color);
+    }
+    content.append(&dot);
+    content.append(&gtk::Label::new(Some(tag)));
+
+    let button = gtk::Button::new();
+    button.add_css_class("teral-crumb");
+    button.add_css_class("current");
+    button.set_has_frame(false);
+    button.set_child(Some(&content));
+    crumbs.append(&button);
+}
+
 /// Rebuild the clickable path components.
 pub fn rebuild_breadcrumbs(app: &App, path: &Path) {
     let crumbs = &app.widgets.crumbs;

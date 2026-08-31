@@ -25,11 +25,16 @@ Teral is usable as a day-to-day file manager. It provides:
 - tabs, each with its own location and history
 - drag and drop: between Teral folders, and to and from other Linux applications
 - live directory monitoring, so changes made elsewhere appear on their own
-- trash browsing, restore to the original location, and Empty Trash
+- trash browsing, restore to the original location, Empty Trash and permanent delete
+- archive extraction (Extract Here / Extract to Folder) for zip, tar, 7z and rar
+- a permissions editor, Open in New Tab and Open in New Window, Select All and Select by Type
+- user tags: create them with a name and colour, attach them to files, and click one in the sidebar to see everything carrying it
 - a Settings window with three theme modes, an accent colour, density and command settings, plus Shortcuts and About windows
 - a layered TOML theme system that live-reloads when its files change
 
 Richer previews (PDF, video, text), a command palette and network locations are not implemented yet.
+
+Tags live in `~/.local/share/teral/tags.toml` and follow their files when Teral renames or moves them.
 
 ## Keyboard
 

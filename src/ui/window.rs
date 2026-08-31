@@ -55,7 +55,10 @@ pub struct Widgets {
     pub places_box: gtk::Box,
     pub devices_box: gtk::Box,
     pub pinned_box: gtk::Box,
+    pub bookmarks_title: gtk::Label,
     pub pin_drop: gtk::Label,
+    pub tags: gtk::Box,
+    pub add_tag: gtk::Button,
 
     pub details: details::Details,
 
@@ -63,7 +66,6 @@ pub struct Widgets {
     pub command_entry: gtk::Entry,
     pub status_selection: gtk::Label,
     pub status_size: gtk::Label,
-    pub status_free: gtk::Label,
     pub status_message: gtk::Label,
     pub zoom: gtk::Scale,
     pub settings: gtk::Button,
@@ -76,6 +78,16 @@ pub fn build_window(
     application: &gtk::Application,
     config: Config,
     theme: ThemeConfig,
+) -> gtk::ApplicationWindow {
+    build_window_at(application, config, theme, None)
+}
+
+/// Build a window, optionally starting somewhere other than the home directory.
+pub fn build_window_at(
+    application: &gtk::Application,
+    config: Config,
+    theme: ThemeConfig,
+    start_at: Option<PathBuf>,
 ) -> gtk::ApplicationWindow {
     let store = gio::ListStore::new::<FileEntry>();
     let selection = gtk::MultiSelection::new(Some(store.clone()));
@@ -228,13 +240,15 @@ pub fn build_window(
         places_box: side.places,
         devices_box: side.devices,
         pinned_box: side.pinned,
+        bookmarks_title: side.bookmarks_title,
         pin_drop: side.pin_drop,
+        tags: side.tags,
+        add_tag: side.add_tag,
         details: detail,
         console,
         command_entry: status.command_entry,
         status_selection: status.selection,
         status_size: status.size,
-        status_free: status.free,
         status_message: status.message,
         zoom: status.zoom,
         settings: status.settings,
@@ -242,7 +256,7 @@ pub fn build_window(
         settings_window: RefCell::new(None),
     };
 
-    let start = home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let start = start_at.unwrap_or_else(|| home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
     let state = State {
         current: RefCell::new(PathBuf::from("/")),
@@ -275,6 +289,7 @@ pub fn build_window(
         refresh_queued: Cell::new(false),
         config_monitors: RefCell::new(Vec::new()),
         console_height: Cell::new(statusbar::CONSOLE_HEIGHT),
+        tag_view: RefCell::new(None),
     };
 
     let app: App = Rc::new(AppInner {
@@ -629,7 +644,9 @@ pub fn rename_selection(app: &App) {
                 let path = path.clone();
                 glib::spawn_future_local(async move {
                     match ops::rename(&path, &name).await {
-                        Ok(_) => {
+                        Ok(renamed) => {
+                            crate::tags::edit(|tags| tags.relocate(&path, &renamed));
+                            sidebar::rebuild_tags(&app);
                             app.set_message(&format!("Renamed to {name}"), false);
                             app.reload();
                         }
@@ -658,13 +675,15 @@ pub fn stage_transfer(app: &App, kind: TransferKind) {
 
     let count = sources.len();
     *app.state.clipboard.borrow_mut() = Some(Clipboard { kind, sources });
+    // Cut entries are dimmed until they are pasted, the way desktops normally show it.
+    fileview::refresh_cut_state(app);
     app.set_message(
         &format!(
             "{} ready to paste — {}",
             crate::files::item_count_label(count),
             match kind {
                 TransferKind::Copy => "copy",
-                TransferKind::Move => "move",
+                TransferKind::Move => "cut",
             }
         ),
         false,
@@ -752,6 +771,11 @@ pub fn trash_selection(app: &App) {
             let app = Rc::clone(&app_for_action);
             let paths = paths.clone();
             glib::spawn_future_local(async move {
+                crate::tags::edit(|tags| {
+                    for path in &paths {
+                        tags.forget(path);
+                    }
+                });
                 let report = ops::trash(paths).await;
                 if report.failures.is_empty() {
                     app.set_message(
@@ -818,8 +842,30 @@ fn run_transfer(app: &App, kind: TransferKind, sources: Vec<PathBuf>, destinatio
 
     let app = Rc::clone(app);
     glib::spawn_future_local(async move {
+        let moved: Vec<(PathBuf, PathBuf)> = if kind == TransferKind::Move {
+            sources
+                .iter()
+                .filter_map(|source| {
+                    source
+                        .file_name()
+                        .map(|name| (source.clone(), destination.join(name)))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let report = ops::transfer(kind, sources, destination, cancel).await;
         app.state.running_transfer.borrow_mut().take();
+
+        if report.failures.is_empty() && !moved.is_empty() {
+            crate::tags::edit(|tags| {
+                for (from, to) in &moved {
+                    tags.relocate(from, to);
+                }
+            });
+            sidebar::rebuild_tags(&app);
+        }
 
         if report.failures.is_empty() {
             app.set_message(
@@ -878,6 +924,11 @@ pub fn delete_permanently(app: &App) {
             let app = Rc::clone(&app_for_action);
             let paths = paths.clone();
             glib::spawn_future_local(async move {
+                crate::tags::edit(|tags| {
+                    for path in &paths {
+                        tags.forget(path);
+                    }
+                });
                 let report = ops::delete_permanently(paths).await;
                 if report.failures.is_empty() {
                     app.set_message(
@@ -981,6 +1032,198 @@ pub fn empty_trash(app: &App) {
     );
 }
 
+/// A popover of tag checkboxes for a set of paths.
+pub fn tag_popover(app: &App, paths: &[PathBuf]) -> gtk::Popover {
+    let popover = gtk::Popover::new();
+    popover.add_css_class("teral-popover");
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    content.set_width_request(190);
+
+    let store = crate::tags::current();
+    let paths: Vec<PathBuf> = paths.to_vec();
+
+    for tag in &store.tags {
+        let check = gtk::CheckButton::new();
+        check.add_css_class("teral-menu-check");
+        check.set_active(paths.iter().all(|path| store.is_tagged(&tag.name, path)));
+
+        let dot = gtk::Label::new(Some("●"));
+        dot.add_css_class("teral-tag-dot");
+        super::apply_color(&dot, &tag.color);
+
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+        row.append(&dot);
+        row.append(&gtk::Label::new(Some(&tag.name)));
+        check.set_child(Some(&row));
+
+        check.connect_toggled({
+            let app = Rc::clone(app);
+            let name = tag.name.clone();
+            let paths = paths.clone();
+            move |check| {
+                let tagged = check.is_active();
+                crate::tags::edit(|tags| tags.set_tagged(&name, &paths, tagged));
+                sidebar::rebuild_tags(&app);
+                app.update_details();
+                if app.state.tag_view.borrow().is_some() {
+                    app.reload();
+                }
+            }
+        });
+
+        content.append(&check);
+    }
+
+    let new_tag = header::menu_item(icons::ui(icons::names::ADD), "New tag…");
+    new_tag.connect_clicked({
+        let app = Rc::clone(app);
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            dialogs::edit_tag(&app, None);
+        }
+    });
+    content.append(&new_tag);
+
+    popover.set_child(Some(&content));
+    popover
+}
+
+/// Open `path` in a new tab.
+pub fn open_in_new_tab(app: &App, path: &Path) {
+    app.open_tab(path.to_path_buf());
+}
+
+/// Open `path` in a second Teral window.
+pub fn open_in_new_window(app: &App, path: &Path) {
+    let Some(application) = app.widgets.window.application() else {
+        app.show_error("Teral is not attached to an application");
+        return;
+    };
+
+    let config = app.config.borrow().clone();
+    let theme = ThemeConfig::resolve(&config);
+    let window = build_window_at(&application, config, theme, Some(path.to_path_buf()));
+    window.present();
+}
+
+/// Unpack an archive, either into this folder or into a folder named after it.
+fn extract_archive(app: &App, entry: &FileEntry, into_subfolder: bool) {
+    let archive = entry.path().to_path_buf();
+    let Some(parent) = archive.parent().map(Path::to_path_buf) else {
+        app.show_error("That archive has no parent folder");
+        return;
+    };
+
+    let destination = if into_subfolder {
+        parent.join(ops::archive_stem(&archive))
+    } else {
+        parent
+    };
+
+    let content_type = entry
+        .data()
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/zip".to_owned());
+
+    app.set_message(&format!("Extracting {}…", entry.display_name()), false);
+
+    let app = Rc::clone(app);
+    glib::spawn_future_local(async move {
+        match ops::extract(archive, destination, content_type).await {
+            Ok(destination) => app.set_message(
+                &format!("Extracted into {}", places::display_label(&destination)),
+                false,
+            ),
+            Err(error) => app.show_error(&format!("Could not extract: {error}")),
+        }
+        app.reload();
+    });
+}
+
+/// Edit the permission bits of the selection.
+fn edit_permissions(app: &App) {
+    let entries = app.selected_entries();
+    let Some(first) = entries.first() else {
+        app.set_message("Select something first", false);
+        return;
+    };
+
+    let paths: Vec<PathBuf> = entries
+        .iter()
+        .map(|entry| entry.path().to_path_buf())
+        .collect();
+    let mode = first.data().mode.unwrap_or(0o644);
+    let summary = if paths.len() == 1 {
+        first.display_name().to_owned()
+    } else {
+        crate::files::item_count_label(paths.len())
+    };
+
+    dialogs::permissions(app, &summary, mode, move |app, mode| {
+        let app = Rc::clone(app);
+        let paths = paths.clone();
+        glib::spawn_future_local(async move {
+            let report = ops::set_permissions(paths, mode).await;
+            if report.failures.is_empty() {
+                app.set_message(
+                    &format!(
+                        "Permissions set to {}",
+                        crate::files::format_permissions(mode)
+                    ),
+                    false,
+                );
+            } else {
+                app.show_error(&report.failures.join("; "));
+            }
+            app.reload();
+        });
+    });
+}
+
+/// Select every entry sharing an extension.
+fn select_by_extension(app: &App, extension: &str) {
+    let selection = &app.state.selection;
+    selection.unselect_all();
+
+    for index in 0..selection.n_items() {
+        let Some(entry) = selection.item(index).and_downcast::<FileEntry>() else {
+            continue;
+        };
+        let matches = entry
+            .path()
+            .extension()
+            .is_some_and(|value| value.eq_ignore_ascii_case(extension));
+        if matches {
+            selection.select_item(index, false);
+        }
+    }
+}
+
+/// Extensions present in the current listing, most common first.
+fn extensions_in_view(app: &App) -> Vec<(String, usize)> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for index in 0..app.state.selection.n_items() {
+        let Some(entry) = app.state.selection.item(index).and_downcast::<FileEntry>() else {
+            continue;
+        };
+        if entry.is_directory() {
+            continue;
+        }
+        if let Some(extension) = entry.path().extension().and_then(|value| value.to_str()) {
+            *counts.entry(extension.to_lowercase()).or_default() += 1;
+        }
+    }
+
+    let mut extensions: Vec<(String, usize)> = counts.into_iter().collect();
+    extensions.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    extensions.truncate(10);
+    extensions
+}
+
 /// Run an entry from the folder menu.
 pub fn run_menu_action(app: &App, action: header::MenuAction) {
     match action {
@@ -1025,10 +1268,12 @@ pub fn show_context_menu(app: &App, origin: &impl IsA<gtk::Widget>, x: f64, y: f
 
 fn context_menu_content(app: &App) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    content.set_width_request(206);
+    content.set_width_request(214);
 
     let selected = app.selected_entries();
     let single = app.single_selection();
+    let in_trash = ops::is_in_trash(&app.current_dir());
+    let in_tag_view = app.state.tag_view.borrow().is_some();
 
     let mut items: Vec<(gtk::Button, ContextAction)> = Vec::new();
 
@@ -1037,6 +1282,14 @@ fn context_menu_content(app: &App) -> gtk::Box {
             items.push((
                 header::menu_item(icons::ui(icons::names::OPEN_FOLDER), "Open"),
                 ContextAction::Open,
+            ));
+            items.push((
+                header::menu_item(icons::ui(icons::names::ADD), "Open in New Tab"),
+                ContextAction::OpenInNewTab,
+            ));
+            items.push((
+                header::menu_item(icons::ui(icons::names::WINDOW), "Open in New Window"),
+                ContextAction::OpenInNewWindow,
             ));
             items.push((
                 header::menu_item(icons::ui(icons::names::TERMINAL), "Open Terminal Here"),
@@ -1059,6 +1312,19 @@ fn context_menu_content(app: &App) -> gtk::Box {
                 ContextAction::Open,
             ));
         }
+
+        // Archives get the actions that only make sense for an archive.
+        if ops::is_archive(entry.data().content_type.as_deref()) {
+            items.push((
+                header::menu_item(icons::ui(icons::names::EXTRACT), "Extract Here"),
+                ContextAction::ExtractHere,
+            ));
+            items.push((
+                header::menu_item(icons::ui(icons::names::EXTRACT), "Extract to Folder"),
+                ContextAction::ExtractToFolder,
+            ));
+        }
+
         items.push((
             header::menu_item(icons::ui(icons::names::RENAME), "Rename"),
             ContextAction::Rename,
@@ -1068,8 +1334,6 @@ fn context_menu_content(app: &App) -> gtk::Box {
             ContextAction::CopyPath,
         ));
     }
-
-    let in_trash = ops::is_in_trash(&app.current_dir());
 
     if !selected.is_empty() && in_trash {
         items.push((
@@ -1090,7 +1354,7 @@ fn context_menu_content(app: &App) -> gtk::Box {
             ContextAction::Copy,
         ));
         items.push((
-            header::menu_item(icons::ui(icons::names::CUT), "Move"),
+            header::menu_item(icons::ui(icons::names::CUT), "Cut"),
             ContextAction::Cut,
         ));
         items.push((
@@ -1099,38 +1363,140 @@ fn context_menu_content(app: &App) -> gtk::Box {
         ));
     }
 
+    if !selected.is_empty() {
+        items.push((
+            header::menu_item(icons::ui(icons::names::PERMISSIONS), "Permissions…"),
+            ContextAction::Permissions,
+        ));
+    }
+
+    if !in_trash && !in_tag_view {
+        items.push((
+            header::menu_item(icons::ui(icons::names::NEW_FOLDER), "New Folder"),
+            ContextAction::NewFolder,
+        ));
+
+        let paste_item = header::menu_item(icons::ui(icons::names::PASTE), "Paste");
+        paste_item.set_sensitive(app.state.clipboard.borrow().is_some());
+        items.push((paste_item, ContextAction::Paste));
+    }
+
+    if in_trash {
+        items.push((
+            header::menu_item(icons::ui(icons::names::TRASH), "Empty Trash"),
+            ContextAction::EmptyTrash,
+        ));
+    }
+
     items.push((
-        header::menu_item(icons::ui(icons::names::NEW_FOLDER), "New Folder"),
-        ContextAction::NewFolder,
+        header::menu_item(icons::ui(icons::names::SELECT_ALL), "Select All"),
+        ContextAction::SelectAll,
     ));
-
-    let paste_item = header::menu_item(icons::ui(icons::names::PASTE), "Paste");
-    paste_item.set_sensitive(app.state.clipboard.borrow().is_some());
-    items.push((paste_item, ContextAction::Paste));
-
     items.push((
         header::menu_item(icons::ui(icons::names::REFRESH), "Refresh"),
         ContextAction::Refresh,
     ));
 
+    let menu = app.widgets.context_menu.clone();
     for (button, action) in items {
         let app = Rc::clone(app);
+        let menu = menu.clone();
         button.connect_clicked(move |_| {
-            app.widgets.context_menu.popdown();
+            menu.popdown();
             run_context_action(&app, action);
         });
         content.append(&button);
     }
 
+    // Tagging and extension selection are attached as their own popovers so the menu
+    // stays one column tall instead of listing every tag inline.
+    if !selected.is_empty() {
+        let paths: Vec<PathBuf> = selected
+            .iter()
+            .map(|entry| entry.path().to_path_buf())
+            .collect();
+
+        let tags = submenu_item(icons::ui(icons::names::TAG), "Tags");
+        tags.set_popover(Some(&tag_popover(app, &paths)));
+        content.append(&tags);
+    }
+
+    let extensions = extensions_in_view(app);
+    if !extensions.is_empty() {
+        let by_type = submenu_item(icons::ui(icons::names::SELECT_ALL), "Select by Type");
+        by_type.set_popover(Some(&extension_popover(app, &extensions)));
+        content.append(&by_type);
+    }
+
     content
+}
+
+/// A menu row that opens a popover of its own.
+fn submenu_item(icon_name: &str, label: &str) -> gtk::MenuButton {
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 9);
+    let icon = gtk::Image::from_icon_name(icon_name);
+    icon.set_pixel_size(14);
+    let text = gtk::Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.set_hexpand(true);
+    let arrow = gtk::Image::from_icon_name(icons::ui(icons::names::FORWARD));
+    arrow.set_pixel_size(12);
+    content.append(&icon);
+    content.append(&text);
+    content.append(&arrow);
+
+    let button = gtk::MenuButton::new();
+    button.set_child(Some(&content));
+    button.set_always_show_arrow(false);
+    button.set_direction(gtk::ArrowType::Right);
+    button.add_css_class("teral-menu-item");
+    button.set_has_frame(false);
+    button
+}
+
+/// A popover offering to select every file with a given extension.
+fn extension_popover(app: &App, extensions: &[(String, usize)]) -> gtk::Popover {
+    let popover = gtk::Popover::new();
+    popover.add_css_class("teral-popover");
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    content.set_width_request(180);
+
+    for (extension, count) in extensions {
+        let item = header::menu_item(
+            icons::ui(icons::names::SELECT_ALL),
+            &format!(".{extension}   ({count})"),
+        );
+        item.connect_clicked({
+            let app = Rc::clone(app);
+            let extension = extension.clone();
+            let popover = popover.clone();
+            move |_| {
+                popover.popdown();
+                app.widgets.context_menu.popdown();
+                select_by_extension(&app, &extension);
+            }
+        });
+        content.append(&item);
+    }
+
+    popover.set_child(Some(&content));
+    popover
 }
 
 #[derive(Debug, Clone, Copy)]
 enum ContextAction {
     Open,
+    OpenInNewTab,
+    OpenInNewWindow,
     Duplicate,
     Restore,
     Delete,
+    ExtractHere,
+    ExtractToFolder,
+    Permissions,
+    SelectAll,
+    EmptyTrash,
     TerminalHere,
     Pin,
     Rename,
@@ -1176,6 +1542,31 @@ fn run_context_action(app: &App, action: ContextAction) {
                 app.set_message("Path copied to the clipboard", false);
             }
         }
+        ContextAction::OpenInNewTab => {
+            if let Some(entry) = app.single_selection().filter(FileEntry::is_directory) {
+                open_in_new_tab(app, entry.path());
+            }
+        }
+        ContextAction::OpenInNewWindow => {
+            if let Some(entry) = app.single_selection().filter(FileEntry::is_directory) {
+                open_in_new_window(app, entry.path());
+            }
+        }
+        ContextAction::ExtractHere => {
+            if let Some(entry) = app.single_selection() {
+                extract_archive(app, &entry, false);
+            }
+        }
+        ContextAction::ExtractToFolder => {
+            if let Some(entry) = app.single_selection() {
+                extract_archive(app, &entry, true);
+            }
+        }
+        ContextAction::Permissions => edit_permissions(app),
+        ContextAction::SelectAll => {
+            app.state.selection.select_all();
+        }
+        ContextAction::EmptyTrash => empty_trash(app),
         ContextAction::Duplicate => duplicate_selection(app),
         ContextAction::Restore => restore_selection(app),
         ContextAction::Delete => delete_permanently(app),

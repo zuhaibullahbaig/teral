@@ -57,6 +57,25 @@ fn activate(app: &App, position: u32) {
 
 // -------------------------------------------------------------------- grid ----
 
+/// Redraw the dimming that marks entries waiting to be moved.
+pub fn refresh_cut_state(app: &App) {
+    // The store is rebuilt on every filter pass, so re-binding is enough to pick the
+    // new clipboard state up everywhere.
+    app.apply_filter();
+}
+
+/// True when this entry has been cut and is waiting for a paste.
+fn is_cut(app: &App, entry: &FileEntry) -> bool {
+    app.state
+        .clipboard
+        .borrow()
+        .as_ref()
+        .is_some_and(|clipboard| {
+            clipboard.kind == crate::files::ops::TransferKind::Move
+                && clipboard.sources.iter().any(|path| path == entry.path())
+        })
+}
+
 /// Rebuild every grid cell, for example after the zoom slider moves.
 pub fn refresh_grid_factory(app: &App) {
     app.widgets.grid.set_factory(Some(&grid_factory(app)));
@@ -77,12 +96,13 @@ fn grid_factory(app: &App) -> gtk::SignalListItemFactory {
     });
 
     factory.connect_bind({
+        let app = Rc::clone(app);
         let bindings = Rc::clone(&bindings);
         move |_, item| {
             let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
                 return;
             };
-            bind_grid_item(item, &bindings);
+            bind_grid_item(&app, item, &bindings);
         }
     });
 
@@ -196,7 +216,7 @@ thread_local! {
     static GRID_ITEMS: RefCell<HashMap<gtk::Box, GridItem>> = RefCell::new(HashMap::new());
 }
 
-fn bind_grid_item(item: &gtk::ListItem, bindings: &Bindings) {
+fn bind_grid_item(app: &App, item: &gtk::ListItem, bindings: &Bindings) {
     let Some(root) = item.child().and_downcast::<gtk::Box>() else {
         return;
     };
@@ -217,6 +237,12 @@ fn bind_grid_item(item: &gtk::ListItem, bindings: &Bindings) {
         widgets.tile.remove_css_class("image");
         if entry.is_directory() {
             widgets.tile.add_css_class("directory");
+        }
+
+        if is_cut(app, &entry) {
+            root.add_css_class("cut");
+        } else {
+            root.remove_css_class("cut");
         }
 
         let thumbnail = entry.thumbnail();
@@ -334,6 +360,7 @@ fn build_columns(app: &App) {
 fn name_column_factory(app: &App) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
 
+    let bind_app = Rc::clone(app);
     let app = Rc::clone(app);
     factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
@@ -357,7 +384,8 @@ fn name_column_factory(app: &App) -> gtk::SignalListItemFactory {
         attach_context_gesture(&app, &row, item);
     });
 
-    factory.connect_bind(|_, item| {
+    factory.connect_bind(move |_, item| {
+        let app = &bind_app;
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
@@ -372,6 +400,11 @@ fn name_column_factory(app: &App) -> gtk::SignalListItemFactory {
         }
         if let Some(label) = row.last_child().and_downcast::<gtk::Label>() {
             label.set_text(entry.display_name());
+        }
+        if is_cut(app, &entry) {
+            row.add_css_class("cut");
+        } else {
+            row.remove_css_class("cut");
         }
     });
 

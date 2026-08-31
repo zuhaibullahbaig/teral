@@ -15,7 +15,10 @@ pub struct Sidebar {
     pub places: gtk::Box,
     pub devices: gtk::Box,
     pub pinned: gtk::Box,
+    pub bookmarks_title: gtk::Label,
     pub pin_drop: gtk::Label,
+    pub tags: gtk::Box,
+    pub add_tag: gtk::Button,
 }
 
 pub fn build(width: i32) -> Sidebar {
@@ -35,16 +38,26 @@ pub fn build(width: i32) -> Sidebar {
     content.append(&section_title("DEVICES"));
     content.append(&devices);
 
-    let pinned_section = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    pinned_section.append(&section_title("BOOKMARKS"));
-    pinned_section.append(&pinned);
-    content.append(&pinned_section);
+    let bookmarks_title = section_title("BOOKMARKS");
 
-    let pin_drop = gtk::Label::new(Some("Drop a folder here to bookmark it"));
+    // The drop hint only appears while a folder is actually being dragged over the
+    // bookmarks area, so an empty section costs nothing but the space it reserves.
+    let pin_drop = gtk::Label::new(Some("Drop to bookmark"));
     pin_drop.add_css_class("teral-pin-target");
-    pin_drop.set_wrap(true);
-    pin_drop.set_justify(gtk::Justification::Center);
-    pinned_section.append(&pin_drop);
+    pin_drop.set_visible(false);
+
+    let bookmarks = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    bookmarks.add_css_class("teral-bookmarks");
+    bookmarks.set_size_request(-1, 64);
+    bookmarks.append(&bookmarks_title);
+    bookmarks.append(&pinned);
+    bookmarks.append(&pin_drop);
+    content.append(&bookmarks);
+
+    let tags = section_box();
+    let add_tag = super::icon_button(crate::icons::ui(crate::icons::names::ADD), "Create a tag");
+    content.append(&section_header("TAGS", &add_tag));
+    content.append(&tags);
 
     let scroller = gtk::ScrolledWindow::builder()
         .child(&content)
@@ -64,8 +77,23 @@ pub fn build(width: i32) -> Sidebar {
         places,
         devices,
         pinned,
+        bookmarks_title,
         pin_drop,
+        tags,
+        add_tag,
     }
+}
+
+/// A section heading with a control on its right.
+fn section_header(title: &str, button: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let heading = section_title(title);
+    heading.set_hexpand(true);
+
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    row.set_margin_end(6);
+    row.append(&heading);
+    row.append(button);
+    row
 }
 
 fn section_box() -> gtk::Box {
@@ -80,6 +108,12 @@ pub fn connect(app: &App) {
     rebuild_places(app);
     rebuild_devices(app);
     rebuild_pinned(app);
+    rebuild_tags(app);
+
+    app.widgets.add_tag.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| super::dialogs::edit_tag(&app, None)
+    });
 
     let monitor = gtk::gio::VolumeMonitor::get();
     for signal in ["mount-added", "mount-removed", "mount-changed"] {
@@ -107,7 +141,10 @@ fn rebuild_devices(app: &App) {
     }
 }
 
-/// Dropping a folder on the PLACES area pins it instead of moving it.
+/// Dropping a folder on the bookmarks area bookmarks it instead of moving it.
+///
+/// The hint only appears once a drag reaches the section, so it never occupies the
+/// sidebar during ordinary browsing.
 fn connect_pin_target(app: &App) {
     let target = gtk::DropTarget::new(
         gtk::gdk::FileList::static_type(),
@@ -119,6 +156,7 @@ fn connect_pin_target(app: &App) {
         let app = Rc::clone(app);
         let label = label.clone();
         move |_, value, _, _| {
+            label.set_visible(false);
             label.remove_css_class("drop-target");
             let Ok(files) = value.get::<gtk::gdk::FileList>() else {
                 return false;
@@ -147,24 +185,139 @@ fn connect_pin_target(app: &App) {
     target.connect_enter({
         let label = label.clone();
         move |_, _, _| {
+            label.set_visible(true);
             label.add_css_class("drop-target");
             gtk::gdk::DragAction::COPY
         }
     });
     target.connect_leave({
         let label = label.clone();
-        move |_| label.remove_css_class("drop-target")
+        move |_| {
+            label.set_visible(false);
+            label.remove_css_class("drop-target");
+        }
     });
 
-    label.add_controller(target);
+    // The target lives on the whole section so the hint appears as soon as a drag
+    // arrives, whether or not the section already holds bookmarks.
+    app.widgets
+        .pin_drop
+        .parent()
+        .expect("the hint always sits inside the bookmarks section")
+        .add_controller(target);
 }
 
-/// Rebuild the pinned section, hiding the hint once folders are pinned.
+/// Rebuild the tag list, and the row of controls each tag reveals on hover.
+pub fn rebuild_tags(app: &App) {
+    clear(&app.widgets.tags);
+
+    for tag in crate::tags::current().tags {
+        let dot = gtk::Label::new(Some("●"));
+        dot.add_css_class("teral-tag-dot");
+        super::apply_color(&dot, &tag.color);
+
+        let label = gtk::Label::new(Some(&tag.name));
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.add_css_class("teral-place-label");
+
+        let count = gtk::Label::new(Some(&tag.paths.len().to_string()));
+        count.add_css_class("teral-place-count");
+
+        let edit = super::icon_button(crate::icons::ui(crate::icons::names::RENAME), "Edit tag");
+        let delete =
+            super::icon_button(crate::icons::ui(crate::icons::names::DELETE), "Delete tag");
+
+        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        controls.add_css_class("teral-tag-controls");
+        controls.append(&edit);
+        controls.append(&delete);
+        controls.set_visible(false);
+
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        content.append(&dot);
+        content.append(&label);
+        content.append(&count);
+        content.append(&controls);
+
+        let row = gtk::Button::new();
+        row.set_child(Some(&content));
+        row.add_css_class("teral-place");
+        row.add_css_class("teral-tag-row");
+        row.set_has_frame(false);
+
+        // Controls stay out of the way until the pointer is on the row.
+        let hover = gtk::EventControllerMotion::new();
+        hover.connect_enter({
+            let controls = controls.clone();
+            let count = count.clone();
+            move |_, _, _| {
+                controls.set_visible(true);
+                count.set_visible(false);
+            }
+        });
+        hover.connect_leave({
+            let controls = controls.clone();
+            let count = count.clone();
+            move |_| {
+                controls.set_visible(false);
+                count.set_visible(true);
+            }
+        });
+        row.add_controller(hover);
+
+        row.connect_clicked({
+            let app = Rc::clone(app);
+            let name = tag.name.clone();
+            move |_| app.show_tag(&name)
+        });
+
+        edit.connect_clicked({
+            let app = Rc::clone(app);
+            let name = tag.name.clone();
+            move |_| super::dialogs::edit_tag(&app, Some(&name))
+        });
+
+        delete.connect_clicked({
+            let app = Rc::clone(app);
+            let name = tag.name.clone();
+            move |_| super::dialogs::confirm_delete_tag(&app, &name)
+        });
+
+        app.widgets.tags.append(&row);
+    }
+
+    mark_active_tag(app, app.state.tag_view.borrow().as_deref());
+}
+
+/// Highlight the tag whose contents are on screen.
+pub fn mark_active_tag(app: &App, active: Option<&str>) {
+    let mut child = app.widgets.tags.first_child();
+    let mut index = 0usize;
+    let tags = crate::tags::current().tags;
+
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let matches = tags
+            .get(index)
+            .zip(active)
+            .is_some_and(|(tag, active)| tag.matches(active));
+        if matches {
+            widget.add_css_class("active");
+        } else {
+            widget.remove_css_class("active");
+        }
+        index += 1;
+    }
+}
+
+/// Rebuild the bookmarks section, hiding its heading while it is empty.
 pub fn rebuild_pinned(app: &App) {
     clear(&app.widgets.pinned_box);
 
     let pinned = app.state.pinned.borrow().clone();
-    app.widgets.pin_drop.set_visible(pinned.is_empty());
+    app.widgets.bookmarks_title.set_visible(!pinned.is_empty());
 
     for path in pinned {
         let label = places::display_label(&path);
@@ -348,19 +501,65 @@ fn attach_context_menu(app: &App, button: &gtk::Button, path: PathBuf) {
     let popover = gtk::Popover::new();
     popover.add_css_class("teral-popover");
     popover.set_parent(button);
-    popover.set_position(gtk::PositionType::Right);
+    popover.set_has_arrow(false);
+    popover.set_halign(gtk::Align::Start);
+    popover.set_position(gtk::PositionType::Bottom);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_width_request(190);
 
+    let new_tab = super::header::menu_item(
+        crate::icons::ui(crate::icons::names::ADD),
+        "Open in New Tab",
+    );
+    let new_window = super::header::menu_item(
+        crate::icons::ui(crate::icons::names::WINDOW),
+        "Open in New Window",
+    );
     let pin = super::header::menu_item(crate::icons::ui(crate::icons::names::PIN), "Bookmark");
     let terminal = super::header::menu_item(
         crate::icons::ui(crate::icons::names::TERMINAL),
         "Open Terminal Here",
     );
+    let empty_trash =
+        super::header::menu_item(crate::icons::ui(crate::icons::names::TRASH), "Empty Trash");
+    empty_trash.set_visible(crate::files::ops::is_in_trash(&path.join("x")));
+
+    content.append(&new_tab);
+    content.append(&new_window);
     content.append(&pin);
     content.append(&terminal);
+    content.append(&empty_trash);
     popover.set_child(Some(&content));
+
+    new_tab.connect_clicked({
+        let app = Rc::clone(app);
+        let path = path.clone();
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            super::window::open_in_new_tab(&app, &path);
+        }
+    });
+
+    new_window.connect_clicked({
+        let app = Rc::clone(app);
+        let path = path.clone();
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            super::window::open_in_new_window(&app, &path);
+        }
+    });
+
+    empty_trash.connect_clicked({
+        let app = Rc::clone(app);
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            super::window::empty_trash(&app);
+        }
+    });
 
     pin.connect_clicked({
         let app = Rc::clone(app);
@@ -388,7 +587,10 @@ fn attach_context_menu(app: &App, button: &gtk::Button, path: PathBuf) {
         let app = Rc::clone(app);
         let popover = popover.clone();
         let path = path.clone();
-        move |_, _, _, _| {
+        move |_, _, x, y| {
+            // Anchor on the pointer, not on the row, so the menu opens where the click
+            // happened instead of against the sidebar's edge.
+            popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
             let pinned = app.is_pinned(&path);
             if let Some(row) = pin.child().and_downcast::<gtk::Box>()
                 && let Some(label) = row.last_child().and_downcast::<gtk::Label>()

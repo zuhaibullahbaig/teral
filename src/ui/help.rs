@@ -28,8 +28,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
     (
         "Files",
         &[
-            ("Ctrl+A", "Select all"),
-            ("Ctrl+C / Ctrl+X", "Copy / Move"),
+            ("Ctrl+C / Ctrl+X", "Copy / Cut"),
             ("Ctrl+V", "Paste"),
             ("Ctrl+D", "Duplicate"),
             ("F2", "Rename"),
@@ -37,6 +36,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("Shift+Delete", "Delete permanently"),
             ("Ctrl+Shift+N", "New folder"),
             ("Ctrl+H", "Show hidden files"),
+            ("Ctrl+A", "Select all"),
         ],
     ),
     (
@@ -163,7 +163,8 @@ fn present(app: &App, title: &str, width: i32, height: i32, content: &impl IsA<g
 
     let close = gtk::Button::with_label("Close");
     close.add_css_class("teral-primary");
-    close.set_halign(gtk::Align::End);
+    close.set_hexpand(true);
+    close.set_halign(gtk::Align::Center);
 
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     footer.add_css_class("teral-settings-footer");

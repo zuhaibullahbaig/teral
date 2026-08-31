@@ -83,10 +83,22 @@ pub mod names {
         "preferences-system-symbolic",
         "applications-system-symbolic",
     ];
-    pub const EXPAND: &[&str] = &[
-        "view-fullscreen-symbolic",
-        "window-maximize-symbolic",
-        "pan-up-symbolic",
+    pub const EXTRACT: &[&str] = &[
+        "archive-extract-symbolic",
+        "folder-download-symbolic",
+        "document-save-symbolic",
+    ];
+    pub const PERMISSIONS: &[&str] = &[
+        "changes-prevent-symbolic",
+        "security-high-symbolic",
+        "emblem-system-symbolic",
+    ];
+    pub const SELECT_ALL: &[&str] = &["edit-select-all-symbolic"];
+    pub const TAG: &[&str] = &["tag-symbolic", "bookmark-new-symbolic"];
+    pub const WINDOW: &[&str] = &[
+        "window-new-symbolic",
+        "view-dual-symbolic",
+        "list-add-symbolic",
     ];
     pub const HELP: &[&str] = &["help-browser-symbolic", "dialog-question-symbolic"];
     pub const ABOUT: &[&str] = &["help-about-symbolic", "dialog-information-symbolic"];

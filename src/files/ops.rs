@@ -478,6 +478,177 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&decoded).into_owned()
 }
 
+// ------------------------------------------------------------------ archives ----
+
+/// Content types Teral offers to extract.
+const ARCHIVE_TYPES: [&str; 12] = [
+    "application/zip",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-gzip",
+    "application/x-bzip2",
+    "application/x-xz",
+    "application/zstd",
+    "application/x-7z-compressed",
+    "application/vnd.rar",
+    "application/x-rar",
+    "application/x-rar-compressed",
+    "application/x-compressed-tar",
+];
+
+/// True when Teral knows how to unpack this entry.
+pub fn is_archive(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(|value| ARCHIVE_TYPES.contains(&value))
+}
+
+/// The name an archive's contents should be extracted into.
+pub fn archive_stem(path: &Path) -> OsString {
+    let mut stem = path.file_stem().unwrap_or_default().to_os_string();
+    // "project.tar.gz" should become "project", not "project.tar".
+    if Path::new(&stem).extension().is_some_and(|ext| ext == "tar") {
+        stem = Path::new(&stem)
+            .file_stem()
+            .unwrap_or_default()
+            .to_os_string();
+    }
+    if stem.is_empty() {
+        stem = OsString::from("extracted");
+    }
+    stem
+}
+
+/// Build the command that unpacks `archive` into `destination`.
+///
+/// `bsdtar` handles every format Teral offers, so it is preferred; the per-format tools
+/// are the fallback for systems that only have those.
+fn extract_command(
+    archive: &Path,
+    destination: &Path,
+    content_type: &str,
+) -> Option<Vec<OsString>> {
+    let arg = |value: &str| OsString::from(value);
+    let program = |name: &str| glib::find_program_in_path(name);
+
+    if let Some(bsdtar) = program("bsdtar") {
+        return Some(vec![
+            bsdtar.into_os_string(),
+            arg("-x"),
+            arg("-f"),
+            archive.as_os_str().to_os_string(),
+            arg("-C"),
+            destination.as_os_str().to_os_string(),
+        ]);
+    }
+
+    match content_type {
+        "application/zip" => program("unzip").map(|unzip| {
+            vec![
+                unzip.into_os_string(),
+                arg("-o"),
+                arg("-q"),
+                archive.as_os_str().to_os_string(),
+                arg("-d"),
+                destination.as_os_str().to_os_string(),
+            ]
+        }),
+        "application/x-7z-compressed" => program("7z").or_else(|| program("7za")).map(|seven| {
+            let mut output = OsString::from("-o");
+            output.push(destination.as_os_str());
+            vec![
+                seven.into_os_string(),
+                arg("x"),
+                arg("-y"),
+                output,
+                archive.as_os_str().to_os_string(),
+            ]
+        }),
+        "application/vnd.rar" | "application/x-rar" | "application/x-rar-compressed" => {
+            program("unrar").map(|unrar| {
+                vec![
+                    unrar.into_os_string(),
+                    arg("x"),
+                    arg("-y"),
+                    archive.as_os_str().to_os_string(),
+                    destination.as_os_str().to_os_string(),
+                ]
+            })
+        }
+        _ => program("tar").map(|tar| {
+            vec![
+                tar.into_os_string(),
+                arg("-x"),
+                arg("-f"),
+                archive.as_os_str().to_os_string(),
+                arg("-C"),
+                destination.as_os_str().to_os_string(),
+            ]
+        }),
+    }
+}
+
+/// Unpack `archive` into `destination`, which is created if it does not exist.
+pub async fn extract(
+    archive: PathBuf,
+    destination: PathBuf,
+    content_type: String,
+) -> Result<PathBuf, String> {
+    let Some(command) = extract_command(&archive, &destination, &content_type) else {
+        return Err("no extraction tool was found; install bsdtar, unzip, 7z or unrar".to_owned());
+    };
+
+    if let Err(error) = fs::create_dir_all(&destination) {
+        return Err(format!("{}: {error}", destination.display()));
+    }
+
+    let arguments: Vec<&std::ffi::OsStr> = command.iter().map(OsString::as_os_str).collect();
+    let process = gio::Subprocess::newv(
+        &arguments,
+        gio::SubprocessFlags::STDOUT_SILENCE | gio::SubprocessFlags::STDERR_PIPE,
+    )
+    .map_err(|error| error.message().trim().to_owned())?;
+
+    let (_stdout, stderr) = process
+        .communicate_future(None)
+        .await
+        .map_err(|error| error.message().trim().to_owned())?;
+
+    if process.exit_status() == 0 {
+        return Ok(destination);
+    }
+
+    let message = stderr
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| format!("extraction failed with status {}", process.exit_status()));
+    Err(message)
+}
+
+// --------------------------------------------------------------- permissions ----
+
+/// Replace the permission bits of a set of entries.
+pub async fn set_permissions(paths: Vec<PathBuf>, mode: u32) -> TransferReport {
+    gio::spawn_blocking(move || {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut report = TransferReport::default();
+        for path in paths {
+            let result = fs::set_permissions(&path, fs::Permissions::from_mode(mode));
+            match result {
+                Ok(()) => report.succeeded += 1,
+                Err(error) => report
+                    .failures
+                    .push(format!("{}: {error}", display_name(&path))),
+            }
+        }
+        report
+    })
+    .await
+    .unwrap_or_else(|_| TransferReport {
+        failures: vec!["the permission worker stopped unexpectedly".to_owned()],
+        ..TransferReport::default()
+    })
+}
+
 /// Launch an entry with the desktop's default application.
 pub fn open(path: &Path) -> Result<(), glib::Error> {
     let uri = gio::File::for_path(path).uri();
@@ -635,6 +806,20 @@ mod tests {
         assert!(!source.exists());
         assert!(destination.join("source/file.txt").exists());
         fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn archive_stems_drop_both_extensions() {
+        assert_eq!(archive_stem(Path::new("/tmp/project.tar.gz")), "project");
+        assert_eq!(archive_stem(Path::new("/tmp/photos.zip")), "photos");
+        assert_eq!(archive_stem(Path::new("/tmp/archive")), "archive");
+    }
+
+    #[test]
+    fn archives_are_recognised_by_content_type() {
+        assert!(is_archive(Some("application/zip")));
+        assert!(!is_archive(Some("text/plain")));
+        assert!(!is_archive(None));
     }
 
     #[test]

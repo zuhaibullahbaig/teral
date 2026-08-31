@@ -6,6 +6,7 @@ use gtk::Application;
 use gtk::prelude::*;
 
 pub fn activate(application: &Application) {
+    crate::tags::init();
     let config = Config::load();
     let theme = ThemeConfig::resolve(&config);
     config::set_current(config.clone());

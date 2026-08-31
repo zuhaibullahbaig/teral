@@ -82,6 +82,8 @@ pub struct State {
     pub config_monitors: RefCell<Vec<gio::FileMonitor>>,
     /// Height the console had when it was last visible.
     pub console_height: Cell<i32>,
+    /// Set while the file view is showing everything carrying one tag.
+    pub tag_view: RefCell<Option<String>>,
 }
 
 /// One browsing tab: a location and its own history.
@@ -171,14 +173,47 @@ impl AppInner {
         }
     }
 
-    /// Re-read the current directory, keeping history and selection intact.
+    /// Re-read whatever the view is showing, keeping history and selection intact.
     pub fn reload(self: &App) {
+        if let Some(tag) = self.state.tag_view.borrow().clone() {
+            self.show_tag(&tag);
+            return;
+        }
         let current = self.current_dir();
         self.load(&current, None);
     }
 
+    /// Show every file carrying `tag` instead of a directory.
+    pub fn show_tag(self: &App, tag: &str) {
+        *self.state.tag_view.borrow_mut() = Some(tag.to_owned());
+
+        let app = Rc::clone(self);
+        let tag = tag.to_owned();
+        let generation = self.state.generation.get().wrapping_add(1);
+        self.state.generation.set(generation);
+
+        glib::spawn_future_local(async move {
+            let paths = crate::tags::current()
+                .get(&tag)
+                .map(|tag| tag.paths.clone())
+                .unwrap_or_default();
+            let entries = scan::scan_paths(&paths).await;
+            if app.state.generation.get() != generation {
+                return;
+            }
+
+            *app.state.all.borrow_mut() = entries;
+            app.state.directory_monitor.borrow_mut().take();
+            app.apply_filter();
+            app.refresh_chrome();
+            app.clear_message();
+        });
+    }
+
     /// Read a directory asynchronously and swap it in when it arrives.
     pub fn load(self: &App, path: &Path, history: Option<HistoryStep>) {
+        *self.state.tag_view.borrow_mut() = None;
+
         let app = Rc::clone(self);
         let path = path.to_path_buf();
         let generation = self.state.generation.get().wrapping_add(1);
@@ -194,7 +229,6 @@ impl AppInner {
                 Ok(entries) => {
                     app.commit_directory(path, entries, history);
                     app.load_child_counts(generation);
-                    app.update_free_space();
                 }
                 Err(error) => app.show_error(&format!(
                     "Cannot open {}: {}",
@@ -340,24 +374,19 @@ impl AppInner {
         });
     }
 
-    fn update_free_space(self: &App) {
-        let app = Rc::clone(self);
-        let path = self.current_dir();
-        glib::spawn_future_local(async move {
-            let usage = scan::filesystem_usage(&path).await;
-            if app.current_dir() != path {
-                return;
-            }
-            app.widgets.status_free.set_text(&match usage {
-                Some((free, _total)) => format!("Free: {}", crate::files::format_size(free)),
-                None => String::new(),
-            });
-        });
-    }
-
     /// Refresh everything that depends on the current directory.
     pub fn refresh_chrome(self: &App) {
         let current = self.current_dir();
+
+        if let Some(tag) = self.state.tag_view.borrow().clone() {
+            self.widgets.folder_title.set_text(&tag);
+            header::show_tag_crumb(self, &tag);
+            sidebar::mark_active(self, Path::new(""));
+            sidebar::mark_active_tag(self, Some(&tag));
+            tabs::rebuild(self);
+            return;
+        }
+        sidebar::mark_active_tag(self, None);
 
         self.widgets
             .folder_title
@@ -371,6 +400,14 @@ impl AppInner {
             .set_sensitive(!self.state.forward.borrow().is_empty());
         self.widgets.up.set_sensitive(current.parent().is_some());
         sidebar::mark_active(self, &current);
+        if let Some(tab) = self
+            .state
+            .tabs
+            .borrow_mut()
+            .get_mut(self.state.active_tab.get())
+        {
+            tab.path = current.clone();
+        }
         tabs::rebuild(self);
     }
 
@@ -675,6 +712,27 @@ pub fn tracked_label(text: &str, tracking: i32) -> gtk::Label {
     attributes.insert(pango::AttrInt::new_letter_spacing(tracking * pango::SCALE));
     label.set_attributes(Some(&attributes));
     label
+}
+
+/// Colour one widget without going through the global stylesheet.
+///
+/// Tags carry arbitrary user colours, so each one needs its own provider rather than a
+/// class the theme could define.
+pub fn apply_color(widget: &impl IsA<gtk::Widget>, color: &str) {
+    if !crate::theme::valid_color(color) {
+        return;
+    }
+
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(&format!("* {{ color: {color}; }}"));
+
+    // Per-widget providers are the only way to apply a colour GTK's stylesheet cannot
+    // know about ahead of time; the replacement API does not cover this case.
+    #[allow(deprecated)]
+    widget
+        .as_ref()
+        .style_context()
+        .add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 }
 
 /// A sidebar section heading.

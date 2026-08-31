@@ -26,6 +26,7 @@ pub struct Details {
     pub kind: gtk::Label,
     pub size: gtk::Label,
     pub rows: Vec<(&'static str, MetaRow)>,
+    pub tags: gtk::FlowBox,
     pub actions: Actions,
 }
 
@@ -87,8 +88,13 @@ pub fn build(width: i32) -> Details {
 
     let name = gtk::Label::new(None);
     name.set_xalign(0.0);
+    // A very long file name must never be allowed to widen the panel; it wraps to at
+    // most three lines and then ellipsises.
     name.set_wrap(true);
     name.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    name.set_lines(3);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    name.set_max_width_chars(1);
     name.add_css_class("teral-details-name");
 
     let kind = gtk::Label::new(None);
@@ -115,6 +121,18 @@ pub fn build(width: i32) -> Details {
         rows.push((key, row));
     }
 
+    let tags_heading = super::tracked_label("TAGS", 1);
+    tags_heading.add_css_class("teral-section-title");
+    tags_heading.set_margin_top(16);
+    tags_heading.set_margin_bottom(8);
+
+    let tags = gtk::FlowBox::new();
+    tags.add_css_class("teral-tag-chips");
+    tags.set_selection_mode(gtk::SelectionMode::None);
+    tags.set_max_children_per_line(4);
+    tags.set_row_spacing(6);
+    tags.set_column_spacing(6);
+
     let actions_heading = super::tracked_label("ACTIONS", 1);
     actions_heading.add_css_class("teral-section-title");
     actions_heading.set_margin_top(16);
@@ -128,6 +146,8 @@ pub fn build(width: i32) -> Details {
     body.append(&summary);
     body.append(&separator());
     body.append(&table);
+    body.append(&tags_heading);
+    body.append(&tags);
     body.append(&actions_heading);
     body.append(&actions.root);
 
@@ -164,6 +184,7 @@ pub fn build(width: i32) -> Details {
         kind,
         size,
         rows,
+        tags,
         actions,
     }
 }
@@ -179,7 +200,7 @@ fn build_actions() -> Actions {
     let copy_path = action_button(icons::ui(names::COPY_PATH), "Copy Path");
     let terminal = action_button(icons::ui(names::TERMINAL), "Terminal");
     let rename = action_button(icons::ui(names::RENAME), "Rename");
-    let cut = action_button(icons::ui(names::CUT), "Move");
+    let cut = action_button(icons::ui(names::CUT), "Cut");
     let copy = action_button(icons::ui(names::COPY), "Copy");
     let trash = action_button(icons::ui(names::TRASH), "Trash");
     trash.add_css_class("destructive");
@@ -253,7 +274,13 @@ fn meta_row(key: &str) -> MetaRow {
     value.set_hexpand(true);
     value.set_wrap(true);
     value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    value.set_lines(if key == "Path" { 4 } else { 2 });
+    value.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    value.set_max_width_chars(1);
     value.set_selectable(true);
+    // Selectable labels take keyboard focus by default, which paints a focus block
+    // over the first row as soon as the panel appears.
+    value.set_can_focus(false);
     value.add_css_class("teral-meta-value");
     if key == "Path" {
         value.add_css_class("path");
@@ -264,6 +291,63 @@ fn meta_row(key: &str) -> MetaRow {
     root.append(&value);
 
     MetaRow { root, value }
+}
+
+/// Show the tags on the selected entry, with a control to attach more.
+fn rebuild_tag_chips(app: &App, entry: &FileEntry) {
+    let container = &app.widgets.details.tags;
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+
+    let path = entry.path().to_path_buf();
+    let store = crate::tags::current();
+
+    for tag in store.for_path(&path) {
+        let dot = gtk::Label::new(Some("●"));
+        dot.add_css_class("teral-tag-dot");
+        super::apply_color(&dot, &tag.color);
+
+        let label = gtk::Label::new(Some(&tag.name));
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_max_width_chars(14);
+
+        let remove = gtk::Button::from_icon_name(icons::ui(names::CLOSE));
+        remove.add_css_class("teral-tag-remove");
+        remove.set_has_frame(false);
+        remove.set_valign(gtk::Align::Center);
+        remove.set_tooltip_text(Some("Remove this tag"));
+
+        let chip = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        chip.add_css_class("teral-tag-chip");
+        chip.append(&dot);
+        chip.append(&label);
+        chip.append(&remove);
+
+        remove.connect_clicked({
+            let app = Rc::clone(app);
+            let name = tag.name.clone();
+            let path = path.clone();
+            move |_| {
+                crate::tags::edit(|tags| {
+                    tags.set_tagged(&name, std::slice::from_ref(&path), false)
+                });
+                super::sidebar::rebuild_tags(&app);
+                app.update_details();
+            }
+        });
+
+        container.append(&chip);
+    }
+
+    let add = gtk::MenuButton::new();
+    add.add_css_class("teral-tag-chip");
+    add.add_css_class("add");
+    add.set_always_show_arrow(false);
+    add.set_child(Some(&gtk::Image::from_icon_name(icons::ui(names::ADD))));
+    add.set_tooltip_text(Some("Add a tag"));
+    add.set_popover(Some(&super::window::tag_popover(app, &[path])));
+    container.append(&add);
 }
 
 /// Replace the caption under an action button.
@@ -444,10 +528,12 @@ pub fn update(app: &App) {
         row.value.set_text(&value);
     }
 
+    rebuild_tag_chips(app, entry);
+
     let actions = &details.actions;
     let in_trash = crate::files::ops::is_in_trash(&app.current_dir());
 
-    relabel(&actions.cut, if in_trash { "Restore" } else { "Move" });
+    relabel(&actions.cut, if in_trash { "Restore" } else { "Cut" });
     relabel(&actions.trash, if in_trash { "Delete" } else { "Trash" });
     set_action_icon(
         &actions.cut,

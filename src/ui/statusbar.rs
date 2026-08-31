@@ -12,7 +12,6 @@ pub struct StatusBar {
     pub command_entry: gtk::Entry,
     pub selection: gtk::Label,
     pub size: gtk::Label,
-    pub free: gtk::Label,
     pub message: gtk::Label,
     pub zoom: gtk::Scale,
     pub settings: gtk::Button,
@@ -26,7 +25,6 @@ pub struct Console {
     pub title: gtk::Label,
     pub terminal: vte::Terminal,
     pub stop: gtk::Button,
-    pub expand: gtk::ToggleButton,
     pub close: gtk::Button,
 }
 
@@ -41,19 +39,11 @@ pub fn build_console() -> Console {
     title.add_css_class("teral-status-item");
     title.add_css_class("strong");
 
-    let grip = gtk::Label::new(Some("⣿"));
-    grip.add_css_class("teral-console-grip");
-
     let stop = super::icon_button(
         crate::icons::ui(crate::icons::names::STOP),
         "Stop the running command",
     );
     stop.set_visible(false);
-
-    let expand = super::icon_toggle(
-        crate::icons::ui(crate::icons::names::EXPAND),
-        "Expand the console to fill the window",
-    );
 
     let close = super::icon_button(
         crate::icons::ui(crate::icons::names::CLOSE),
@@ -62,12 +52,10 @@ pub fn build_console() -> Console {
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     header.add_css_class("teral-console-header");
-    header.set_tooltip_text(Some("Drag this bar to resize, or double-click to expand"));
+    header.set_tooltip_text(Some("Drag up or down to resize the console"));
     header.set_cursor_from_name(Some("ns-resize"));
-    header.append(&grip);
     header.append(&title);
     header.append(&stop);
-    header.append(&expand);
     header.append(&close);
 
     let terminal = command::build_terminal();
@@ -90,7 +78,6 @@ pub fn build_console() -> Console {
         title,
         terminal,
         stop,
-        expand,
         close,
     }
 }
@@ -118,6 +105,10 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
     message.set_xalign(0.0);
     message.set_hexpand(true);
     message.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // Without a tiny character request the label asks for its full natural width, and a
+    // long message would squeeze Quick Command out of alignment with the file list.
+    message.set_width_chars(1);
+    message.set_max_width_chars(1);
     message.add_css_class("teral-status-item");
 
     let left = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -154,7 +145,6 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
     let selection = status_label();
     selection.add_css_class("strong");
     let size = status_label();
-    let free = status_label();
 
     let zoom = gtk::Scale::with_range(
         gtk::Orientation::Horizontal,
@@ -175,7 +165,6 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
     right.set_hexpand(false);
     right.append(&selection);
     right.append(&size);
-    right.append(&free);
     right.append(&zoom);
 
     let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -191,7 +180,6 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
         command_entry,
         selection,
         size,
-        free,
         message,
         zoom,
         settings,
@@ -245,26 +233,6 @@ pub fn connect(app: &App) {
         move |_| hide_console(&app)
     });
 
-    app.widgets.console.expand.connect_toggled({
-        let app = Rc::clone(app);
-        move |button| {
-            if app.state.updating.get() {
-                return;
-            }
-            let paned = &app.widgets.file_paned;
-            if button.is_active() {
-                let height = paned.height() - paned.position();
-                if height > 80 {
-                    app.state.console_height.set(height);
-                }
-                paned.set_position(120);
-            } else {
-                let height = app.state.console_height.get().max(160);
-                paned.set_position((paned.height() - height).max(120));
-            }
-        }
-    });
-
     connect_console_resize(app);
 
     // A finished command leaves its output on screen; the folder is reloaded because
@@ -308,7 +276,7 @@ pub fn connect(app: &App) {
 /// Dragging anywhere along the console's title bar resizes it.
 ///
 /// The paned handle alone is a one-pixel target that nobody finds; the whole header is
-/// a much larger one, and a double-click toggles the expanded state.
+/// a much larger one.
 fn connect_console_resize(app: &App) {
     let drag = gtk::GestureDrag::new();
     let start = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -337,34 +305,10 @@ fn connect_console_resize(app: &App) {
             if height > 80 {
                 app.state.console_height.set(height);
             }
-            sync_expand_toggle(&app);
         }
     });
 
     app.widgets.console.header.add_controller(drag);
-
-    let double_click = gtk::GestureClick::new();
-    double_click.connect_pressed({
-        let app = Rc::clone(app);
-        move |_, clicks, _, _| {
-            if clicks == 2 {
-                let expand = &app.widgets.console.expand;
-                expand.set_active(!expand.is_active());
-            }
-        }
-    });
-    app.widgets.console.header.add_controller(double_click);
-}
-
-/// Keep the expand toggle honest after a manual drag.
-fn sync_expand_toggle(app: &App) {
-    let paned = &app.widgets.file_paned;
-    let expanded = paned.position() <= 160;
-    if expanded != app.widgets.console.expand.is_active() {
-        app.state.updating.set(true);
-        app.widgets.console.expand.set_active(expanded);
-        app.state.updating.set(false);
-    }
 }
 
 /// Show the console, restoring the height it had last time.

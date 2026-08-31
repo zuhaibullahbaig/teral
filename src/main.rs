@@ -5,6 +5,7 @@ mod files;
 mod icons;
 mod places;
 mod style;
+mod tags;
 mod theme;
 mod ui;
 

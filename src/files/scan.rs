@@ -82,6 +82,32 @@ pub async fn scan_directory(path: &Path) -> Result<Vec<EntryData>, glib::Error> 
     Ok(entries)
 }
 
+/// Read metadata for an explicit list of files, for views that are not a directory.
+pub async fn scan_paths(paths: &[std::path::PathBuf]) -> Vec<EntryData> {
+    let mut entries = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        let file = gio::File::for_path(path);
+        let info = file
+            .query_info_future(
+                ATTRIBUTES,
+                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                glib::Priority::DEFAULT,
+            )
+            .await;
+
+        // A tagged file that has since been deleted is simply left out.
+        if let Ok(info) = info {
+            entries.push(EntryData::from_info(parent, &info));
+        }
+    }
+
+    entries
+}
+
 /// Count the children of a directory, used for the item count under folder tiles.
 pub async fn count_children(path: &Path) -> Result<usize, glib::Error> {
     let directory = gio::File::for_path(path);

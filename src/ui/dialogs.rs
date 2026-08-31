@@ -6,6 +6,8 @@ use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
 use gtk::prelude::*;
+use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 /// A Teral-styled window that the compositor will place over Teral's own.
@@ -175,6 +177,266 @@ pub fn confirm(
     });
 
     window.present();
+}
+
+/// Edit Unix permission bits with the familiar owner/group/other grid.
+pub fn permissions(app: &App, summary: &str, mode: u32, apply: impl Fn(&App, u32) + 'static) {
+    const CLASSES: [(&str, u32); 3] = [("Owner", 6), ("Group", 3), ("Others", 0)];
+    const BITS: [(&str, u32); 3] = [("Read", 4), ("Write", 2), ("Execute", 1)];
+
+    let heading = gtk::Label::new(Some("Permissions"));
+    heading.set_xalign(0.0);
+    heading.add_css_class("teral-dialog-title");
+
+    let subject = gtk::Label::new(Some(summary));
+    subject.set_xalign(0.0);
+    subject.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    subject.add_css_class("teral-status-item");
+
+    let octal = gtk::Label::new(None);
+    octal.set_xalign(0.0);
+    octal.add_css_class("teral-shortcut-key");
+
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(8);
+    grid.set_column_spacing(16);
+    grid.set_margin_top(6);
+
+    for (column, (bit_name, _)) in BITS.iter().enumerate() {
+        let label = gtk::Label::new(Some(bit_name));
+        label.add_css_class("teral-setting-hint");
+        grid.attach(&label, column as i32 + 1, 0, 1, 1);
+    }
+
+    let checks: Rc<RefCell<Vec<(gtk::CheckButton, u32)>>> = Rc::new(RefCell::new(Vec::new()));
+
+    for (row, (class_name, shift)) in CLASSES.iter().enumerate() {
+        let label = gtk::Label::new(Some(class_name));
+        label.set_xalign(0.0);
+        grid.attach(&label, 0, row as i32 + 1, 1, 1);
+
+        for (column, (_, bit)) in BITS.iter().enumerate() {
+            let value = bit << shift;
+            let check = gtk::CheckButton::new();
+            check.add_css_class("teral-menu-check");
+            check.set_active(mode & value != 0);
+            check.set_halign(gtk::Align::Center);
+            grid.attach(&check, column as i32 + 1, row as i32 + 1, 1, 1);
+            checks.borrow_mut().push((check, value));
+        }
+    }
+
+    let refresh = {
+        let checks = Rc::clone(&checks);
+        let octal = octal.clone();
+        move || {
+            let mode = current_mode(&checks);
+            octal.set_text(&format!(
+                "{}   ({:04o})",
+                crate::files::format_permissions(mode),
+                mode
+            ));
+        }
+    };
+    refresh();
+
+    for (check, _) in checks.borrow().iter() {
+        check.connect_toggled({
+            let refresh = refresh.clone();
+            move |_| refresh()
+        });
+    }
+
+    let cancel = gtk::Button::with_label("Cancel");
+    cancel.add_css_class("teral-secondary");
+    let accept = gtk::Button::with_label("Apply");
+    accept.add_css_class("teral-primary");
+
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk::Align::End);
+    buttons.set_margin_top(6);
+    buttons.append(&cancel);
+    buttons.append(&accept);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    content.append(&heading);
+    content.append(&subject);
+    content.append(&grid);
+    content.append(&octal);
+    content.append(&buttons);
+
+    let window = window(app, "Permissions", 380, -1, &content);
+    window.set_resizable(false);
+
+    accept.connect_clicked({
+        let app = Rc::clone(app);
+        let window = window.clone();
+        let checks = Rc::clone(&checks);
+        move |_| {
+            let mode = current_mode(&checks);
+            window.close();
+            apply(&app, mode);
+        }
+    });
+    cancel.connect_clicked({
+        let window = window.clone();
+        move |_| window.close()
+    });
+
+    window.present();
+}
+
+fn current_mode(checks: &Rc<RefCell<Vec<(gtk::CheckButton, u32)>>>) -> u32 {
+    checks
+        .borrow()
+        .iter()
+        .filter(|(check, _)| check.is_active())
+        .map(|(_, bit)| bit)
+        .sum()
+}
+
+/// Create a tag, or edit an existing one's name and colour.
+pub fn edit_tag(app: &App, existing: Option<&str>) {
+    let store = crate::tags::current();
+    let tag = existing.and_then(|name| store.get(name).cloned());
+
+    let heading = gtk::Label::new(Some(if tag.is_some() { "Edit tag" } else { "New tag" }));
+    heading.set_xalign(0.0);
+    heading.add_css_class("teral-dialog-title");
+
+    let entry = gtk::Entry::new();
+    entry.add_css_class("teral-input");
+    entry.set_hexpand(true);
+    entry.set_activates_default(true);
+    entry.set_placeholder_text(Some("Tag name"));
+    if let Some(tag) = tag.as_ref() {
+        entry.set_text(&tag.name);
+    }
+
+    let color = tag
+        .as_ref()
+        .map(|tag| tag.color.clone())
+        .unwrap_or_else(|| "#e0a63c".to_owned());
+    let swatch = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+    swatch.set_rgba(&color.parse().unwrap_or(gtk::gdk::RGBA::WHITE));
+    swatch.set_valign(gtk::Align::Center);
+
+    let fields = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    fields.append(&entry);
+    fields.append(&swatch);
+
+    let message = gtk::Label::new(None);
+    message.set_xalign(0.0);
+    message.add_css_class("teral-status-item");
+    message.add_css_class("error");
+
+    let cancel = gtk::Button::with_label("Cancel");
+    cancel.add_css_class("teral-secondary");
+    let accept = gtk::Button::with_label(if tag.is_some() { "Save" } else { "Create" });
+    accept.add_css_class("teral-primary");
+
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk::Align::End);
+    buttons.set_margin_top(6);
+    buttons.append(&cancel);
+    buttons.append(&accept);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    content.append(&heading);
+    content.append(&fields);
+    content.append(&message);
+    content.append(&buttons);
+
+    let window = window(app, "Tag", 400, -1, &content);
+    window.set_resizable(false);
+
+    let submit = {
+        let app = Rc::clone(app);
+        let entry = entry.clone();
+        let swatch = swatch.clone();
+        let window = window.clone();
+        let message = message.clone();
+        let existing = existing.map(str::to_owned);
+        move || {
+            let name = entry.text().trim().to_owned();
+            let rgba = swatch.rgba();
+            let color = format!(
+                "#{:02x}{:02x}{:02x}",
+                channel(rgba.red()),
+                channel(rgba.green()),
+                channel(rgba.blue())
+            );
+
+            let mut store = crate::tags::current();
+            let result = match existing.as_deref() {
+                Some(current) => store.update(current, &name, &color),
+                None => store.create(&name, &color),
+            };
+
+            match result {
+                Ok(()) => {
+                    crate::tags::set_current(store);
+                    super::sidebar::rebuild_tags(&app);
+                    app.update_details();
+                    window.close();
+                }
+                Err(error) => message.set_text(&error),
+            }
+        }
+    };
+
+    accept.connect_clicked({
+        let submit = submit.clone();
+        move |_| submit()
+    });
+    entry.connect_activate(move |_| submit());
+    cancel.connect_clicked({
+        let window = window.clone();
+        move |_| window.close()
+    });
+
+    window.present();
+    entry.grab_focus();
+}
+
+/// Confirm removing a tag, which unassigns it from every file carrying it.
+pub fn confirm_delete_tag(app: &App, name: &str) {
+    let app_for_action = Rc::clone(app);
+    let name = name.to_owned();
+
+    confirm(
+        app,
+        "Delete tag",
+        &format!("{name} will be removed from every file carrying it. The files are not touched."),
+        "Delete",
+        move || {
+            crate::tags::edit(|tags| tags.delete(&name));
+            super::sidebar::rebuild_tags(&app_for_action);
+            if app_for_action
+                .state
+                .tag_view
+                .borrow()
+                .as_deref()
+                .is_some_and(|active| active.eq_ignore_ascii_case(&name))
+            {
+                let home = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                app_for_action.navigate(&home);
+            }
+            app_for_action.update_details();
+        },
+    );
+}
+
+fn channel(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// A popover listing the applications the desktop recommends for an entry.
