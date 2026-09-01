@@ -8,8 +8,8 @@ lock_version="$(awk '
   $0 == "name = \"teral\"" { in_teral = 1; next }
   in_teral && /^version = / {
     value = $0
-    sub(/^version = \"/, "", value)
-    sub(/\"$/, "", value)
+    sub(/^version = "/, "", value)
+    sub(/"$/, "", value)
     print value
     exit
   }
