@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.zuhaibullahbaig.Teral</id>
+  <name>Teral</name>
+  <summary>Browse and manage files on Linux</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer_name>Zuhaib Ullah Baig</developer_name>
+  <description>
+    <p>
+      Teral is a native GTK4 file manager with a compact three-pane interface for
+      locations, files, and immediate details.
+    </p>
+    <p>
+      It integrates with Linux file associations, system icon themes, removable
+      devices, the FreeDesktop trash, and Omarchy appearance settings.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.zuhaibullahbaig.Teral.desktop</launchable>
+  <provides>
+    <binary>teral</binary>
+  </provides>
+  <mimetypes>
+    <mimetype>inode/directory</mimetype>
+  </mimetypes>
+  <url type="homepage">https://github.com/zuhaibullahbaig/teral</url>
+  <content_rating type="oars-1.1"/>
+</component>

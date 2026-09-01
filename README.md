@@ -43,7 +43,7 @@ There are no packaged releases yet, so build from source. You will need
 [Rust](https://rustup.rs) and GTK 4.12 or newer:
 
 ```bash
-# Ubuntu / Debian
+# Ubuntu 24.04+ / Debian with GTK 4.12+
 sudo apt install -y build-essential pkg-config libgtk-4-dev libvte-2.91-gtk4-dev
 
 # Arch / Omarchy
@@ -62,11 +62,33 @@ cd teral
 cargo run --release
 ```
 
-To install the binary, its desktop entry and its icon system-wide:
+To build as your normal user and install the binary, desktop entry, icon and application
+metadata system-wide:
 
 ```bash
-sudo ./scripts/install.sh
+cargo build --release --locked
+sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh
 ```
+
+For a user-only installation that needs no root privileges:
+
+```bash
+PREFIX="$HOME/.local" ./scripts/install.sh
+```
+
+To update a source installation later, pull the new version and run the same installer
+again. It rebuilds the current checkout and replaces the installed files; uninstalling
+first is unnecessary:
+
+```bash
+git pull --ff-only
+cargo build --release --locked
+sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh
+```
+
+Release tarballs work the same way: extract the newer tarball and run its installer.
+A newer `.deb` can be installed over the existing version with
+`sudo apt install ./teral_<version>_amd64.deb`. Teral does not silently update itself.
 
 ## Shortcuts
 

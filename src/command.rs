@@ -12,6 +12,7 @@ use gtk::prelude::*;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use vte::prelude::*;
 
 /// Build the terminal widget used by the console.
@@ -152,6 +153,38 @@ pub fn validate_program(arguments: &[String]) -> Result<(), String> {
         return Err(format!("{program} is not an executable on PATH"));
     }
     Ok(())
+}
+
+/// Force-stop the process group VTE created for a Quick Command.
+///
+/// Killing only the shell can leave a foreground pipeline running after the console
+/// closes. VTE starts the child as the leader of its terminal process group, so a
+/// negative PID addresses the shell and every child attached to that command. If the
+/// group has already disappeared, fall back to the individual PID so a race cannot
+/// turn Force Stop into a no-op.
+pub fn force_stop(pid: glib::Pid) -> Result<(), String> {
+    let pid = pid.0;
+    let group = Command::new("kill")
+        .arg("-KILL")
+        .arg("--")
+        .arg(format!("-{pid}"))
+        .status()
+        .map_err(|error| format!("could not start kill: {error}"))?;
+    if group.success() {
+        return Ok(());
+    }
+
+    let process = Command::new("kill")
+        .arg("-KILL")
+        .arg("--")
+        .arg(pid.to_string())
+        .status()
+        .map_err(|error| format!("could not start kill: {error}"))?;
+    if process.success() {
+        Ok(())
+    } else {
+        Err(format!("kill exited with status {process}"))
+    }
 }
 
 const HISTORY_LIMIT: usize = 100;

@@ -531,10 +531,9 @@ fn connect_window(app: &App) {
                 return glib::Propagation::Stop;
             }
             if let Some(pid) = app.state.running_pid.get() {
-                let _status = std::process::Command::new("kill")
-                    .arg("-KILL")
-                    .arg(pid.0.to_string())
-                    .status();
+                if let Err(error) = crate::command::force_stop(pid) {
+                    eprintln!("Teral: could not force-stop Quick Command: {error}");
+                }
             }
             glib::Propagation::Proceed
         }

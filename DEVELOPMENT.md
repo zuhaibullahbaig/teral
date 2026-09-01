@@ -5,6 +5,7 @@
 Ubuntu and Debian:
 
 ```bash
+# Ubuntu 24.04+ / Debian with GTK 4.12+
 sudo apt update
 sudo apt install -y build-essential pkg-config libgtk-4-dev libvte-2.91-gtk4-dev
 ```
@@ -278,13 +279,17 @@ with a local GVfs FUSE path works.
 
 Builds the release binary with the committed lockfile and writes
 `dist/teral-<version>-<arch>-linux.tar.gz` and `dist/teral_<version>_<arch>.deb`.
-`scripts/install.sh` installs a built binary, its desktop entry and its icon under
-`PREFIX` (default `/usr/local`, `DESTDIR` honoured).
+`scripts/install.sh` installs a built binary, its desktop entry, icon and AppStream
+metadata under `PREFIX` (default `/usr/local`, `DESTDIR` honoured). In a source checkout
+it always rebuilds with the lockfile before installing, so running it again after a pull
+upgrades the installation rather than reusing a stale binary. A release tarball installs
+the checked binary it contains.
 
 System-wide installation requires root:
 
 ```bash
-sudo ./scripts/install.sh
+cargo build --release --locked
+sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh
 ```
 
 For a user-only installation:

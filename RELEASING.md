@@ -31,9 +31,11 @@ the public 0.1 release gate in the local roadmap has passed.
 ## Cutting a release
 
 1. `./scripts/check.sh` — version consistency, formatting, Clippy, tests, and a build.
-2. Bump `version` in `Cargo.toml` and `pkgver` in `packaging/PKGBUILD`.
-3. Run `cargo check` once to update the root package version in `Cargo.lock`, then run
-   `./scripts/check.sh` again. Commit all three version files together.
+2. For the first release, keep the already-reserved `0.1.0` version. For every later
+   release, bump `version` in `Cargo.toml` and `pkgver` in `packaging/PKGBUILD`.
+3. When the version changed, run `cargo check` once to update the root package version in
+   `Cargo.lock`, then run `./scripts/check.sh` again. Commit all three version files
+   together.
 4. Replace `Unreleased` with a `## <version>` section in `CHANGELOG.md`, written for people who use
    Teral rather than for people who wrote it.
 5. Commit: `Release <version>`.
@@ -47,6 +49,10 @@ the public 0.1 release gate in the local roadmap has passed.
 The Release workflow then verifies the tag against `Cargo.toml`, verifies `CHANGELOG.md`
 has a section for it, runs the same checks again, builds, packages and publishes the
 GitHub release with the tarball, the `.deb` and `SHA256SUMS`.
+
+After the GitHub tag exists, run `updpkgsums` in `packaging/` and publish the resulting
+real source checksum with the AUR recipe. The repository's bootstrap `SKIP` must never be
+the checksum shipped to AUR users.
 
 ## What ships
 

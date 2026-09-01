@@ -2,9 +2,9 @@
 
 Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
-## Unreleased
+## 0.1.0
 
-Teral is in active `0.1.0` development. No public release has been published.
+Teral’s first public release.
 
 Current development work is focused on making core filesystem operations, Trash,
 cross-application clipboard behavior, drag and drop, Linux device integration, and
@@ -73,6 +73,10 @@ These items describe the current development foundation, not a stable-release gu
 
 ### Changed
 
+- The source installer now rebuilds on every install or update, while release tarballs
+  continue to install their included checked binary.
+- Packages now install AppStream metadata alongside the desktop entry and application
+  icon, and advertised Arch support is limited to the tested release architecture.
 - Directory enumeration publishes bounded batches and discards stale generations;
   decorative child counts are no longer fetched for every folder tile.
 - Image decoding runs in a bounded worker queue with generation cancellation and bounded
@@ -119,6 +123,8 @@ These items describe the current development foundation, not a stable-release gu
 
 ### Fixed
 
+- Force Stop now terminates the Quick Command process group instead of only its shell,
+  preventing foreground pipelines from being orphaned when the console or window closes.
 - Restoring a file whose name is not valid UTF-8 no longer corrupts the name. Trash
   records were previously decoded through a lossy string conversion.
 - Emptying the trash no longer strands an item permanently when its data cannot be

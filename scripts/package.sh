@@ -27,10 +27,9 @@ mkdir -p "$STAGE"
 cp target/release/teral "$STAGE/"
 cp README.md LICENSE "$STAGE/"
 mkdir -p "$STAGE/packaging" "$STAGE/scripts"
-cp "packaging/$APP_ID.desktop" "packaging/$APP_ID.svg" "$STAGE/packaging/"
+cp "packaging/$APP_ID.desktop" "packaging/$APP_ID.svg" \
+  "packaging/$APP_ID.metainfo.xml" "$STAGE/packaging/"
 cp scripts/install.sh "$STAGE/scripts/"
-# The tarball installs the binary it ships rather than rebuilding it.
-sed -i 's|target/release/teral|teral|' "$STAGE/scripts/install.sh"
 
 tar -czf "$DIST/teral-$VERSION-$ARCH-linux.tar.gz" -C "$DIST" "teral-$VERSION"
 rm -rf "$STAGE"
@@ -48,6 +47,8 @@ if command -v dpkg-deb >/dev/null 2>&1; then
   install -Dm644 "packaging/$APP_ID.desktop" "$DEB_ROOT/usr/share/applications/$APP_ID.desktop"
   install -Dm644 "packaging/$APP_ID.svg" \
     "$DEB_ROOT/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
+  install -Dm644 "packaging/$APP_ID.metainfo.xml" \
+    "$DEB_ROOT/usr/share/metainfo/$APP_ID.metainfo.xml"
   install -Dm644 LICENSE "$DEB_ROOT/usr/share/doc/teral/copyright"
 
   mkdir -p "$DEB_ROOT/DEBIAN"
@@ -57,8 +58,9 @@ Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: $DEB_ARCH
-Depends: libgtk-4-1 (>= 4.12), libvte-2.91-gtk4-0, libglib2.0-0
-Maintainer: Zuhaib Ullah Baig <noreply@users.noreply.github.com>
+Depends: libgtk-4-1 (>= 4.12), libvte-2.91-gtk4-0
+Maintainer: Zuhaib Ullah Baig <zuhaibullahbaig@users.noreply.github.com>
+Homepage: https://github.com/zuhaibullahbaig/teral
 Description: A modern native Linux file manager
  Teral is a fast, information-rich file manager written in Rust with GTK4.
  It adopts the appearance of the desktop it runs on, including the active

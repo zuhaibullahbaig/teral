@@ -433,25 +433,15 @@ pub fn stop_command(app: &App) {
     let Some(pid) = app.state.running_pid.get() else {
         return;
     };
-    let pid = pid.0;
     let weak = Rc::downgrade(app);
     gtk::glib::spawn_future_local(async move {
-        let result = gtk::gio::spawn_blocking(move || {
-            std::process::Command::new("kill")
-                .arg("-KILL")
-                .arg(pid.to_string())
-                .status()
-        })
-        .await;
+        let result = gtk::gio::spawn_blocking(move || command::force_stop(pid)).await;
         let Some(app) = weak.upgrade() else {
             return;
         };
         match result {
-            Ok(Ok(status)) if status.success() => {
+            Ok(Ok(())) => {
                 app.set_message("Force stop requested", false);
-            }
-            Ok(Ok(status)) => {
-                app.show_error(&format!("Could not force stop the command: {status}"));
             }
             Ok(Err(error)) => {
                 app.show_error(&format!("Could not force stop the command: {error}"));

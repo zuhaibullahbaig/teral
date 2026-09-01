@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Install Teral: the binary, its desktop entry and its icon.
+# Install Teral: the binary, desktop entry, icon, AppStream metadata and license.
 #
-#   sudo ./scripts/install.sh            # build and install into /usr/local
+#   sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh
 #   PREFIX=~/.local ./scripts/install.sh # install for one user, no root needed
 #   ./scripts/install.sh --uninstall     # remove what was installed
 #
@@ -15,6 +15,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="$DESTDIR$PREFIX/bin"
 DESKTOP_DIR="$DESTDIR$PREFIX/share/applications"
 ICON_DIR="$DESTDIR$PREFIX/share/icons/hicolor/scalable/apps"
+METAINFO_DIR="$DESTDIR$PREFIX/share/metainfo"
 LICENSE_DIR="$DESTDIR$PREFIX/share/licenses/teral"
 
 APP_ID="dev.zuhaibullahbaig.Teral"
@@ -23,6 +24,7 @@ uninstall() {
   rm -f "$BIN_DIR/teral" \
         "$DESKTOP_DIR/$APP_ID.desktop" \
         "$ICON_DIR/$APP_ID.svg" \
+        "$METAINFO_DIR/$APP_ID.metainfo.xml" \
         "$LICENSE_DIR/LICENSE"
   rmdir "$LICENSE_DIR" 2>/dev/null || true
   echo "Removed Teral from $PREFIX."
@@ -37,26 +39,55 @@ refresh_caches() {
     gtk-update-icon-cache -qtf "$DESTDIR$PREFIX/share/icons/hicolor" 2>/dev/null || true
 }
 
-if [[ "${1:-}" == "--uninstall" ]]; then
-  uninstall
-  exit 0
-fi
+case "${1:-}" in
+  "") ;;
+  --uninstall)
+    uninstall
+    exit 0
+    ;;
+  --help|-h)
+    sed -n '2,8p' "$0" | sed 's/^# *//'
+    exit 0
+    ;;
+  *)
+    echo "usage: $0 [--uninstall]" >&2
+    exit 2
+    ;;
+esac
 
-BINARY="${TERAL_BINARY:-$ROOT/target/release/teral}"
-if [[ ! -x "$BINARY" ]]; then
+if [[ -n "${TERAL_BINARY:-}" ]]; then
+  BINARY="$TERAL_BINARY"
+elif [[ -x "$ROOT/teral" && ! -f "$ROOT/Cargo.toml" ]]; then
+  # A release tarball carries its already-checked binary beside this script.
+  BINARY="$ROOT/teral"
+else
+  # A source checkout is rebuilt every time. Re-running the installer after a pull
+  # must never silently reinstall an older binary left in target/release.
+  if [[ "$EUID" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    echo "error: build Teral as your normal user before installing it system-wide" >&2
+    echo '       cargo build --release --locked' >&2
+    echo '       sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh' >&2
+    exit 1
+  fi
   echo "Building Teral in release mode…"
   (cd "$ROOT" && cargo build --release --locked)
   BINARY="$ROOT/target/release/teral"
 fi
 
+if [[ ! -x "$BINARY" ]]; then
+  echo "error: Teral binary is missing or not executable: $BINARY" >&2
+  exit 1
+fi
+
 install -Dm755 "$BINARY" "$BIN_DIR/teral"
 install -Dm644 "$ROOT/packaging/$APP_ID.desktop" "$DESKTOP_DIR/$APP_ID.desktop"
 install -Dm644 "$ROOT/packaging/$APP_ID.svg" "$ICON_DIR/$APP_ID.svg"
+install -Dm644 "$ROOT/packaging/$APP_ID.metainfo.xml" "$METAINFO_DIR/$APP_ID.metainfo.xml"
 install -Dm644 "$ROOT/LICENSE" "$LICENSE_DIR/LICENSE"
 
 refresh_caches
 
-echo "Installed Teral into $PREFIX."
+echo "Installed Teral into $PREFIX. Re-run this installer to update it."
 if [[ ":$PATH:" != *":$PREFIX/bin:"* ]]; then
   echo "Note: $PREFIX/bin is not on your PATH."
 fi
