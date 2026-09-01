@@ -31,8 +31,9 @@ These items describe the current development foundation, not a stable-release gu
   UTF-8 text/source previews.
 - Bounded Quick Command history with Up/Down navigation, validated shell arguments,
   graceful interrupt, explicit force stop and signal-aware outcome reporting.
-- Recursive Home search with a dedicated header takeover, streamed bounded batches,
-  cancellation, stale-generation protection and per-tab session restoration.
+- Recursive Home search with a rounded header takeover, scroll-driven bounded result
+  pages, cancellation, previous-directory restoration, stale-generation protection and
+  per-tab session restoration.
 - Bounded first-page PDF previews, audio/video metadata, and first-frame video previews
   through optional desktop utilities invoked directly without a shell.
 - Asynchronous mount, unmount and eject controls, with live device removal handling.

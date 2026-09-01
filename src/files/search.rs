@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 
-const RESULT_BATCH: usize = 128;
+const RESULT_BATCH: usize = 48;
 
 #[derive(Debug)]
 pub enum SearchEvent {

@@ -35,6 +35,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, mpsc};
 
+const GLOBAL_SEARCH_PAGE: usize = 96;
+const GLOBAL_SEARCH_BUFFERED_BATCHES: usize = 4;
+
 pub use window::build_window_at;
 
 /// Which file view is showing.
@@ -160,6 +163,7 @@ pub struct State {
     pub tag_view: RefCell<Option<String>>,
     /// Root and query of the recursive search currently displayed.
     pub global_search: RefCell<Option<(PathBuf, String)>>,
+    pub global_search_return: RefCell<Option<PathBuf>>,
     pub global_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
     pub global_search_receiver:
         RefCell<Option<mpsc::Receiver<crate::files::search::SearchEvent>>>,
@@ -167,6 +171,7 @@ pub struct State {
     pub global_search_scan_running: Cell<bool>,
     pub global_search_finished: Cell<bool>,
     pub global_search_unreadable: Cell<usize>,
+    pub global_search_visible_limit: Cell<usize>,
     pub global_search_source: Cell<Option<glib::SourceId>>,
     /// True while a directory read is in flight, so a filesystem event arriving in the
     /// meantime cannot restart the view and cancel the navigation already under way.
@@ -264,7 +269,7 @@ impl AppInner {
 
     /// Navigate to `path`, recording the current directory in the back history.
     pub fn navigate(self: &App, path: &Path) {
-        if *self.state.current.borrow() == path {
+        if self.state.global_search.borrow().is_none() && *self.state.current.borrow() == path {
             return;
         }
         let previous = self.current_dir();
@@ -312,6 +317,8 @@ impl AppInner {
     /// Show every file carrying `tag` instead of a directory.
     pub fn show_tag(self: &App, tag: &str) {
         self.cancel_global_search();
+        self.state.global_search_return.borrow_mut().take();
+        header::hide_global_search_controls(self);
         *self.state.tag_view.borrow_mut() = Some(tag.to_owned());
 
         let app = Rc::clone(self);
@@ -355,8 +362,15 @@ impl AppInner {
             return;
         }
 
+        if self.state.global_search.borrow().is_none()
+            && self.state.global_search_return.borrow().is_none()
+        {
+            *self.state.global_search_return.borrow_mut() = Some(self.current_dir());
+        }
         self.cancel_global_search();
         search::close(self);
+        header::show_global_search_controls(self);
+        self.widgets.global_search_entry.set_text(query);
         let root = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         *self.state.tag_view.borrow_mut() = None;
         *self.state.global_search.borrow_mut() = Some((root.clone(), query.to_owned()));
@@ -380,6 +394,9 @@ impl AppInner {
         self.state.selection.unselect_all();
         self.state.global_search_finished.set(false);
         self.state.global_search_unreadable.set(0);
+        self.state
+            .global_search_visible_limit
+            .set(GLOBAL_SEARCH_PAGE);
         self.state.global_search_pending.borrow_mut().clear();
         self.refresh_chrome();
         self.update_counts();
@@ -414,12 +431,18 @@ impl AppInner {
                 return glib::ControlFlow::Break;
             }
 
+            let capacity = GLOBAL_SEARCH_BUFFERED_BATCHES
+                .saturating_sub(app.state.global_search_pending.borrow().len());
             let events = app
                 .state
                 .global_search_receiver
                 .borrow()
                 .as_ref()
-                .map(|receiver| receiver.try_iter().collect::<Vec<_>>())
+                .map(|receiver| {
+                    (0..capacity)
+                        .filter_map(|_| receiver.try_recv().ok())
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             for event in events {
                 match event {
@@ -452,6 +475,10 @@ impl AppInner {
         if self.state.global_search_scan_running.get() {
             return;
         }
+        if self.state.all.borrow().len() >= self.state.global_search_visible_limit.get() {
+            self.set_message("Scroll down to load more results", false);
+            return;
+        }
         let Some(paths) = self.state.global_search_pending.borrow_mut().pop_front() else {
             return;
         };
@@ -475,9 +502,44 @@ impl AppInner {
                 .store
                 .splice(app.state.store.n_items(), 0, &objects);
             app.state.global_search_scan_running.set(false);
+            if app.state.all.borrow().len() >= GLOBAL_SEARCH_PAGE {
+                app.state.loading.set(false);
+            }
             app.update_counts();
             app.pump_global_search(generation);
         });
+    }
+
+    /// Allow another bounded page of recursive-search results to enter the GTK model.
+    pub fn load_more_global_search(self: &App) {
+        if self.state.global_search.borrow().is_none() {
+            return;
+        }
+        if self.state.global_search_scan_running.get()
+            || self.state.all.borrow().len() < self.state.global_search_visible_limit.get()
+        {
+            return;
+        }
+        let next = self
+            .state
+            .global_search_visible_limit
+            .get()
+            .saturating_add(GLOBAL_SEARCH_PAGE);
+        self.state.global_search_visible_limit.set(next);
+        self.set_message("Loading more results…", false);
+        self.pump_global_search(self.state.generation.get());
+    }
+
+    /// Leave recursive search and restore the directory that was visible before it.
+    pub fn exit_global_search(self: &App) {
+        let target = self
+            .state
+            .global_search_return
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        self.cancel_global_search();
+        self.load(&target, None);
     }
 
     fn finish_global_search(self: &App) {
@@ -513,6 +575,8 @@ impl AppInner {
     /// Read a directory asynchronously and swap it in when it arrives.
     pub fn load(self: &App, path: &Path, history: Option<HistoryStep>) {
         self.cancel_global_search();
+        self.state.global_search_return.borrow_mut().take();
+        header::hide_global_search_controls(self);
         *self.state.tag_view.borrow_mut() = None;
         if let Some(tab) = self
             .state

@@ -30,7 +30,6 @@ pub struct Widgets {
     pub global_search_button: gtk::Button,
     pub global_search_box: gtk::Box,
     pub global_search_entry: gtk::SearchEntry,
-    pub global_search_submit: gtk::Button,
     pub global_search_close: gtk::Button,
     pub back: gtk::Button,
     pub forward: gtk::Button,
@@ -220,7 +219,6 @@ pub fn build_window_at(
         global_search_button: head.global_search_button,
         global_search_box: head.global_search_box,
         global_search_entry: head.global_search_entry,
-        global_search_submit: head.global_search_submit,
         global_search_close: head.global_search_close,
         back: head.back,
         forward: head.forward,
@@ -332,12 +330,14 @@ pub fn build_window_at(
         console_height: Cell::new(statusbar::CONSOLE_HEIGHT),
         tag_view: RefCell::new(None),
         global_search: RefCell::new(None),
+        global_search_return: RefCell::new(None),
         global_search_cancel: RefCell::new(None),
         global_search_receiver: RefCell::new(None),
         global_search_pending: RefCell::new(std::collections::VecDeque::new()),
         global_search_scan_running: Cell::new(false),
         global_search_finished: Cell::new(false),
         global_search_unreadable: Cell::new(0),
+        global_search_visible_limit: Cell::new(96),
         global_search_source: Cell::new(None),
         loading: Cell::new(false),
         pending_selection: RefCell::new(None),
@@ -378,6 +378,7 @@ pub fn build_window_at(
     statusbar::connect(&app);
     tabs::connect(&app);
     connect_window(&app);
+    connect_search_paging(&app);
     watch_configuration(&app);
     watch_desktop_appearance(&app);
 
@@ -639,6 +640,26 @@ fn connect_window(app: &App) {
     app.widgets.view_stack.add_controller(drop);
 }
 
+fn connect_search_paging(app: &App) {
+    for adjustment in [
+        app.widgets.grid_scroller.vadjustment(),
+        app.widgets.list_scroller.vadjustment(),
+    ] {
+        adjustment.connect_value_changed({
+            let app = Rc::clone(app);
+            move |adjustment| {
+                if app.state.global_search.borrow().is_none() {
+                    return;
+                }
+                let remaining = adjustment.upper() - adjustment.value() - adjustment.page_size();
+                if remaining <= adjustment.page_size() * 0.35 + 120.0 {
+                    app.load_more_global_search();
+                }
+            }
+        });
+    }
+}
+
 fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
     let control = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
     let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
@@ -648,8 +669,16 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         gdk::Key::Left if alt => app.go_back(),
         gdk::Key::Right if alt => app.go_forward(),
         gdk::Key::BackSpace => app.go_up(),
-        gdk::Key::l | gdk::Key::L if control => header::show_location(app),
+        gdk::Key::l | gdk::Key::L if control => {
+            if app.state.global_search.borrow().is_some() {
+                header::close_global_search(app);
+            }
+            header::show_location(app);
+        }
         gdk::Key::f | gdk::Key::F if control && shift => header::open_global_search(app),
+        gdk::Key::f | gdk::Key::F if control && app.state.global_search.borrow().is_some() => {
+            header::open_global_search(app);
+        }
         gdk::Key::f | gdk::Key::F if control => search::open(app),
         gdk::Key::h | gdk::Key::H if control => toggle_hidden(app),
         gdk::Key::k | gdk::Key::K if control => {
@@ -687,6 +716,9 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         gdk::Key::Delete if shift => delete_permanently(app),
         gdk::Key::Delete => trash_selection(app),
         gdk::Key::_0 if control => app.reset_zoom(),
+        gdk::Key::Escape if app.state.global_search.borrow().is_some() => {
+            header::close_global_search(app);
+        }
         gdk::Key::Escape if search::is_open(app) => search::close(app),
         gdk::Key::Escape => {
             let cancelled = app

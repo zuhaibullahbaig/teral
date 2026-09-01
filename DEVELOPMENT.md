@@ -251,9 +251,10 @@ these checks. Never use a real profile containing valuable tags, bookmarks or se
 - [ ] Preview UTF-8 text, Markdown, source, binary, malformed UTF-8, oversized and
   disappearing files. Confirm content is inert and no HTML, script or resource executes.
 - [ ] Search Home from the far-left header control. Confirm the normal header is hidden
-  only while entering the query, results stream in, Escape restores the original header,
-  Ctrl+F still filters one folder, symlink directories are not followed, and leaving the
-  result view cancels stale work.
+  while the centered rounded search field is active, the first bounded page appears,
+  scrolling near the end loads another page, and Close or Escape cancels the search and
+  restores the previous directory. Confirm Ctrl+F still filters one folder, symlink
+  directories are not followed, and leaving the result view cancels stale work.
 - [ ] Preview a normal, encrypted, malformed, oversized and disappearing PDF, plus audio
   and video with missing or malformed metadata. Remove each provider from `PATH`, test a
   slow input, and confirm errors are bounded and the window remains responsive.

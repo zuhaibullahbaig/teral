@@ -142,8 +142,10 @@ breaking the window.
 - Sidebar devices appear and disappear live and support mount, unmount and eject.
   Mounted GIO/GVfs locations are browsable when the desktop exposes a local FUSE path;
   GIO locations with no local path remain outside the local-file operation boundary.
-- The left header search recursively searches Home without following directory symlinks
-  or crossing filesystem boundaries. Ctrl+F remains the fast current-folder filter.
+- The rounded left-header search recursively searches Home without following directory
+  symlinks or crossing filesystem boundaries. Results enter the view in bounded pages as
+  you scroll, and closing search restores the previous directory. Ctrl+F remains the
+  fast current-folder filter.
 - Preview supports bounded images, UTF-8 text/source, first-page PDF rendering, media
   metadata, and a bounded first-frame video preview. External preview providers are
   optional and content is never executed or autoplayed.

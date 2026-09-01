@@ -17,7 +17,6 @@ pub struct Header {
     pub global_search_button: gtk::Button,
     pub global_search_box: gtk::Box,
     pub global_search_entry: gtk::SearchEntry,
-    pub global_search_submit: gtk::Button,
     pub global_search_close: gtk::Button,
     pub back: gtk::Button,
     pub forward: gtk::Button,
@@ -48,17 +47,15 @@ pub fn build(search: &gtk::Revealer) -> Header {
     );
     let global_search_entry = gtk::SearchEntry::new();
     global_search_entry.add_css_class("teral-search-entry");
-    global_search_entry.set_width_chars(38);
-    global_search_entry.set_max_width_chars(64);
+    global_search_entry.set_width_chars(42);
+    global_search_entry.set_max_width_chars(56);
     global_search_entry.set_placeholder_text(Some("Search Home and subfolders"));
-    let global_search_submit = gtk::Button::with_label("Search");
-    global_search_submit.add_css_class("suggested-action");
     let global_search_close = icon_button(icons::ui(icons::names::CLOSE), "Close global search");
-    let global_search_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let global_search_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    global_search_box.add_css_class("teral-search-field");
     global_search_box.set_halign(gtk::Align::Center);
     global_search_box.set_valign(gtk::Align::Center);
     global_search_box.append(&global_search_entry);
-    global_search_box.append(&global_search_submit);
     global_search_box.append(&global_search_close);
     global_search_box.set_visible(false);
 
@@ -128,7 +125,6 @@ pub fn build(search: &gtk::Revealer) -> Header {
         global_search_button,
         global_search_box,
         global_search_entry,
-        global_search_submit,
         global_search_close,
         back,
         forward,
@@ -155,10 +151,6 @@ pub fn connect(app: &App) {
     widgets.global_search_close.connect_clicked({
         let app = Rc::clone(app);
         move |_| close_global_search(&app)
-    });
-    widgets.global_search_submit.connect_clicked({
-        let app = Rc::clone(app);
-        move |_| submit_global_search(&app)
     });
     widgets.global_search_entry.connect_activate({
         let app = Rc::clone(app);
@@ -281,16 +273,23 @@ pub fn connect(app: &App) {
 }
 
 pub fn open_global_search(app: &App) {
-    set_normal_controls_visible(app, false);
-    app.widgets.global_search_box.set_visible(true);
+    show_global_search_controls(app);
     app.widgets.global_search_entry.grab_focus();
     app.widgets.global_search_entry.select_region(0, -1);
 }
 
 pub fn close_global_search(app: &App) {
+    hide_global_search_controls(app);
+    let showing_results = app.state.global_search.borrow().is_some();
+    if showing_results {
+        app.exit_global_search();
+    }
+    super::window::focus_file_view(app);
+}
+
+pub fn hide_global_search_controls(app: &App) {
     app.widgets.global_search_box.set_visible(false);
     set_normal_controls_visible(app, true);
-    super::window::focus_file_view(app);
 }
 
 fn submit_global_search(app: &App) {
@@ -300,8 +299,12 @@ fn submit_global_search(app: &App) {
         app.widgets.global_search_entry.grab_focus();
         return;
     }
-    close_global_search(app);
     app.show_global_search(&query);
+}
+
+pub fn show_global_search_controls(app: &App) {
+    set_normal_controls_visible(app, false);
+    app.widgets.global_search_box.set_visible(true);
 }
 
 fn set_normal_controls_visible(app: &App, visible: bool) {
