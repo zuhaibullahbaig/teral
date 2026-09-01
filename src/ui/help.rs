@@ -23,6 +23,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
             ("Ctrl+I", "Show or hide the details panel"),
             ("Ctrl+F", "Search this folder"),
+            ("Ctrl+Shift+F", "Search Home and subfolders"),
         ],
     ),
     (

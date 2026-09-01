@@ -122,7 +122,17 @@ pub fn connect(app: &App) {
     app.state.volume_handlers.borrow_mut().push(handler);
     let handler = monitor.connect_mount_removed({
         let app = Rc::downgrade(app);
-        move |_, _| devices_changed(&app)
+        move |_, mount| {
+            if let Some(current) = app.upgrade()
+                && let Some(root) = mount.root().path()
+                && current.current_dir().starts_with(&root)
+            {
+                let fallback = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                current.navigate(&fallback);
+                current.set_message("The device was disconnected; showing Home", false);
+            }
+            devices_changed(&app);
+        }
     });
     app.state.volume_handlers.borrow_mut().push(handler);
     let handler = monitor.connect_mount_changed({
@@ -536,7 +546,11 @@ fn device_row(app: &App, device: &Device) -> gtk::Button {
             move |_| app.navigate(&target)
         });
 
-        attach_context_menu(app, &button, target.clone());
+        if device.mount.is_some() || device.volume.is_some() {
+            attach_device_menu(app, &button, device, target.clone());
+        } else {
+            attach_context_menu(app, &button, target.clone());
+        }
         attach_drop_target(app, &button, target.clone());
 
         // Capacity is queried asynchronously: a slow mount must not stall the sidebar.
@@ -555,6 +569,7 @@ fn device_row(app: &App, device: &Device) -> gtk::Button {
             capacity.set_visible(true);
         });
     } else if let Some(volume) = device.volume.clone() {
+        let ejectable_volume = volume.clone();
         button.set_tooltip_text(Some(&format!("Mount {}", device.label)));
         button.set_sensitive(volume.can_mount());
         button.connect_clicked({
@@ -587,9 +602,180 @@ fn device_row(app: &App, device: &Device) -> gtk::Button {
                 });
             }
         });
+        if ejectable_volume.can_eject() {
+            attach_unmounted_eject(app, &button, &ejectable_volume);
+        }
     }
 
     button
+}
+
+fn attach_unmounted_eject(app: &App, button: &gtk::Button, volume: &gio::Volume) {
+    let popover = gtk::Popover::new();
+    popover.add_css_class("teral-popover");
+    popover.set_parent(button);
+    popover.set_has_arrow(false);
+    let eject = gtk::Button::with_label("Eject");
+    eject.add_css_class("teral-menu-item");
+    popover.set_child(Some(&eject));
+
+    eject.connect_clicked({
+        let app = Rc::clone(app);
+        let popover = popover.clone();
+        let volume = volume.clone();
+        move |button| {
+            popover.popdown();
+            button.set_sensitive(false);
+            app.set_message("Ejecting device…", false);
+            let operation = gtk::MountOperation::new(Some(&app.widgets.window));
+            let future = volume.eject_with_operation_future(
+                gio::MountUnmountFlags::NONE,
+                Some(&operation),
+            );
+            let app = Rc::clone(&app);
+            let button = button.clone();
+            glib::spawn_future_local(async move {
+                match future.await {
+                    Ok(()) => {
+                        app.set_message("Device ejected", false);
+                        rebuild_devices(&app);
+                    }
+                    Err(error) => {
+                        button.set_sensitive(true);
+                        app.show_error(&format!("Could not eject the device: {error}"));
+                    }
+                }
+            });
+        }
+    });
+
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
+    gesture.connect_pressed(move |_, _, x, y| {
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.popup();
+    });
+    button.add_controller(gesture);
+}
+
+fn attach_device_menu(app: &App, button: &gtk::Button, device: &Device, root: PathBuf) {
+    let popover = gtk::Popover::new();
+    popover.add_css_class("teral-popover");
+    popover.set_parent(button);
+    popover.set_has_arrow(false);
+    popover.set_halign(gtk::Align::Start);
+    popover.set_position(gtk::PositionType::Bottom);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    content.set_width_request(180);
+    let unmount = gtk::Button::with_label("Unmount");
+    unmount.add_css_class("teral-menu-item");
+    unmount.set_halign(gtk::Align::Fill);
+    let eject = gtk::Button::with_label("Eject");
+    eject.add_css_class("teral-menu-item");
+    eject.set_halign(gtk::Align::Fill);
+    let can_unmount = device.mount.as_ref().is_some_and(|mount| mount.can_unmount());
+    let can_eject = device.mount.as_ref().is_some_and(|mount| mount.can_eject())
+        || device.volume.as_ref().is_some_and(|volume| volume.can_eject());
+    unmount.set_visible(can_unmount);
+    eject.set_visible(can_eject);
+    content.append(&unmount);
+    content.append(&eject);
+    popover.set_child(Some(&content));
+
+    if let Some(mount) = device.mount.clone() {
+        unmount.connect_clicked({
+            let mount = mount.clone();
+            let app = Rc::clone(app);
+            let popover = popover.clone();
+            let root = root.clone();
+            move |button| {
+                popover.popdown();
+                button.set_sensitive(false);
+                app.set_message("Unmounting device…", false);
+                let operation = gtk::MountOperation::new(Some(&app.widgets.window));
+                let future = mount.unmount_with_operation_future(
+                    gio::MountUnmountFlags::NONE,
+                    Some(&operation),
+                );
+                let app = Rc::clone(&app);
+                let root = root.clone();
+                let button = button.clone();
+                glib::spawn_future_local(async move {
+                    match future.await {
+                        Ok(()) => {
+                            app.set_message("Device unmounted", false);
+                            leave_removed_mount(&app, &root);
+                            rebuild_devices(&app);
+                        }
+                        Err(error) => {
+                            button.set_sensitive(true);
+                            app.show_error(&format!("Could not unmount the device: {error}"));
+                        }
+                    }
+                });
+            }
+        });
+
+        eject.connect_clicked({
+            let mount = mount.clone();
+            let app = Rc::clone(app);
+            let popover = popover.clone();
+            let root = root.clone();
+            let volume = device.volume.clone();
+            move |button| {
+                popover.popdown();
+                button.set_sensitive(false);
+                app.set_message("Ejecting device…", false);
+                let operation = gtk::MountOperation::new(Some(&app.widgets.window));
+                let future = if mount.can_eject() {
+                    mount.eject_with_operation_future(
+                        gio::MountUnmountFlags::NONE,
+                        Some(&operation),
+                    )
+                } else if let Some(volume) = volume.as_ref() {
+                    volume.eject_with_operation_future(
+                        gio::MountUnmountFlags::NONE,
+                        Some(&operation),
+                    )
+                } else {
+                    button.set_sensitive(true);
+                    return;
+                };
+                let app = Rc::clone(&app);
+                let root = root.clone();
+                let button = button.clone();
+                glib::spawn_future_local(async move {
+                    match future.await {
+                        Ok(()) => {
+                            app.set_message("Device ejected", false);
+                            leave_removed_mount(&app, &root);
+                            rebuild_devices(&app);
+                        }
+                        Err(error) => {
+                            button.set_sensitive(true);
+                            app.show_error(&format!("Could not eject the device: {error}"));
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
+    gesture.connect_pressed(move |_, _, x, y| {
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.popup();
+    });
+    button.add_controller(gesture);
+}
+
+fn leave_removed_mount(app: &App, root: &Path) {
+    if app.current_dir().starts_with(root) {
+        let fallback = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        app.navigate(&fallback);
+    }
 }
 
 /// Sidebar rows accept dropped files, so a folder can be filed away without opening it.

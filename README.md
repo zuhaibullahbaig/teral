@@ -33,6 +33,9 @@ browsing. It is one application for Ubuntu, Arch, Omarchy and other Linux deskto
 - Appearance that follows your desktop, with first-class support for Omarchy themes.
 - Atomic settings and metadata writes, and restoration of tabs and navigation history.
 - Atomic Create File, a local permissions editor, and inert bounded text/source previews.
+- Recursive, cancellable Home search with streamed results, bounded first-page PDF
+  previews, and bounded audio/video metadata and video-frame previews.
+- Live mount, unmount and eject controls for removable devices.
 
 ## Install
 
@@ -46,6 +49,10 @@ sudo apt install -y build-essential pkg-config libgtk-4-dev libvte-2.91-gtk4-dev
 # Arch / Omarchy
 sudo pacman -S --needed base-devel gtk4 vte4 pkgconf
 ```
+
+PDF and media previews use the standard `pdftoppm`, `ffprobe`, and `ffmpeg` utilities
+when installed (`poppler-utils ffmpeg` on Ubuntu; `poppler ffmpeg` on Arch). Teral stays
+usable without them and explains which preview provider is unavailable.
 
 Then:
 
@@ -69,6 +76,7 @@ Backspace           Parent folder
 Alt+Left/Right      Back / Forward
 Ctrl+L              Edit the location
 Ctrl+F              Filter this folder
+Ctrl+Shift+F        Search Home and subfolders
 Ctrl+H              Show hidden files
 Ctrl+A              Select all
 Ctrl+C / Ctrl+X     Copy / Cut
@@ -131,12 +139,14 @@ breaking the window.
 
 ## Current boundaries
 
-- Sidebar devices include mountable volumes and mounted locations with local paths.
-  GIO locations that provide no local path are detected but cannot yet be browsed.
-- Search filters the folder being viewed; it is not a recursive or indexed search.
-- Preview supports bounded images and UTF-8 text/source files. PDF rendering and
-  audio/video probing are intentionally absent because no safe renderer or media probe
-  is currently part of the dependency set.
+- Sidebar devices appear and disappear live and support mount, unmount and eject.
+  Mounted GIO/GVfs locations are browsable when the desktop exposes a local FUSE path;
+  GIO locations with no local path remain outside the local-file operation boundary.
+- The left header search recursively searches Home without following directory symlinks
+  or crossing filesystem boundaries. Ctrl+F remains the fast current-folder filter.
+- Preview supports bounded images, UTF-8 text/source, first-page PDF rendering, media
+  metadata, and a bounded first-frame video preview. External preview providers are
+  optional and content is never executed or autoplayed.
 - Hardware, Wayland interoperability, accessibility, high-contrast, large-directory and
   Ubuntu/Omarchy visual checks remain manual development checks.
 

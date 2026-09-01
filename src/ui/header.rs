@@ -13,6 +13,12 @@ use std::rc::Rc;
 /// Widgets that make up the top bar.
 pub struct Header {
     pub bar: gtk::HeaderBar,
+    pub brand: gtk::Label,
+    pub global_search_button: gtk::Button,
+    pub global_search_box: gtk::Box,
+    pub global_search_entry: gtk::SearchEntry,
+    pub global_search_submit: gtk::Button,
+    pub global_search_close: gtk::Button,
     pub back: gtk::Button,
     pub forward: gtk::Button,
     pub up: gtk::Button,
@@ -20,6 +26,7 @@ pub struct Header {
     pub path_stack: gtk::Stack,
     pub location: gtk::Entry,
     pub search_button: gtk::ToggleButton,
+    pub view_group: gtk::Box,
     pub grid_toggle: gtk::ToggleButton,
     pub list_toggle: gtk::ToggleButton,
     pub sort_button: gtk::MenuButton,
@@ -34,6 +41,26 @@ pub fn build(search: &gtk::Revealer) -> Header {
     let brand = super::brand::build();
     brand.set_margin_start(4);
     brand.set_margin_end(14);
+
+    let global_search_button = icon_button(
+        icons::ui(icons::names::SEARCH),
+        "Search Home (Ctrl+Shift+F)",
+    );
+    let global_search_entry = gtk::SearchEntry::new();
+    global_search_entry.add_css_class("teral-search-entry");
+    global_search_entry.set_width_chars(38);
+    global_search_entry.set_max_width_chars(64);
+    global_search_entry.set_placeholder_text(Some("Search Home and subfolders"));
+    let global_search_submit = gtk::Button::with_label("Search");
+    global_search_submit.add_css_class("suggested-action");
+    let global_search_close = icon_button(icons::ui(icons::names::CLOSE), "Close global search");
+    let global_search_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    global_search_box.set_halign(gtk::Align::Center);
+    global_search_box.set_valign(gtk::Align::Center);
+    global_search_box.append(&global_search_entry);
+    global_search_box.append(&global_search_submit);
+    global_search_box.append(&global_search_close);
+    global_search_box.set_visible(false);
 
     let back = icon_button(icons::ui(icons::names::BACK), "Back (Alt+Left)");
     let forward = icon_button(icons::ui(icons::names::FORWARD), "Forward (Alt+Right)");
@@ -79,6 +106,7 @@ pub fn build(search: &gtk::Revealer) -> Header {
     let sort_button = icon_menu_button(icons::ui(icons::names::SORT), "Sorting and visibility");
     let menu_button = icon_menu_button(icons::ui(icons::names::MENU), "Folder actions");
 
+    bar.pack_start(&global_search_button);
     bar.pack_start(&brand);
     bar.pack_start(&back);
     bar.pack_start(&forward);
@@ -92,10 +120,16 @@ pub fn build(search: &gtk::Revealer) -> Header {
     bar.pack_end(search);
 
     // The window title is carried by the breadcrumbs, not by a second heading.
-    bar.set_title_widget(Some(&gtk::Label::new(None)));
+    bar.set_title_widget(Some(&global_search_box));
 
     Header {
         bar,
+        brand,
+        global_search_button,
+        global_search_box,
+        global_search_entry,
+        global_search_submit,
+        global_search_close,
         back,
         forward,
         up,
@@ -103,6 +137,7 @@ pub fn build(search: &gtk::Revealer) -> Header {
         path_stack,
         location,
         search_button,
+        view_group,
         grid_toggle,
         list_toggle,
         sort_button,
@@ -112,6 +147,36 @@ pub fn build(search: &gtk::Revealer) -> Header {
 
 pub fn connect(app: &App) {
     let widgets = &app.widgets;
+
+    widgets.global_search_button.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| open_global_search(&app)
+    });
+    widgets.global_search_close.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| close_global_search(&app)
+    });
+    widgets.global_search_submit.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| submit_global_search(&app)
+    });
+    widgets.global_search_entry.connect_activate({
+        let app = Rc::clone(app);
+        move |_| submit_global_search(&app)
+    });
+    let global_keys = gtk::EventControllerKey::new();
+    global_keys.connect_key_pressed({
+        let app = Rc::clone(app);
+        move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                close_global_search(&app);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        }
+    });
+    widgets.global_search_entry.add_controller(global_keys);
 
     widgets.back.connect_clicked({
         let app = Rc::clone(app);
@@ -213,6 +278,61 @@ pub fn connect(app: &App) {
 
     widgets.sort_button.set_popover(Some(&sort_popover(app)));
     widgets.menu_button.set_popover(Some(&folder_popover(app)));
+}
+
+pub fn open_global_search(app: &App) {
+    set_normal_controls_visible(app, false);
+    app.widgets.global_search_box.set_visible(true);
+    app.widgets.global_search_entry.grab_focus();
+    app.widgets.global_search_entry.select_region(0, -1);
+}
+
+pub fn close_global_search(app: &App) {
+    app.widgets.global_search_box.set_visible(false);
+    set_normal_controls_visible(app, true);
+    super::window::focus_file_view(app);
+}
+
+fn submit_global_search(app: &App) {
+    let query = app.widgets.global_search_entry.text().to_string();
+    if query.trim().is_empty() {
+        app.set_message("Enter a name to search for", false);
+        app.widgets.global_search_entry.grab_focus();
+        return;
+    }
+    close_global_search(app);
+    app.show_global_search(&query);
+}
+
+fn set_normal_controls_visible(app: &App, visible: bool) {
+    for widget in [
+        app.widgets.global_search_button.upcast_ref::<gtk::Widget>(),
+        app.widgets.brand.upcast_ref::<gtk::Widget>(),
+        app.widgets.back.upcast_ref::<gtk::Widget>(),
+        app.widgets.forward.upcast_ref::<gtk::Widget>(),
+        app.widgets.up.upcast_ref::<gtk::Widget>(),
+        app.widgets.path_stack.upcast_ref::<gtk::Widget>(),
+        app.widgets.search.root.upcast_ref::<gtk::Widget>(),
+        app.widgets.search_button.upcast_ref::<gtk::Widget>(),
+        app.widgets.view_group.upcast_ref::<gtk::Widget>(),
+        app.widgets.sort_button.upcast_ref::<gtk::Widget>(),
+        app.widgets.menu_button.upcast_ref::<gtk::Widget>(),
+    ] {
+        widget.set_visible(visible);
+    }
+}
+
+/// Replace breadcrumbs with the root and query of a recursive search.
+pub fn show_search_crumb(app: &App, query: &str) {
+    let crumbs = &app.widgets.crumbs;
+    while let Some(child) = crumbs.first_child() {
+        crumbs.remove(&child);
+    }
+    let button = gtk::Button::with_label(&format!("Search: {query}"));
+    button.add_css_class("teral-crumb");
+    button.add_css_class("current");
+    button.set_has_frame(false);
+    crumbs.append(&button);
 }
 
 /// Swap the breadcrumbs for an editable path entry (Ctrl+L).

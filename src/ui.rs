@@ -28,8 +28,12 @@ use gtk::glib;
 use gtk::pango;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, mpsc};
 
 pub use window::build_window_at;
 
@@ -64,6 +68,8 @@ pub enum Location {
     Trash(PathBuf),
     /// Every file carrying one tag, gathered from across the filesystem.
     Tag(String),
+    /// Results from a recursive search rooted in one local directory.
+    Search { root: PathBuf, query: String },
 }
 
 impl Location {
@@ -74,13 +80,13 @@ impl Location {
     pub fn working_directory(&self) -> Option<&Path> {
         match self {
             Self::Directory(path) => Some(path),
-            Self::Trash(_) | Self::Tag(_) => None,
+            Self::Trash(_) | Self::Tag(_) | Self::Search { .. } => None,
         }
     }
 
     /// True when the view gathers entries rather than showing one folder's contents.
     pub const fn is_virtual(&self) -> bool {
-        matches!(self, Self::Tag(_))
+        matches!(self, Self::Tag(_) | Self::Search { .. })
     }
 
     /// True when the view's items are deleted files awaiting restore or removal.
@@ -152,6 +158,16 @@ pub struct State {
     pub console_height: Cell<i32>,
     /// Set while the file view is showing everything carrying one tag.
     pub tag_view: RefCell<Option<String>>,
+    /// Root and query of the recursive search currently displayed.
+    pub global_search: RefCell<Option<(PathBuf, String)>>,
+    pub global_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
+    pub global_search_receiver:
+        RefCell<Option<mpsc::Receiver<crate::files::search::SearchEvent>>>,
+    pub global_search_pending: RefCell<VecDeque<Vec<PathBuf>>>,
+    pub global_search_scan_running: Cell<bool>,
+    pub global_search_finished: Cell<bool>,
+    pub global_search_unreadable: Cell<usize>,
+    pub global_search_source: Cell<Option<glib::SourceId>>,
     /// True while a directory read is in flight, so a filesystem event arriving in the
     /// meantime cannot restart the view and cancel the navigation already under way.
     pub loading: Cell<bool>,
@@ -176,6 +192,7 @@ pub struct Tab {
     pub back: Vec<PathBuf>,
     pub forward: Vec<PathBuf>,
     pub tag: Option<String>,
+    pub search: Option<String>,
 }
 
 impl Tab {
@@ -185,6 +202,7 @@ impl Tab {
             back: Vec::new(),
             forward: Vec::new(),
             tag: None,
+            search: None,
         }
     }
 }
@@ -208,6 +226,9 @@ impl AppInner {
 
     /// What the view is currently showing.
     pub fn location(&self) -> Location {
+        if let Some((root, query)) = self.state.global_search.borrow().clone() {
+            return Location::Search { root, query };
+        }
         if let Some(tag) = self.state.tag_view.borrow().clone() {
             return Location::Tag(tag);
         }
@@ -273,6 +294,10 @@ impl AppInner {
 
     /// Re-read whatever the view is showing, keeping history and selection intact.
     pub fn reload(self: &App) {
+        if let Some((_, query)) = self.state.global_search.borrow().clone() {
+            self.show_global_search(&query);
+            return;
+        }
         // The borrow is released before anything is called: `show_tag` takes the same
         // cell mutably, and a live shared borrow here would abort the process.
         let tag = self.state.tag_view.borrow().clone();
@@ -286,6 +311,7 @@ impl AppInner {
 
     /// Show every file carrying `tag` instead of a directory.
     pub fn show_tag(self: &App, tag: &str) {
+        self.cancel_global_search();
         *self.state.tag_view.borrow_mut() = Some(tag.to_owned());
 
         let app = Rc::clone(self);
@@ -321,8 +347,172 @@ impl AppInner {
         });
     }
 
+    /// Recursively search the user's home directory, publishing bounded result batches.
+    pub fn show_global_search(self: &App, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            self.set_message("Enter a name to search for", false);
+            return;
+        }
+
+        self.cancel_global_search();
+        search::close(self);
+        let root = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        *self.state.tag_view.borrow_mut() = None;
+        *self.state.global_search.borrow_mut() = Some((root.clone(), query.to_owned()));
+        if let Some(tab) = self
+            .state
+            .tabs
+            .borrow_mut()
+            .get_mut(self.state.active_tab.get())
+        {
+            tab.path = root.clone();
+            tab.tag = None;
+            tab.search = Some(query.to_owned());
+        }
+
+        let generation = self.state.generation.get().wrapping_add(1);
+        self.state.generation.set(generation);
+        self.state.loading.set(true);
+        self.state.directory_monitor.borrow_mut().take();
+        self.state.store.remove_all();
+        self.state.all.borrow_mut().clear();
+        self.state.selection.unselect_all();
+        self.state.global_search_finished.set(false);
+        self.state.global_search_unreadable.set(0);
+        self.state.global_search_pending.borrow_mut().clear();
+        self.refresh_chrome();
+        self.update_counts();
+        self.set_message("Searching Home…", false);
+
+        let (sender, receiver) = mpsc::sync_channel(8);
+        *self.state.global_search_receiver.borrow_mut() = Some(receiver);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        *self.state.global_search_cancel.borrow_mut() = Some(Arc::clone(&cancelled));
+        let worker_root = root;
+        let worker_query = query.to_owned();
+        let show_hidden = self.state.show_hidden.get();
+        let _worker = std::thread::spawn(move || {
+            crate::files::search::run(
+                worker_root,
+                worker_query,
+                show_hidden,
+                cancelled,
+                sender,
+            );
+        });
+
+        let weak = Rc::downgrade(self);
+        let source = glib::timeout_add_local(std::time::Duration::from_millis(35), move || {
+            let Some(app) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if app.state.generation.get() != generation
+                || app.state.global_search.borrow().is_none()
+            {
+                app.state.global_search_source.set(None);
+                return glib::ControlFlow::Break;
+            }
+
+            let events = app
+                .state
+                .global_search_receiver
+                .borrow()
+                .as_ref()
+                .map(|receiver| receiver.try_iter().collect::<Vec<_>>())
+                .unwrap_or_default();
+            for event in events {
+                match event {
+                    crate::files::search::SearchEvent::Batch(paths) => {
+                        app.state.global_search_pending.borrow_mut().push_back(paths);
+                    }
+                    crate::files::search::SearchEvent::Finished { unreadable } => {
+                        app.state.global_search_unreadable.set(unreadable);
+                        app.state.global_search_finished.set(true);
+                    }
+                }
+            }
+            app.pump_global_search(generation);
+
+            if app.state.global_search_finished.get()
+                && app.state.global_search_pending.borrow().is_empty()
+                && !app.state.global_search_scan_running.get()
+            {
+                app.finish_global_search();
+                app.state.global_search_source.set(None);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+        self.state.global_search_source.set(Some(source));
+    }
+
+    fn pump_global_search(self: &App, generation: u64) {
+        if self.state.global_search_scan_running.get() {
+            return;
+        }
+        let Some(paths) = self.state.global_search_pending.borrow_mut().pop_front() else {
+            return;
+        };
+        self.state.global_search_scan_running.set(true);
+        let app = Rc::clone(self);
+        glib::spawn_future_local(async move {
+            let entries = scan::scan_paths(&paths).await;
+            if app.state.generation.get() != generation
+                || app.state.global_search.borrow().is_none()
+            {
+                return;
+            }
+            let objects: Vec<glib::Object> = entries
+                .iter()
+                .cloned()
+                .map(FileEntry::new)
+                .map(|entry| entry.upcast::<glib::Object>())
+                .collect();
+            app.state.all.borrow_mut().extend(entries);
+            app.state
+                .store
+                .splice(app.state.store.n_items(), 0, &objects);
+            app.state.global_search_scan_running.set(false);
+            app.update_counts();
+            app.pump_global_search(generation);
+        });
+    }
+
+    fn finish_global_search(self: &App) {
+        self.state.loading.set(false);
+        self.state.global_search_receiver.borrow_mut().take();
+        self.state.global_search_cancel.borrow_mut().take();
+        self.apply_filter();
+        let unreadable = self.state.global_search_unreadable.get();
+        if unreadable == 0 {
+            self.clear_message();
+        } else {
+            self.set_message(
+                &format!("Search completed; {unreadable} folders could not be read"),
+                false,
+            );
+        }
+    }
+
+    fn cancel_global_search(&self) {
+        if let Some(cancelled) = self.state.global_search_cancel.borrow_mut().take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        if let Some(source) = self.state.global_search_source.replace(None) {
+            source.remove();
+        }
+        self.state.global_search_receiver.borrow_mut().take();
+        self.state.global_search_pending.borrow_mut().clear();
+        self.state.global_search_scan_running.set(false);
+        self.state.global_search_finished.set(false);
+        self.state.global_search.borrow_mut().take();
+    }
+
     /// Read a directory asynchronously and swap it in when it arrives.
     pub fn load(self: &App, path: &Path, history: Option<HistoryStep>) {
+        self.cancel_global_search();
         *self.state.tag_view.borrow_mut() = None;
         if let Some(tab) = self
             .state
@@ -331,6 +521,7 @@ impl AppInner {
             .get_mut(self.state.active_tab.get())
         {
             tab.tag = None;
+            tab.search = None;
         }
 
         let app = Rc::clone(self);
@@ -558,6 +749,21 @@ impl AppInner {
     /// Refresh everything that depends on the current directory.
     pub fn refresh_chrome(self: &App) {
         let current = self.current_dir();
+
+        if let Some((_, query)) = self.state.global_search.borrow().clone() {
+            self.widgets.new_folder.set_visible(false);
+            self.widgets.folder_title.set_text("Search results");
+            header::show_search_crumb(self, &query);
+            sidebar::mark_active(self, Path::new(""));
+            sidebar::mark_active_tag(self, None);
+            self.widgets.back.set_sensitive(!self.state.back.borrow().is_empty());
+            self.widgets
+                .forward
+                .set_sensitive(!self.state.forward.borrow().is_empty());
+            self.widgets.up.set_sensitive(false);
+            tabs::rebuild(self);
+            return;
+        }
 
         let tag_view = self.state.tag_view.borrow().clone();
         if let Some(tag) = tag_view {
@@ -795,6 +1001,12 @@ impl AppInner {
             tab.back = self.state.back.borrow().clone();
             tab.forward = self.state.forward.borrow().clone();
             tab.tag = self.state.tag_view.borrow().clone();
+            tab.search = self
+                .state
+                .global_search
+                .borrow()
+                .as_ref()
+                .map(|(_, query)| query.clone());
         }
     }
 
@@ -836,12 +1048,16 @@ impl AppInner {
         self.state.active_tab.set(index);
         *self.state.back.borrow_mut() = tab.back;
         *self.state.forward.borrow_mut() = tab.forward;
-        match &tab.tag {
-            Some(tag) => {
+        match (&tab.search, &tab.tag) {
+            (Some(query), _) => {
+                *self.state.current.borrow_mut() = tab.path.clone();
+                self.show_global_search(query);
+            }
+            (None, Some(tag)) => {
                 *self.state.current.borrow_mut() = tab.path.clone();
                 self.show_tag(tag);
             }
-            None => self.load(&tab.path, None),
+            (None, None) => self.load(&tab.path, None),
         }
         tabs::rebuild(self);
     }
@@ -871,6 +1087,7 @@ impl AppInner {
                 back: saved.back,
                 forward: saved.forward,
                 tag: saved.tag,
+                search: saved.search,
             })
             .collect();
         if tabs.is_empty() {
@@ -878,11 +1095,14 @@ impl AppInner {
         }
 
         let requested = session.active.min(tabs.len() - 1);
-        let active = if tabs[requested].tag.is_some() || tabs[requested].path.is_dir() {
+        let active = if tabs[requested].search.is_some()
+            || tabs[requested].tag.is_some()
+            || tabs[requested].path.is_dir()
+        {
             requested
         } else {
             tabs.iter()
-                .position(|tab| tab.tag.is_some() || tab.path.is_dir())
+                .position(|tab| tab.search.is_some() || tab.tag.is_some() || tab.path.is_dir())
                 .unwrap_or(requested)
         };
         *self.state.tabs.borrow_mut() = tabs;
@@ -891,8 +1111,11 @@ impl AppInner {
         let tab = self.state.tabs.borrow()[active].clone();
         *self.state.back.borrow_mut() = tab.back;
         *self.state.forward.borrow_mut() = tab.forward;
-        match tab.tag {
-            Some(tag) if crate::tags::current().get(&tag).is_some() => self.show_tag(&tag),
+        match (tab.search, tab.tag) {
+            (Some(query), _) => self.show_global_search(&query),
+            (None, Some(tag)) if crate::tags::current().get(&tag).is_some() => {
+                self.show_tag(&tag)
+            }
             _ if tab.path.is_dir() => self.load(&tab.path, None),
             _ => {
                 let fallback = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -913,6 +1136,7 @@ impl AppInner {
             .map(|tab| crate::session::SavedTab {
                 path: tab.path.clone(),
                 tag: tab.tag.clone(),
+                search: tab.search.clone(),
                 back: tab.back.clone(),
                 forward: tab.forward.clone(),
             })
@@ -924,6 +1148,7 @@ impl AppInner {
     }
 
     pub fn disconnect_desktop_handlers(&self) {
+        self.cancel_global_search();
         for (settings, handler) in self.state.desktop_handlers.borrow_mut().drain(..) {
             settings.disconnect(handler);
         }
@@ -1269,12 +1494,22 @@ mod tests {
         assert!(!tagged.accepts_new_files());
         assert!(tagged.is_virtual());
         assert!(!tagged.is_trash());
+
+        let searched = Location::Search {
+            root: PathBuf::from("/home/zub"),
+            query: "report".to_owned(),
+        };
+        assert_eq!(searched.working_directory(), None);
+        assert!(!searched.accepts_new_files());
+        assert!(searched.is_virtual());
+        assert!(!searched.is_trash());
     }
 
     #[test]
     fn a_tab_remembers_the_view_it_was_showing() {
         let mut tab = Tab::new(PathBuf::from("/home/zub"));
         assert_eq!(tab.tag, None);
+        assert_eq!(tab.search, None);
         assert!(tab.back.is_empty());
         assert!(tab.forward.is_empty());
 

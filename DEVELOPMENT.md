@@ -15,6 +15,9 @@ Arch:
 sudo pacman -S --needed base-devel gtk4 vte4 pkgconf
 ```
 
+Install `poppler-utils ffmpeg` on Ubuntu or `poppler ffmpeg` on Arch when exercising PDF
+and media previews. They are runtime preview providers, not build dependencies.
+
 `libvte-2.91-gtk4-dev` is what gives Quick Command a real pseudo-terminal, so
 interactive programs can be used from inside Teral.
 
@@ -219,8 +222,11 @@ these checks. Never use a real profile containing valuable tags, bookmarks or se
 - [ ] Verify clipboard and drag-and-drop both directions with GNOME Files under Wayland,
   then repeat on Omarchy/Arch. Test Copy, Move and Link modifiers.
 - [ ] Where available, connect an MTP device and a GVfs network location. Record that
-  non-local browsing is currently outside the supported boundary rather than inventing
-  a local path.
+  a GVfs location with a local FUSE path is browsable, and that a location with no local
+  path is refused explicitly rather than converted into an invented path.
+- [ ] Mount a removable volume from its unmounted sidebar row, then use its context menu
+  to unmount and eject it. Exercise authentication cancellation, refusal, a busy mount,
+  and physical removal while its directory is open.
 - [ ] Switch GTK light/dark and icon themes while running. On Omarchy, replace the active
   theme symlink and edit `teral.toml` and `colors.toml`, including malformed and partial
   files. Confirm the window stays readable and cache changes appear live.
@@ -244,6 +250,13 @@ these checks. Never use a real profile containing valuable tags, bookmarks or se
   windows.
 - [ ] Preview UTF-8 text, Markdown, source, binary, malformed UTF-8, oversized and
   disappearing files. Confirm content is inert and no HTML, script or resource executes.
+- [ ] Search Home from the far-left header control. Confirm the normal header is hidden
+  only while entering the query, results stream in, Escape restores the original header,
+  Ctrl+F still filters one folder, symlink directories are not followed, and leaving the
+  result view cancels stale work.
+- [ ] Preview a normal, encrypted, malformed, oversized and disappearing PDF, plus audio
+  and video with missing or malformed metadata. Remove each provider from `PATH`, test a
+  slow input, and confirm errors are bounded and the window remains responsive.
 - [ ] Create files with leading/trailing spaces and race another process for the same
   name. Existing data is never replaced and the actual created file is selected.
 - [ ] Edit permissions on files and folders, including permission-denied and read-only
@@ -252,8 +265,9 @@ these checks. Never use a real profile containing valuable tags, bookmarks or se
   screen-reader names, high contrast, empty/loading/error/disconnected states and the
   absence of keyboard traps on Ubuntu and Omarchy.
 
-PDF and audio/video preview, recursive search, non-local GVfs browsing, and unmounted
-volume controls have no UI in this development snapshot. Do not mark those checks passed.
+Non-local GIO locations that expose no local path remain outside Teral's local file
+operation boundary. Do not mark that case as supported merely because a desktop mount
+with a local GVfs FUSE path works.
 
 ## Packaging
 

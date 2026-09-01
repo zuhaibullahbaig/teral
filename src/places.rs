@@ -26,6 +26,7 @@ pub struct Device {
     pub icon: Option<gio::Icon>,
     pub path: Option<PathBuf>,
     pub volume: Option<gio::Volume>,
+    pub mount: Option<gio::Mount>,
 }
 
 /// Standard XDG user directories that actually exist on this system.
@@ -136,11 +137,13 @@ pub fn devices() -> Vec<Device> {
         icon: Some(gio::Icon::for_string("drive-harddisk-symbolic").expect("static icon name")),
         path: Some(PathBuf::from("/")),
         volume: None,
+        mount: None,
     }];
 
     let monitor = gio::VolumeMonitor::get();
     for volume in monitor.volumes() {
-        let path = volume.get_mount().and_then(|mount| mount.root().path());
+        let mount = volume.get_mount();
+        let path = mount.as_ref().and_then(|mount| mount.root().path());
         if path.as_deref() == Some(Path::new("/")) {
             continue;
         }
@@ -149,6 +152,7 @@ pub fn devices() -> Vec<Device> {
             icon: Some(volume.symbolic_icon()),
             path,
             volume: Some(volume),
+            mount,
         });
     }
 
@@ -177,6 +181,7 @@ pub fn devices() -> Vec<Device> {
             icon: Some(mount.symbolic_icon()),
             path: Some(path),
             volume: None,
+            mount: Some(mount),
         });
     }
 

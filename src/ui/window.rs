@@ -26,6 +26,12 @@ use vte::prelude::*;
 pub struct Widgets {
     pub window: gtk::ApplicationWindow,
 
+    pub brand: gtk::Label,
+    pub global_search_button: gtk::Button,
+    pub global_search_box: gtk::Box,
+    pub global_search_entry: gtk::SearchEntry,
+    pub global_search_submit: gtk::Button,
+    pub global_search_close: gtk::Button,
     pub back: gtk::Button,
     pub forward: gtk::Button,
     pub up: gtk::Button,
@@ -33,6 +39,7 @@ pub struct Widgets {
     pub path_stack: gtk::Stack,
     pub location: gtk::Entry,
     pub search_button: gtk::ToggleButton,
+    pub view_group: gtk::Box,
     pub grid_toggle: gtk::ToggleButton,
     pub list_toggle: gtk::ToggleButton,
     pub sort_button: gtk::MenuButton,
@@ -209,6 +216,12 @@ pub fn build_window_at(
 
     let widgets = Widgets {
         window: window.clone(),
+        brand: head.brand,
+        global_search_button: head.global_search_button,
+        global_search_box: head.global_search_box,
+        global_search_entry: head.global_search_entry,
+        global_search_submit: head.global_search_submit,
+        global_search_close: head.global_search_close,
         back: head.back,
         forward: head.forward,
         up: head.up,
@@ -216,6 +229,7 @@ pub fn build_window_at(
         path_stack: head.path_stack,
         location: head.location,
         search_button: head.search_button,
+        view_group: head.view_group,
         grid_toggle: head.grid_toggle,
         list_toggle: head.list_toggle,
         sort_button: head.sort_button,
@@ -317,6 +331,14 @@ pub fn build_window_at(
         desktop_handlers: RefCell::new(Vec::new()),
         console_height: Cell::new(statusbar::CONSOLE_HEIGHT),
         tag_view: RefCell::new(None),
+        global_search: RefCell::new(None),
+        global_search_cancel: RefCell::new(None),
+        global_search_receiver: RefCell::new(None),
+        global_search_pending: RefCell::new(std::collections::VecDeque::new()),
+        global_search_scan_running: Cell::new(false),
+        global_search_finished: Cell::new(false),
+        global_search_unreadable: Cell::new(0),
+        global_search_source: Cell::new(None),
         loading: Cell::new(false),
         pending_selection: RefCell::new(None),
         retained_selection: RefCell::new(Vec::new()),
@@ -627,6 +649,7 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         gdk::Key::Right if alt => app.go_forward(),
         gdk::Key::BackSpace => app.go_up(),
         gdk::Key::l | gdk::Key::L if control => header::show_location(app),
+        gdk::Key::f | gdk::Key::F if control && shift => header::open_global_search(app),
         gdk::Key::f | gdk::Key::F if control => search::open(app),
         gdk::Key::h | gdk::Key::H if control => toggle_hidden(app),
         gdk::Key::k | gdk::Key::K if control => {
@@ -637,8 +660,11 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         gdk::Key::v | gdk::Key::V if control => paste(app),
         gdk::Key::n | gdk::Key::N if control && shift => new_folder(app),
         gdk::Key::t | gdk::Key::T if control && shift => {
-            let directory = app.current_dir();
-            open_terminal(app, &directory);
+            if let Some(directory) = app.location().working_directory().map(Path::to_path_buf) {
+                open_terminal(app, &directory);
+            } else {
+                app.set_message("A terminal needs one local folder", false);
+            }
         }
         gdk::Key::t | gdk::Key::T if control => {
             let current = app.current_dir();

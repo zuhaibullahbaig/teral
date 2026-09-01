@@ -858,9 +858,12 @@ pub fn update(app: &App) {
 
     if selected.is_empty() {
         details.stack.set_visible_child_name("empty");
-        details
-            .title
-            .set_text(&crate::places::display_label(&app.current_dir()));
+        let title = match app.location() {
+            super::Location::Search { query, .. } => format!("Search: {query}"),
+            super::Location::Tag(tag) => tag,
+            _ => crate::places::display_label(&app.current_dir()),
+        };
+        details.title.set_text(&title);
 
         let current = app.current_dir();
         let folder = &details.folder_actions;
@@ -925,7 +928,65 @@ pub fn update(app: &App) {
         }
     }
 
-    if is_text_preview(data.content_type.as_deref()) {
+    if let Some(content_type) = data
+        .content_type
+        .as_deref()
+        .filter(|content_type| is_rich_preview(content_type))
+    {
+        details.picture.set_visible(false);
+        details.icon.set_visible(false);
+        details.preview_message.set_text("Loading preview…");
+        details.preview_message.set_visible(true);
+        let app = Rc::clone(app);
+        let path = entry.path().to_path_buf();
+        let content_type = content_type.to_owned();
+        gtk::glib::spawn_future_local(async move {
+            let result = crate::files::preview::load_rich(&path, &content_type).await;
+            if app.state.preview_generation.get() != preview_generation
+                || app
+                    .single_selection()
+                    .map(|entry| entry.path().to_path_buf())
+                    .as_ref()
+                    != Some(&path)
+            {
+                return;
+            }
+            let details = &app.widgets.details;
+            match result {
+                Ok(crate::files::preview::RichPreview::Image { image, summary }) => {
+                    let bytes = gtk::glib::Bytes::from_owned(image.pixels);
+                    let pixbuf = gtk::gdk::gdk_pixbuf::Pixbuf::from_bytes(
+                        &bytes,
+                        gtk::gdk::gdk_pixbuf::Colorspace::Rgb,
+                        image.has_alpha,
+                        8,
+                        image.width,
+                        image.height,
+                        image.rowstride,
+                    );
+                    let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
+                    details.picture.set_paintable(Some(&texture));
+                    details.picture.set_visible(true);
+                    details.preview_message.set_text(&summary);
+                    details.preview_message.set_visible(!summary.is_empty());
+                }
+                Ok(crate::files::preview::RichPreview::Metadata(summary)) => {
+                    details.preview_message.set_text(&summary);
+                }
+                Ok(crate::files::preview::RichPreview::Oversized) => {
+                    details
+                        .preview_message
+                        .set_text("PDF preview is limited to 64 MiB");
+                }
+                Ok(crate::files::preview::RichPreview::Unsupported(message)) => {
+                    details.preview_message.set_text(&message);
+                }
+                Err(error) => details
+                    .preview_message
+                    .set_text(&format!("Preview unavailable: {error}")),
+            }
+        });
+    } else if is_text_preview(data.content_type.as_deref()) {
         details.picture.set_visible(false);
         details.icon.set_visible(false);
         if data.size > crate::files::preview::MAX_TEXT_BYTES {
@@ -1066,4 +1127,10 @@ fn is_text_preview(content_type: Option<&str>) -> bool {
                     | "application/x-yaml"
             )
     })
+}
+
+fn is_rich_preview(content_type: &str) -> bool {
+    content_type == "application/pdf"
+        || content_type.starts_with("audio/")
+        || content_type.starts_with("video/")
 }

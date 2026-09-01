@@ -13,6 +13,7 @@ const MAX_TABS: usize = 64;
 pub struct SavedTab {
     pub path: PathBuf,
     pub tag: Option<String>,
+    pub search: Option<String>,
     pub back: Vec<PathBuf>,
     pub forward: Vec<PathBuf>,
 }
@@ -34,6 +35,7 @@ struct RawSession {
 struct RawTab {
     path_hex: String,
     tag: Option<String>,
+    search: Option<String>,
     #[serde(default)]
     back_hex: Vec<String>,
     #[serde(default)]
@@ -65,6 +67,7 @@ pub fn load() -> Result<Option<Session>, String> {
         tabs.push(SavedTab {
             path,
             tag: tab.tag.filter(|tag| !tag.trim().is_empty()),
+            search: tab.search.filter(|query| !query.trim().is_empty()),
             back,
             forward,
         });
@@ -86,6 +89,9 @@ pub fn save(session: &Session) -> Result<(), String> {
         document.push_str(&format!("path_hex = \"{}\"\n", encode_path(&tab.path)));
         if let Some(tag) = &tab.tag {
             document.push_str(&format!("tag = \"{}\"\n", escape(tag)));
+        }
+        if let Some(query) = &tab.search {
+            document.push_str(&format!("search = \"{}\"\n", escape(query)));
         }
         write_paths(&mut document, "back_hex", &tab.back);
         write_paths(&mut document, "forward_hex", &tab.forward);
@@ -121,6 +127,7 @@ mod tests {
         let tab = SavedTab {
             path: path.clone(),
             tag: None,
+            search: None,
             back: vec![path.clone()],
             forward: Vec::new(),
         };

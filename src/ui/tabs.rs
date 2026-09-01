@@ -71,7 +71,13 @@ pub fn rebuild(app: &App) {
         // the new folder was still loading.
         let path = tab.path.clone();
 
-        let label = gtk::Label::new(Some(&places::display_label(&path)));
+        let title = tab
+            .search
+            .as_ref()
+            .map(|query| format!("Search: {query}"))
+            .or_else(|| tab.tag.clone())
+            .unwrap_or_else(|| places::display_label(&path));
+        let label = gtk::Label::new(Some(&title));
         label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         label.set_max_width_chars(18);
         label.add_css_class("teral-tab-label");
@@ -87,7 +93,12 @@ pub fn rebuild(app: &App) {
 
         let tab_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         tab_box.add_css_class("teral-tab");
-        tab_box.set_tooltip_text(Some(&path.to_string_lossy()));
+        let tooltip = if tab.search.is_some() || tab.tag.is_some() {
+            title.clone()
+        } else {
+            path.to_string_lossy().into_owned()
+        };
+        tab_box.set_tooltip_text(Some(&tooltip));
         tab_box.append(&label);
         tab_box.append(&close);
         if index == active {
