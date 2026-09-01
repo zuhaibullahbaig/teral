@@ -209,13 +209,8 @@ fn icon_size_row(app: &App) -> gtk::Box {
     scale.connect_value_changed({
         let app = Rc::clone(app);
         move |scale| {
-            let mut config = app.config.borrow().clone();
             let value = scale.value().round() as i32;
-            if config.layout.grid_icon_size == Some(value) {
-                return;
-            }
-            config.layout.grid_icon_size = Some(value);
-            app.apply_config(config, true);
+            app.set_icon_size(value);
         }
     });
 
@@ -346,8 +341,15 @@ fn commands_section(app: &App) -> gtk::Box {
     shell.connect_changed({
         let app = Rc::clone(app);
         move |entry| {
+            let value = entry.text().to_string();
+            if !value.trim().is_empty() {
+                if let Err(error) = crate::command::parse_program_spec(&value) {
+                    app.show_error(&format!("Invalid Quick Command shell: {error}"));
+                    return;
+                }
+            }
             let mut config = app.config.borrow().clone();
-            config.shell = entry.text().to_string();
+            config.shell = value;
             app.apply_config(config, true);
         }
     });
@@ -366,8 +368,15 @@ fn commands_section(app: &App) -> gtk::Box {
     terminal.connect_changed({
         let app = Rc::clone(app);
         move |entry| {
+            let value = entry.text().to_string();
+            if !value.trim().is_empty() {
+                if let Err(error) = crate::command::parse_program_spec(&value) {
+                    app.show_error(&format!("Invalid terminal command: {error}"));
+                    return;
+                }
+            }
             let mut config = app.config.borrow().clone();
-            config.terminal = entry.text().to_string();
+            config.terminal = value;
             app.apply_config(config, true);
         }
     });

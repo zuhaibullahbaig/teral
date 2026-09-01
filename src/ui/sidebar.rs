@@ -1,13 +1,14 @@
 //! Left navigation: XDG locations, mounted devices and pinned folders.
 
-use super::{App, section_title};
+use super::{App, AppInner, section_title};
 use crate::files::format_size;
 use crate::files::scan;
 use crate::places::{self, Device};
+use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 /// Containers the sidebar fills in once the application object exists.
 pub struct Sidebar {
@@ -113,20 +114,58 @@ pub fn connect(app: &App) {
         move |_| super::dialogs::edit_tag(&app, None)
     });
 
-    let monitor = gtk::gio::VolumeMonitor::get();
-    for signal in ["mount-added", "mount-removed", "mount-changed"] {
-        let app = Rc::clone(app);
-        monitor.connect_local(signal, false, move |_| {
-            rebuild_devices(&app);
-            mark_active(&app, &app.current_dir());
-            // A disk that has just appeared may carry its own trash, and one that has
-            // gone takes its trash with it. Probing the mounts cannot happen here, so
-            // the sidebar's trash entries are rebuilt when the scan comes back.
-            let for_trash = Rc::clone(&app);
-            crate::files::ops::refresh_trash_dirs(move || rebuild_places(&for_trash));
-            None
-        });
+    let monitor = &app.state.volume_monitor;
+    let handler = monitor.connect_mount_added({
+        let app = Rc::downgrade(app);
+        move |_, _| devices_changed(&app)
+    });
+    app.state.volume_handlers.borrow_mut().push(handler);
+    let handler = monitor.connect_mount_removed({
+        let app = Rc::downgrade(app);
+        move |_, _| devices_changed(&app)
+    });
+    app.state.volume_handlers.borrow_mut().push(handler);
+    let handler = monitor.connect_mount_changed({
+        let app = Rc::downgrade(app);
+        move |_, _| devices_changed(&app)
+    });
+    app.state.volume_handlers.borrow_mut().push(handler);
+    // A removable device may announce its volume before GVfs publishes the mount.
+    // Rebuilding for both layers keeps labels and mount state current throughout the
+    // hot-plug sequence instead of waiting for another application restart.
+    let handler = monitor.connect_volume_added({
+        let app = Rc::downgrade(app);
+        move |_, _| devices_changed(&app)
+    });
+    app.state.volume_handlers.borrow_mut().push(handler);
+    let handler = monitor.connect_volume_removed({
+        let app = Rc::downgrade(app);
+        move |_, _| devices_changed(&app)
+    });
+    app.state.volume_handlers.borrow_mut().push(handler);
+    let handler = monitor.connect_volume_changed({
+        let app = Rc::downgrade(app);
+        move |_, _| devices_changed(&app)
+    });
+    app.state.volume_handlers.borrow_mut().push(handler);
+}
+
+fn devices_changed(weak: &Weak<AppInner>) {
+    let Some(app) = weak.upgrade() else {
+        return;
+    };
+    if app.state.device_refresh_queued.replace(true) {
+        return;
     }
+    glib::idle_add_local_once(move || {
+        app.state.device_refresh_queued.set(false);
+        rebuild_devices(&app);
+        mark_active(&app, &app.current_dir());
+        // A disk that has just appeared may carry its own trash, and one that has gone
+        // takes its trash with it. The filesystem probes remain off the GTK thread.
+        let for_trash = Rc::clone(&app);
+        crate::files::ops::refresh_trash_dirs(move || rebuild_places(&for_trash));
+    });
 }
 
 pub fn rebuild_places(app: &App) {
@@ -162,22 +201,49 @@ fn connect_pin_target(app: &App) {
                 return false;
             };
 
-            let mut pinned = 0usize;
-            for path in files.files().iter().filter_map(gtk::gio::File::path) {
-                if path.is_dir() && !app.is_pinned(&path) {
-                    app.toggle_pin(&path);
-                    pinned += 1;
-                }
-            }
-
-            if pinned == 0 {
-                app.set_message("Only folders can be bookmarked", false);
+            let paths: Vec<PathBuf> = files
+                .files()
+                .iter()
+                .filter_map(gtk::gio::File::path)
+                .collect();
+            if paths.is_empty() {
+                app.set_message("Only local folders can be bookmarked", false);
                 return false;
             }
-            app.set_message(
-                &format!("Bookmarked {}", crate::files::item_count_label(pinned)),
-                false,
-            );
+
+            let weak = Rc::downgrade(&app);
+            glib::spawn_future_local(async move {
+                let mut pinned = 0usize;
+                for path in paths {
+                    let info = gio::File::for_path(&path)
+                        .query_info_future(
+                            gio::FILE_ATTRIBUTE_STANDARD_TYPE,
+                            gio::FileQueryInfoFlags::NONE,
+                            glib::Priority::DEFAULT,
+                        )
+                        .await;
+                    let Some(app) = weak.upgrade() else {
+                        return;
+                    };
+                    if info.is_ok_and(|info| info.file_type() == gio::FileType::Directory)
+                        && !app.is_pinned(&path)
+                    {
+                        app.toggle_pin(&path);
+                        pinned += 1;
+                    }
+                }
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                if pinned == 0 {
+                    app.set_message("Only folders can be bookmarked", false);
+                } else {
+                    app.set_message(
+                        &format!("Bookmarked {}", crate::files::item_count_label(pinned)),
+                        false,
+                    );
+                }
+            });
             true
         }
     });
@@ -352,7 +418,7 @@ pub fn rebuild_pinned(app: &App) {
     show_drop_hint(app, false);
 
     for path in pinned {
-        let label = places::display_label(&path);
+        let label = places::bookmark_label(&path);
         let row = place_row(
             app,
             &label,
@@ -461,33 +527,67 @@ fn device_row(app: &App, device: &Device) -> gtk::Button {
     button.set_child(Some(&content));
     button.add_css_class("teral-place");
     button.set_has_frame(false);
-    button.set_tooltip_text(Some(&device.path.to_string_lossy()));
 
-    let target = device.path.clone();
-    button.connect_clicked({
-        let app = Rc::clone(app);
-        let target = target.clone();
-        move |_| app.navigate(&target)
-    });
+    if let Some(target) = device.path.clone() {
+        button.set_tooltip_text(Some(&target.to_string_lossy()));
+        button.connect_clicked({
+            let app = Rc::clone(app);
+            let target = target.clone();
+            move |_| app.navigate(&target)
+        });
 
-    attach_context_menu(app, &button, target.clone());
-    attach_drop_target(app, &button, target.clone());
+        attach_context_menu(app, &button, target.clone());
+        attach_drop_target(app, &button, target.clone());
 
-    // Capacity is queried asynchronously: a slow mount must not stall the sidebar.
-    glib::spawn_future_local(async move {
-        let Some((free, total)) = scan::filesystem_usage(&target).await else {
-            return;
-        };
-        let used = total.saturating_sub(free);
-        let fraction = (used as f64 / total as f64).clamp(0.0, 1.0);
-        meter.set_value(fraction);
-        if fraction > 0.9 {
-            meter.add_css_class("critical");
-        }
-        meter.set_visible(true);
-        capacity.set_text(&format!("{} / {}", format_size(used), format_size(total)));
-        capacity.set_visible(true);
-    });
+        // Capacity is queried asynchronously: a slow mount must not stall the sidebar.
+        glib::spawn_future_local(async move {
+            let Some((free, total)) = scan::filesystem_usage(&target).await else {
+                return;
+            };
+            let used = total.saturating_sub(free);
+            let fraction = (used as f64 / total as f64).clamp(0.0, 1.0);
+            meter.set_value(fraction);
+            if fraction > 0.9 {
+                meter.add_css_class("critical");
+            }
+            meter.set_visible(true);
+            capacity.set_text(&format!("{} / {}", format_size(used), format_size(total)));
+            capacity.set_visible(true);
+        });
+    } else if let Some(volume) = device.volume.clone() {
+        button.set_tooltip_text(Some(&format!("Mount {}", device.label)));
+        button.set_sensitive(volume.can_mount());
+        button.connect_clicked({
+            let app = Rc::clone(app);
+            move |button| {
+                button.set_sensitive(false);
+                let operation = gtk::MountOperation::new(Some(&app.widgets.window));
+                let mounting =
+                    volume.mount_future(gtk::gio::MountMountFlags::NONE, Some(&operation));
+                let app = Rc::clone(&app);
+                let volume = volume.clone();
+                let button = button.clone();
+                glib::spawn_future_local(async move {
+                    match mounting.await {
+                        Ok(()) => {
+                            if let Some(path) = volume
+                                .get_mount()
+                                .and_then(|mount| mount.root().path())
+                            {
+                                app.navigate(&path);
+                            } else {
+                                app.show_error("The device mounted without a browsable local path");
+                            }
+                        }
+                        Err(error) => {
+                            button.set_sensitive(volume.can_mount());
+                            app.show_error(&format!("Could not mount the device: {error}"));
+                        }
+                    }
+                });
+            }
+        });
+    }
 
     button
 }
@@ -553,17 +653,32 @@ fn attach_context_menu(app: &App, button: &gtk::Button, path: PathBuf) {
         "Open in New Window",
     );
     let pin = super::header::menu_item(crate::icons::ui(crate::icons::names::PIN), "Bookmark");
+    let rename_bookmark = super::header::menu_item(
+        crate::icons::ui(crate::icons::names::RENAME),
+        "Rename Bookmark",
+    );
+    let move_up = super::header::menu_item(crate::icons::ui(crate::icons::names::UP), "Move Up");
+    let move_down = super::header::menu_item(
+        crate::icons::ui(crate::icons::names::DOWN),
+        "Move Down",
+    );
     let terminal = super::header::menu_item(
         crate::icons::ui(crate::icons::names::TERMINAL),
         "Open Terminal Here",
     );
     let empty_trash =
         super::header::menu_item(crate::icons::ui(crate::icons::names::TRASH), "Empty Trash");
-    empty_trash.set_visible(crate::files::ops::is_in_trash(&path.join("x")));
+    let is_trash = crate::files::ops::is_in_trash(&path.join("x"));
+    empty_trash.set_visible(is_trash);
+    pin.set_visible(!is_trash);
+    terminal.set_visible(!is_trash);
 
     content.append(&new_tab);
     content.append(&new_window);
     content.append(&pin);
+    content.append(&rename_bookmark);
+    content.append(&move_up);
+    content.append(&move_down);
     content.append(&terminal);
     content.append(&empty_trash);
     popover.set_child(Some(&content));
@@ -607,6 +722,43 @@ fn attach_context_menu(app: &App, button: &gtk::Button, path: PathBuf) {
         }
     });
 
+    rename_bookmark.connect_clicked({
+        let app = Rc::clone(app);
+        let path = path.clone();
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            super::dialogs::prompt_text(
+                &app,
+                "Bookmark label",
+                "Save",
+                &places::bookmark_label(&path),
+                {
+                    let path = path.clone();
+                    move |app, label| app.label_pin(&path, label)
+                },
+            );
+        }
+    });
+    move_up.connect_clicked({
+        let app = Rc::clone(app);
+        let path = path.clone();
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            app.reorder_pin(&path, -1);
+        }
+    });
+    move_down.connect_clicked({
+        let app = Rc::clone(app);
+        let path = path.clone();
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            app.reorder_pin(&path, 1);
+        }
+    });
+
     terminal.connect_clicked({
         let app = Rc::clone(app);
         let path = path.clone();
@@ -628,6 +780,9 @@ fn attach_context_menu(app: &App, button: &gtk::Button, path: PathBuf) {
             // happened instead of against the sidebar's edge.
             popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
             let pinned = app.is_pinned(&path);
+            rename_bookmark.set_visible(pinned);
+            move_up.set_visible(pinned);
+            move_down.set_visible(pinned);
             if let Some(row) = pin.child().and_downcast::<gtk::Box>()
                 && let Some(label) = row.last_child().and_downcast::<gtk::Label>()
             {

@@ -22,6 +22,16 @@ These items describe the current development foundation, not a stable-release gu
 
 ### Added
 
+- Crash-safe atomic persistence shared by settings, tags, bookmarks, command history and
+  window sessions, with lossless raw Linux path encoding and last-valid-file preservation.
+- Reorderable bookmarks with optional display labels that never rename their folders.
+- Session restoration for tabs, tag views and per-tab navigation history, with a safe
+  fallback when the active location is unavailable.
+- Atomic Create File, a local owner/group/other permissions editor, and bounded inert
+  UTF-8 text/source previews.
+- Bounded Quick Command history with Up/Down navigation, validated shell arguments,
+  graceful interrupt, explicit force stop and signal-aware outcome reporting.
+
 - One transfer engine behind Copy, Move, Link, Paste, drag-and-drop and Duplicate, with
   per-item requested and actual destinations and explicit completion states.
 - Atomic no-overwrite destination creation, raw-filename conflict names, and explicit
@@ -56,6 +66,22 @@ These items describe the current development foundation, not a stable-release gu
   every action is scoped to what the view can actually support.
 
 ### Changed
+
+- Directory enumeration publishes bounded batches and discards stale generations;
+  decorative child counts are no longer fetched for every folder tile.
+- Image decoding runs in a bounded worker queue with generation cancellation and bounded
+  decoded dimensions and cache size.
+- Toolbar, shortcut and Settings changes now converge on the same persisted sorting,
+  hidden-file, view, icon-size and details-panel preferences.
+- GTK appearance and icon-theme changes clear relevant caches and re-resolve the active
+  theme without accumulating handlers across closed windows.
+- Mountable volumes and mounted devices now appear and disappear live, and GVfs devices
+  use readable volume names instead of backend identifiers such as `mtp`.
+- Theme, icon-size, search, desktop-association and configuration monitor updates are
+  coalesced and no longer feed back into directory rescans; settings, bookmark, tag and
+  command-history writes no longer block the interface.
+- Folder-only actions are hidden in Trash and tag views, and long names can no longer
+  change the width of the Details panel.
 
 - Restore reads trash records off the GTK thread, restores under the recorded original
   name rather than the de-duplicated name inside the trash, and resolves an occupied

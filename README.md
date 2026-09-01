@@ -26,10 +26,13 @@ browsing. It is one application for Ubuntu, Arch, Omarchy and other Linux deskto
 - A shared clipboard with Nautilus, Dolphin and Thunar.
 - Trash that follows the FreeDesktop specification, including external drives, and
   restores files to where they came from.
-- Tags and bookmarks for the places and files you keep coming back to.
-- A built-in terminal that follows the folder you are in.
+- Lossless tags and reorderable bookmarks with optional sidebar labels.
+- A built-in terminal that follows the folder you are in, with bounded command history
+  and explicit interrupt and force-stop behavior.
 - System icon themes, image thumbnails, Open With, and archive extraction.
 - Appearance that follows your desktop, with first-class support for Omarchy themes.
+- Atomic settings and metadata writes, and restoration of tabs and navigation history.
+- Atomic Create File, a local permissions editor, and inert bounded text/source previews.
 
 ## Install
 
@@ -112,6 +115,7 @@ folders_first = true
 sort = "name"         # name, size, type, modified
 descending = false
 view = "grid"         # grid or list
+details_visible = true
 
 [commands]
 shell = ""            # empty: $SHELL, then /bin/sh
@@ -124,6 +128,17 @@ Teral ships dark and light palettes. In system mode it takes its colors from GTK
 Omarchy it reads the active theme's `teral.toml`, and derives a palette from `colors.toml`
 when there is no Teral-specific file. A theme with missing keys falls back rather than
 breaking the window.
+
+## Current boundaries
+
+- Sidebar devices include mountable volumes and mounted locations with local paths.
+  GIO locations that provide no local path are detected but cannot yet be browsed.
+- Search filters the folder being viewed; it is not a recursive or indexed search.
+- Preview supports bounded images and UTF-8 text/source files. PDF rendering and
+  audio/video probing are intentionally absent because no safe renderer or media probe
+  is currently part of the dependency set.
+- Hardware, Wayland interoperability, accessibility, high-contrast, large-directory and
+  Ubuntu/Omarchy visual checks remain manual development checks.
 
 ## Contributing
 

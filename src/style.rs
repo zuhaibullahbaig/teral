@@ -39,12 +39,6 @@ pub fn apply(theme: &ThemeConfig) {
     });
 
     provider.load_from_string(&stylesheet(theme));
-
-    // Keep GTK's own widgets (file choosers, tooltips, menus) on the same side of the
-    // light/dark line as Teral, so nothing renders as a bright rectangle.
-    if let Some(settings) = gtk::Settings::default() {
-        settings.set_gtk_application_prefer_dark_theme(theme.dark);
-    }
 }
 
 /// Build the complete stylesheet for a resolved theme.

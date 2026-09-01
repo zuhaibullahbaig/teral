@@ -245,6 +245,33 @@ pub fn connect(app: &App) {
         }
     });
 
+    let history_keys = gtk::EventControllerKey::new();
+    history_keys.connect_key_pressed({
+        let app = Rc::clone(app);
+        move |_, key, _, _| {
+            let history = app.state.command_history.borrow();
+            if history.is_empty() {
+                return gtk::glib::Propagation::Proceed;
+            }
+            let mut index = app.state.command_history_index.get();
+            match key {
+                gtk::gdk::Key::Up => index = index.saturating_sub(1),
+                gtk::gdk::Key::Down => index = (index + 1).min(history.len()),
+                _ => return gtk::glib::Propagation::Proceed,
+            }
+            app.state.command_history_index.set(index);
+            app.widgets.command_entry.set_text(
+                history
+                    .get(index)
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+            );
+            app.widgets.command_entry.set_position(-1);
+            gtk::glib::Propagation::Stop
+        }
+    });
+    app.widgets.command_entry.add_controller(history_keys);
+
     app.widgets.settings.connect_clicked({
         let app = Rc::clone(app);
         move |_| super::settings::present(&app)
@@ -252,7 +279,15 @@ pub fn connect(app: &App) {
 
     app.widgets.details_toggle.connect_toggled({
         let app = Rc::clone(app);
-        move |button| app.widgets.details.root.set_visible(button.is_active())
+        move |button| {
+            app.widgets.details.root.set_visible(button.is_active());
+            if app.state.updating.get() {
+                return;
+            }
+            let mut config = app.config.borrow().clone();
+            config.details_visible = button.is_active();
+            app.apply_config(config, true);
+        }
     });
 
     app.widgets.console.stop.connect_clicked({
@@ -272,12 +307,26 @@ pub fn connect(app: &App) {
     app.widgets.console.terminal.connect_child_exited({
         let app = Rc::clone(app);
         move |_, status| {
+            use std::os::unix::process::ExitStatusExt;
+            let stop_requested = app.state.command_stop_requested.get();
             app.state.running_command.set(false);
+            app.state.running_pid.set(None);
+            app.state.command_stop_requested.set(false);
             app.widgets.console.stop.set_visible(false);
-            if status == 0 {
+            let outcome = std::process::ExitStatus::from_raw(status);
+            if outcome.success() {
                 app.set_message("Command finished", false);
+            } else if let Some(signal) = outcome.signal() {
+                if signal == 2 && stop_requested {
+                    app.set_message("Command interrupted", false);
+                } else {
+                    app.show_error(&format!("Command terminated by signal {signal}"));
+                }
             } else {
-                app.show_error(&format!("Command exited with status {status}"));
+                app.show_error(&format!(
+                    "Command exited with status {}",
+                    outcome.code().unwrap_or(status)
+                ));
             }
             app.reload();
         }
@@ -372,8 +421,44 @@ pub fn console_visible(app: &App) -> bool {
 
 /// Stop whatever Quick Command is running.
 pub fn stop_command(app: &App) {
-    // Ctrl+C in the child's own terminal is the least surprising way to interrupt it.
-    app.widgets.console.terminal.feed_child(&[0x03]);
+    if !app.state.command_stop_requested.replace(true) {
+        app.widgets.console.terminal.feed_child(&[0x03]);
+        app.widgets
+            .console
+            .stop
+            .set_tooltip_text(Some("Force stop the running command"));
+        app.set_message("Interrupt requested; press Stop again to force it", false);
+        return;
+    }
+    let Some(pid) = app.state.running_pid.get() else {
+        return;
+    };
+    let pid = pid.0;
+    let weak = Rc::downgrade(app);
+    gtk::glib::spawn_future_local(async move {
+        let result = gtk::gio::spawn_blocking(move || {
+            std::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .status()
+        })
+        .await;
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        match result {
+            Ok(Ok(status)) if status.success() => {
+                app.set_message("Force stop requested", false);
+            }
+            Ok(Ok(status)) => {
+                app.show_error(&format!("Could not force stop the command: {status}"));
+            }
+            Ok(Err(error)) => {
+                app.show_error(&format!("Could not force stop the command: {error}"));
+            }
+            Err(_) => app.show_error("The force-stop worker stopped unexpectedly"),
+        }
+    });
 }
 
 /// Run a Quick Command in the directory currently being browsed.
@@ -400,17 +485,50 @@ pub fn run_command(app: &App, text: &str) {
     show_console(app);
     app.clear_message();
     app.state.running_command.set(true);
+    app.state.command_stop_requested.set(false);
+    app.state.command_close_requested.set(false);
+    console
+        .stop
+        .set_tooltip_text(Some("Interrupt the running command"));
 
-    let spawn = command::run(&console.terminal, text, &directory);
+    let history_to_save = {
+        let mut history = app.state.command_history.borrow_mut();
+        if history.last().map(String::as_str) != Some(text) {
+            history.push(text.to_owned());
+            if history.len() > 100 {
+                history.remove(0);
+            }
+        }
+        app.state.command_history_index.set(history.len());
+        history.clone()
+    };
+    let weak = Rc::downgrade(app);
+    gtk::glib::spawn_future_local(async move {
+        let result =
+            gtk::gio::spawn_blocking(move || command::save_history(&history_to_save)).await;
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => app.show_error(&format!("Could not save command history: {error}")),
+            Err(_) => app.show_error("The command-history writer stopped unexpectedly"),
+        }
+    });
+
+    let spawn = command::run(console.terminal.clone(), text.to_owned(), directory);
     let app = Rc::clone(app);
     gtk::glib::spawn_future_local(async move {
-        if let Err(error) = spawn.await {
-            app.state.running_command.set(false);
-            app.widgets.console.stop.set_visible(false);
-            app.show_error(&format!("Could not run the command: {}", error.message()));
-        } else {
-            // Typing goes to the child, not to the file list.
-            app.widgets.console.terminal.grab_focus();
+        match spawn.await {
+            Err(error) => {
+                app.state.running_command.set(false);
+                app.widgets.console.stop.set_visible(false);
+                app.show_error(&format!("Could not run the command: {error}"));
+            }
+            Ok(pid) => {
+                app.state.running_pid.set(Some(pid));
+                app.widgets.console.terminal.grab_focus();
+            }
         }
     });
 }

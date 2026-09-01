@@ -4,6 +4,8 @@ mod config;
 mod files;
 mod icons;
 mod places;
+mod persistence;
+mod session;
 mod style;
 mod tags;
 mod theme;

@@ -60,8 +60,11 @@ pub fn connect(app: &App) {
     app.widgets.search.entry.connect_search_changed({
         let app = Rc::clone(app);
         move |entry| {
+            if app.state.updating.get() {
+                return;
+            }
             *app.state.query.borrow_mut() = entry.text().to_string();
-            app.apply_filter();
+            app.queue_filter();
         }
     });
 
@@ -135,7 +138,12 @@ pub fn close(app: &App) {
 
     if !app.state.query.borrow().is_empty() {
         app.state.query.borrow_mut().clear();
+        app.state.updating.set(true);
         app.widgets.search.entry.set_text("");
+        app.state.updating.set(false);
+        if let Some(source) = app.state.filter_source.replace(None) {
+            source.remove();
+        }
         app.apply_filter();
     }
 

@@ -106,25 +106,48 @@ pub struct State {
     pub sorting: Cell<Sorting>,
     pub show_hidden: Cell<bool>,
     pub query: RefCell<String>,
+    /// A short debounce keeps a large folder from being rebuilt for every key event.
+    pub filter_source: Cell<Option<glib::SourceId>>,
     /// Increments on every navigation so stale async results are discarded.
     pub generation: Cell<u64>,
+    pub preview_generation: Cell<u64>,
     pub pinned: RefCell<Vec<PathBuf>>,
     pub clipboard: RefCell<Option<Clipboard>>,
     pub icon_size: Cell<i32>,
     pub view_mode: Cell<ViewMode>,
     /// True while a Quick Command is attached to the console terminal.
     pub running_command: Cell<bool>,
+    pub running_pid: Cell<Option<glib::Pid>>,
+    pub command_stop_requested: Cell<bool>,
+    pub command_close_requested: Cell<bool>,
+    pub command_history: RefCell<Vec<String>>,
+    pub command_history_index: Cell<usize>,
     pub running_transfer: RefCell<Option<CancelFlag>>,
     /// Guards against feedback loops while widgets are being synchronised.
     pub updating: Cell<bool>,
+    pub theme_apply_source: Cell<Option<glib::SourceId>>,
+    /// Configuration writes are serialized off the GTK thread. Repeated slider and
+    /// text-entry changes replace the pending value instead of queuing one fsync each.
+    pub config_save_running: Cell<bool>,
+    pub pending_config_save: RefCell<Option<Config>>,
+    pub bookmark_save_running: Cell<bool>,
+    pub pending_bookmark_save: RefCell<Option<(PathBuf, Vec<u8>)>>,
+    pub config_reload_queued: Cell<bool>,
+    pub theme_reload_requested: Cell<bool>,
     /// Open tabs, and which one is showing.
     pub tabs: RefCell<Vec<Tab>>,
     pub active_tab: Cell<usize>,
     /// Watches the directory on screen so external changes appear on their own.
     pub directory_monitor: RefCell<Option<gio::FileMonitor>>,
     pub refresh_queued: Cell<bool>,
+    /// Kept for the window lifetime so hot-plug and mount signals remain connected.
+    pub volume_monitor: gio::VolumeMonitor,
+    pub volume_handlers: RefCell<Vec<glib::SignalHandlerId>>,
+    pub device_refresh_queued: Cell<bool>,
     /// Kept alive so configuration and theme changes keep being delivered.
     pub config_monitors: RefCell<Vec<gio::FileMonitor>>,
+    /// Signal handlers installed on global GTK settings, disconnected with the window.
+    pub desktop_handlers: RefCell<Vec<(gtk::Settings, glib::SignalHandlerId)>>,
     /// Height the console had when it was last visible.
     pub console_height: Cell<i32>,
     /// Set while the file view is showing everything carrying one tag.
@@ -135,8 +158,11 @@ pub struct State {
     /// An entry to select once the view it lives in has finished loading, used when
     /// another application asks Teral to open a file rather than a folder.
     pub pending_selection: RefCell<Option<PathBuf>>,
+    pub retained_selection: RefCell<Vec<PathBuf>>,
     /// Pending write of a new icon size, so dragging the slider writes once.
     pub icon_size_save: Cell<Option<glib::SourceId>>,
+    /// At most one grid-factory replacement is queued per rendered frame.
+    pub icon_refresh_queued: Cell<bool>,
 }
 
 /// One browsing tab: a location and its own history.
@@ -311,10 +337,54 @@ impl AppInner {
         let path = path.to_path_buf();
         let generation = self.state.generation.get().wrapping_add(1);
         self.state.generation.set(generation);
+        crate::icons::cancel_pending();
         self.state.loading.set(true);
 
+        let retained = if self.state.current.borrow().as_path() == path {
+            self.selected_entries()
+                .into_iter()
+                .map(|entry| entry.path().to_path_buf())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        *self.state.retained_selection.borrow_mut() = retained;
+
+        // A new physical directory publishes bounded batches immediately. The final
+        // commit applies the selected sort/filter once, avoiding a full clone and model
+        // rebuild per batch.
+        self.state.store.remove_all();
+        self.state.all.borrow_mut().clear();
+        self.update_counts();
+
         glib::spawn_future_local(async move {
-            let result = scan::scan_directory(&path).await;
+            let result = scan::scan_directory_batched(&path, {
+                let app = Rc::clone(&app);
+                move |batch| {
+                    if app.state.generation.get() != generation {
+                        return false;
+                    }
+                    let show_hidden = app.state.show_hidden.get();
+                    let query = app.state.query.borrow().to_lowercase();
+                    let visible: Vec<FileEntry> = batch
+                        .iter()
+                        .filter(|entry| scan::matches(entry, show_hidden, &query))
+                        .cloned()
+                        .map(FileEntry::new)
+                        .collect();
+                    app.state.all.borrow_mut().extend(batch);
+                    let objects: Vec<glib::Object> = visible
+                        .into_iter()
+                        .map(|entry| entry.upcast::<glib::Object>())
+                        .collect();
+                    app.state
+                        .store
+                        .splice(app.state.store.n_items(), 0, &objects);
+                    app.update_counts();
+                    true
+                }
+            })
+            .await;
             if app.state.generation.get() != generation {
                 // A newer navigation has already taken over; it owns the flag now.
                 return;
@@ -324,7 +394,6 @@ impl AppInner {
             match result {
                 Ok(entries) => {
                     app.commit_directory(path, entries, history);
-                    app.load_child_counts(generation);
                 }
                 Err(error) => app.show_error(&format!(
                     "Cannot open {}: {}",
@@ -376,7 +445,12 @@ impl AppInner {
 
         if changed_directory {
             self.state.query.borrow_mut().clear();
+            self.state.updating.set(true);
             self.widgets.search.entry.set_text("");
+            self.state.updating.set(false);
+            if let Some(source) = self.state.filter_source.replace(None) {
+                source.remove();
+            }
             search::close(self);
             self.state.selection.unselect_all();
             for scroller in [&self.widgets.grid_scroller, &self.widgets.list_scroller] {
@@ -427,10 +501,12 @@ impl AppInner {
         // once, when the folder holding it first appears, and then behaves like any
         // other selection.
         let requested = self.state.pending_selection.borrow_mut().take();
+        let retained = std::mem::take(&mut *self.state.retained_selection.borrow_mut());
         let wanted: Vec<&Path> = requested
             .as_deref()
             .into_iter()
             .chain(previously_selected.iter().map(PathBuf::as_path))
+            .chain(retained.iter().map(PathBuf::as_path))
             .collect();
 
         if !wanted.is_empty() {
@@ -460,36 +536,23 @@ impl AppInner {
         self.update_status();
     }
 
-    /// Fill in folder item counts in the background, newest navigation wins.
-    fn load_child_counts(self: &App, generation: u64) {
-        const MAX_COUNTED_DIRECTORIES: usize = 600;
-
-        let app = Rc::clone(self);
-        glib::spawn_future_local(async move {
-            let mut counted = 0usize;
-            let mut index = 0u32;
-
-            while index < app.state.store.n_items() {
-                if app.state.generation.get() != generation || counted >= MAX_COUNTED_DIRECTORIES {
+    /// Apply the newest search text after the current burst of key events settles.
+    pub fn queue_filter(self: &App) {
+        if let Some(source) = self.state.filter_source.replace(None) {
+            source.remove();
+        }
+        let weak = Rc::downgrade(self);
+        let source = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(90),
+            move || {
+                let Some(app) = weak.upgrade() else {
                     return;
-                }
-
-                let entry = app.state.store.item(index).and_downcast::<FileEntry>();
-                index += 1;
-
-                let Some(entry) = entry else { continue };
-                if !entry.is_directory() || entry.child_count() >= 0 {
-                    continue;
-                }
-
-                counted += 1;
-                let count = scan::count_children(entry.path()).await.unwrap_or(0);
-                if app.state.generation.get() != generation {
-                    return;
-                }
-                entry.set_child_count(i64::try_from(count).unwrap_or(i64::MAX));
-            }
-        });
+                };
+                app.state.filter_source.set(None);
+                app.apply_filter();
+            },
+        );
+        self.state.filter_source.set(Some(source));
     }
 
     /// Refresh everything that depends on the current directory.
@@ -498,6 +561,7 @@ impl AppInner {
 
         let tag_view = self.state.tag_view.borrow().clone();
         if let Some(tag) = tag_view {
+            self.widgets.new_folder.set_visible(false);
             self.widgets.folder_title.set_text(&tag);
             header::show_tag_crumb(self, &tag);
             sidebar::mark_active(self, Path::new(""));
@@ -506,6 +570,9 @@ impl AppInner {
             return;
         }
         sidebar::mark_active_tag(self, None);
+        self.widgets
+            .new_folder
+            .set_visible(self.location().accepts_new_files());
 
         self.widgets
             .folder_title
@@ -595,14 +662,71 @@ impl AppInner {
             } else {
                 pinned.push(path.to_path_buf());
             }
-            places::save_pinned(&pinned);
         }
+        self.queue_bookmark_save();
         sidebar::rebuild_pinned(self);
         sidebar::mark_active(self, &self.current_dir());
     }
 
     pub fn is_pinned(&self, path: &Path) -> bool {
         self.state.pinned.borrow().iter().any(|pin| pin == path)
+    }
+
+    /// Move a bookmark without changing the location it points to.
+    pub fn reorder_pin(self: &App, path: &Path, offset: isize) {
+        {
+            let mut pinned = self.state.pinned.borrow_mut();
+            let Some(index) = pinned.iter().position(|pin| pin == path) else {
+                return;
+            };
+            let target = index.saturating_add_signed(offset).min(pinned.len() - 1);
+            if index == target {
+                return;
+            }
+            pinned.swap(index, target);
+        }
+        self.queue_bookmark_save();
+        sidebar::rebuild_pinned(self);
+    }
+
+    /// Change only the sidebar label, never the directory's real name.
+    pub fn label_pin(self: &App, path: &Path, label: String) {
+        places::set_bookmark_label(path, Some(label));
+        self.queue_bookmark_save();
+        sidebar::rebuild_pinned(self);
+    }
+
+    /// Serialize labels on the GTK context, then keep only the newest pending write.
+    fn queue_bookmark_save(self: &App) {
+        let payload = places::pinned_payload(&self.state.pinned.borrow());
+        *self.state.pending_bookmark_save.borrow_mut() = Some(payload);
+        if self.state.bookmark_save_running.replace(true) {
+            return;
+        }
+        self.start_next_bookmark_save();
+    }
+
+    fn start_next_bookmark_save(self: &App) {
+        let Some((path, document)) = self.state.pending_bookmark_save.borrow_mut().take() else {
+            self.state.bookmark_save_running.set(false);
+            return;
+        };
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                places::write_pinned_payload(path, document)
+            })
+            .await;
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => app.show_error(&format!("Could not save bookmarks: {error}")),
+                Err(_) => app.show_error("The bookmark writer stopped unexpectedly"),
+            }
+            app.start_next_bookmark_save();
+        });
     }
 
     /// Restore the grid icon size configured by the active theme.
@@ -737,72 +861,201 @@ impl AppInner {
         self.activate_tab(next);
     }
 
-    // ----------------------------------------------------------------- theme ----
-
-    /// Apply a new configuration: persist it, re-resolve the theme and restyle.
-    pub fn apply_config(self: &App, config: Config, persist: bool) {
-        if persist && let Err(error) = config.save() {
-            self.show_error(&format!("Could not save settings: {error}"));
+    /// Replace the initial tab with a validated saved session.
+    pub fn restore_session(self: &App, session: crate::session::Session) {
+        let tabs: Vec<Tab> = session
+            .tabs
+            .into_iter()
+            .map(|saved| Tab {
+                path: saved.path,
+                back: saved.back,
+                forward: saved.forward,
+                tag: saved.tag,
+            })
+            .collect();
+        if tabs.is_empty() {
+            return;
         }
 
-        crate::config::set_current(config.clone());
-        let theme = ThemeConfig::resolve(&config);
-        crate::style::apply(&theme);
+        let requested = session.active.min(tabs.len() - 1);
+        let active = if tabs[requested].tag.is_some() || tabs[requested].path.is_dir() {
+            requested
+        } else {
+            tabs.iter()
+                .position(|tab| tab.tag.is_some() || tab.path.is_dir())
+                .unwrap_or(requested)
+        };
+        *self.state.tabs.borrow_mut() = tabs;
+        self.state.active_tab.set(active);
 
+        let tab = self.state.tabs.borrow()[active].clone();
+        *self.state.back.borrow_mut() = tab.back;
+        *self.state.forward.borrow_mut() = tab.forward;
+        match tab.tag {
+            Some(tag) if crate::tags::current().get(&tag).is_some() => self.show_tag(&tag),
+            _ if tab.path.is_dir() => self.load(&tab.path, None),
+            _ => {
+                let fallback = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                self.load(&fallback, None);
+                self.set_message("The last location is unavailable; showing Home", false);
+            }
+        }
+    }
+
+    /// Persist the exact per-tab location and navigation history.
+    pub fn save_session(&self) -> Result<(), String> {
+        self.sync_active_tab();
+        let tabs = self
+            .state
+            .tabs
+            .borrow()
+            .iter()
+            .map(|tab| crate::session::SavedTab {
+                path: tab.path.clone(),
+                tag: tab.tag.clone(),
+                back: tab.back.clone(),
+                forward: tab.forward.clone(),
+            })
+            .collect();
+        crate::session::save(&crate::session::Session {
+            active: self.state.active_tab.get(),
+            tabs,
+        })
+    }
+
+    pub fn disconnect_desktop_handlers(&self) {
+        for (settings, handler) in self.state.desktop_handlers.borrow_mut().drain(..) {
+            settings.disconnect(handler);
+        }
+        for handler in self.state.volume_handlers.borrow_mut().drain(..) {
+            self.state.volume_monitor.disconnect(handler);
+        }
+    }
+
+    // ----------------------------------------------------------------- theme ----
+
+    /// Apply a new configuration, touching only the runtime areas that changed.
+    pub fn apply_config(self: &App, config: Config, persist: bool) {
+        let previous = self.config.borrow().clone();
+        if config == previous {
+            return;
+        }
+
+        let mut previous_layout_without_icon = previous.layout.clone();
+        previous_layout_without_icon.grid_icon_size = config.layout.grid_icon_size;
+        let layout_changed = previous_layout_without_icon != config.layout;
+        let external_icon_change = config.layout.grid_icon_size != previous.layout.grid_icon_size
+            && config.layout.grid_icon_size != Some(self.state.icon_size.get());
+        let appearance_changed = config.mode != previous.mode
+            || config.accent != previous.accent
+            || config.colors != previous.colors
+            || layout_changed
+            || external_icon_change;
+
+        crate::config::set_current(config.clone());
+        *self.config.borrow_mut() = config.clone();
+
+        if persist {
+            self.queue_config_save(config.clone());
+        }
+
+        if !appearance_changed {
+            return;
+        }
+
+        self.queue_theme_apply();
+    }
+
+    /// Collapse slider movement and clustered desktop notifications into one style
+    /// application. GTK CSS replacement is main-thread work, so doing it once per
+    /// pointer event makes an otherwise cheap slider appear frozen.
+    pub(crate) fn queue_theme_apply(self: &App) {
+        if let Some(source) = self.state.theme_apply_source.replace(None) {
+            source.remove();
+        }
+        let weak = Rc::downgrade(self);
+        let source = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(75),
+            move || {
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                app.state.theme_apply_source.set(None);
+                let config = app.config.borrow().clone();
+                app.apply_resolved_theme(&config);
+            },
+        );
+        self.state.theme_apply_source.set(Some(source));
+    }
+
+    pub(crate) fn apply_resolved_theme(self: &App, config: &Config) {
+        if let Some(source) = self.state.theme_apply_source.replace(None) {
+            source.remove();
+        }
+        let theme = ThemeConfig::resolve(config);
         let icon_size = theme.grid_icon_size();
+        crate::style::apply(&theme);
         crate::command::style_terminal(&self.widgets.console.terminal, &theme);
         *self.theme.borrow_mut() = theme;
-        *self.config.borrow_mut() = config;
-
-        self.schedule_theme_settle();
-
         if icon_size != self.state.icon_size.get() {
             self.state.icon_size.set(icon_size);
             self.state.updating.set(true);
             self.widgets.zoom.set_value(f64::from(icon_size));
             self.state.updating.set(false);
             self.widgets.zoom_value.set_text(&format!("{icon_size} px"));
-            fileview::refresh_grid_factory(self);
+            self.queue_icon_refresh();
         }
     }
 
-    /// Re-resolve the palette after GTK has finished switching its own theme.
-    ///
-    /// Turning "Follow the system" on flips GTK's light/dark preference, and GTK only
-    /// swaps its named colours once that has settled; resolving twice means Teral picks
-    /// up the desktop's real colours on the first switch instead of the second.
-    pub fn schedule_theme_settle(self: &App) {
-        if self.config.borrow().mode != crate::config::ThemeMode::System {
+    /// Keep only the newest requested configuration and write it away from GTK.
+    fn queue_config_save(self: &App, config: Config) {
+        *self.state.pending_config_save.borrow_mut() = Some(config);
+        if self.state.config_save_running.replace(true) {
             return;
         }
-
-        let app = Rc::clone(self);
-        glib::idle_add_local_once(move || {
-            let config = app.config.borrow().clone();
-            let theme = ThemeConfig::resolve(&config);
-            crate::style::apply(&theme);
-            crate::command::style_terminal(&app.widgets.console.terminal, &theme);
-            *app.theme.borrow_mut() = theme;
-        });
+        self.start_next_config_save();
     }
 
-    /// Re-read the configuration file and any environment theme, then restyle.
-    pub fn reload_theme(self: &App) {
-        let config = Config::load();
-        self.apply_config(config, false);
-        self.apply_preferences();
+    fn start_next_config_save(self: &App) {
+        let Some(config) = self.state.pending_config_save.borrow_mut().take() else {
+            self.state.config_save_running.set(false);
+            return;
+        };
+
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || config.save()).await;
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => app.show_error(&format!("Could not save settings: {error}")),
+                Err(_) => app.show_error("The settings writer stopped unexpectedly"),
+            }
+            app.start_next_config_save();
+        });
     }
 
     /// Push the configuration's file preferences into the live browsing state.
     pub fn apply_preferences(self: &App) {
         let config = self.config.borrow().clone();
 
-        self.state.show_hidden.set(config.show_hidden);
-        self.state.sorting.set(Sorting {
+        let previous_hidden = self.state.show_hidden.get();
+        let previous_sorting = self.state.sorting.get();
+        let previous_view = self.state.view_mode.get();
+        let next_sorting = Sorting {
             key: config.sort,
             descending: config.descending,
             folders_first: config.folders_first,
-        });
+        };
+        let next_view = match config.view {
+            crate::config::ViewPreference::Grid => ViewMode::Grid,
+            crate::config::ViewPreference::List => ViewMode::List,
+        };
+
+        self.state.show_hidden.set(config.show_hidden);
+        self.state.sorting.set(next_sorting);
 
         self.state.updating.set(true);
         let hidden_check = self.widgets.hidden_check.borrow().clone();
@@ -815,11 +1068,12 @@ impl AppInner {
         }
         self.state.updating.set(false);
 
-        self.set_view_mode(match config.view {
-            crate::config::ViewPreference::Grid => ViewMode::Grid,
-            crate::config::ViewPreference::List => ViewMode::List,
-        });
-        self.apply_filter();
+        if previous_view != next_view {
+            self.set_view_mode(next_view);
+        }
+        if previous_hidden != config.show_hidden || previous_sorting != next_sorting {
+            self.apply_filter();
+        }
     }
 
     /// Step the grid icon size, keeping it inside the range Teral will draw.
@@ -840,7 +1094,7 @@ impl AppInner {
         }
         self.state.icon_size.set(size);
         self.widgets.zoom_value.set_text(&format!("{size} px"));
-        fileview::refresh_grid_factory(self);
+        self.queue_icon_refresh();
 
         let pending = self.state.icon_size_save.replace(None);
         if let Some(source) = pending {
@@ -853,13 +1107,26 @@ impl AppInner {
                 app.state.icon_size_save.set(None);
                 let mut config = app.config.borrow().clone();
                 config.layout.grid_icon_size = Some(app.state.icon_size.get());
-                if let Err(error) = config.save() {
-                    app.show_error(&format!("Could not save settings: {error}"));
-                }
-                crate::config::set_current(config.clone());
-                *app.config.borrow_mut() = config;
+                app.apply_config(config, true);
             });
         self.state.icon_size_save.set(Some(source));
+    }
+
+    fn queue_icon_refresh(self: &App) {
+        if self.state.icon_refresh_queued.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(16),
+            move || {
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                app.state.icon_refresh_queued.set(false);
+                fileview::refresh_grid_factory(&app);
+            },
+        );
     }
 
     pub fn set_view_mode(self: &App, mode: ViewMode) {
@@ -867,6 +1134,22 @@ impl AppInner {
         self.widgets
             .view_stack
             .set_visible_child_name(mode.stack_name());
+    }
+
+    /// Persist the live file controls through the same configuration model Settings
+    /// uses. Callers invoke this after changing toolbar or shortcut state.
+    pub fn persist_file_preferences(self: &App) {
+        let sorting = self.state.sorting.get();
+        let mut config = self.config.borrow().clone();
+        config.show_hidden = self.state.show_hidden.get();
+        config.folders_first = sorting.folders_first;
+        config.sort = sorting.key;
+        config.descending = sorting.descending;
+        config.view = match self.state.view_mode.get() {
+            ViewMode::Grid => crate::config::ViewPreference::Grid,
+            ViewMode::List => crate::config::ViewPreference::List,
+        };
+        self.apply_config(config, true);
     }
 }
 

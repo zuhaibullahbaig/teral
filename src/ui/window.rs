@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
+use vte::prelude::*;
 
 /// Every widget Teral needs to reach again after construction.
 pub struct Widgets {
@@ -256,6 +257,16 @@ pub fn build_window_at(
 
     let start = start_at.unwrap_or_else(|| home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
+    let (pinned, pinned_error) = match places::load_pinned() {
+        Ok(pinned) => (pinned, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+
+    let (command_history, command_history_error) = match crate::command::load_history() {
+        Ok(history) => (history, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+
     let state = State {
         current: RefCell::new(PathBuf::from("/")),
         back: RefCell::new(Vec::new()),
@@ -270,8 +281,10 @@ pub fn build_window_at(
         }),
         show_hidden: Cell::new(config.show_hidden),
         query: RefCell::new(String::new()),
+        filter_source: Cell::new(None),
         generation: Cell::new(0),
-        pinned: RefCell::new(places::load_pinned()),
+        preview_generation: Cell::new(0),
+        pinned: RefCell::new(pinned),
         clipboard: RefCell::new(None),
         icon_size: Cell::new(theme.grid_icon_size()),
         view_mode: Cell::new(match config.view {
@@ -279,18 +292,36 @@ pub fn build_window_at(
             ViewPreference::List => ViewMode::List,
         }),
         running_command: Cell::new(false),
+        running_pid: Cell::new(None),
+        command_stop_requested: Cell::new(false),
+        command_close_requested: Cell::new(false),
+        command_history_index: Cell::new(command_history.len()),
+        command_history: RefCell::new(command_history),
         running_transfer: RefCell::new(None),
         updating: Cell::new(false),
+        theme_apply_source: Cell::new(None),
+        config_save_running: Cell::new(false),
+        pending_config_save: RefCell::new(None),
+        bookmark_save_running: Cell::new(false),
+        pending_bookmark_save: RefCell::new(None),
+        config_reload_queued: Cell::new(false),
+        theme_reload_requested: Cell::new(false),
         tabs: RefCell::new(vec![Tab::new(start.clone())]),
         active_tab: Cell::new(0),
         directory_monitor: RefCell::new(None),
         refresh_queued: Cell::new(false),
+        volume_monitor: gio::VolumeMonitor::get(),
+        volume_handlers: RefCell::new(Vec::new()),
+        device_refresh_queued: Cell::new(false),
         config_monitors: RefCell::new(Vec::new()),
+        desktop_handlers: RefCell::new(Vec::new()),
         console_height: Cell::new(statusbar::CONSOLE_HEIGHT),
         tag_view: RefCell::new(None),
         loading: Cell::new(false),
         pending_selection: RefCell::new(None),
+        retained_selection: RefCell::new(Vec::new()),
         icon_size_save: Cell::new(None),
+        icon_refresh_queued: Cell::new(false),
     };
 
     let app: App = Rc::new(AppInner {
@@ -299,6 +330,23 @@ pub fn build_window_at(
         config: RefCell::new(config),
         theme: RefCell::new(theme),
     });
+
+    if let Some(error) = pinned_error {
+        app.show_error(&format!("Could not load bookmarks: {error}"));
+    }
+    if let Some(error) = command_history_error {
+        app.show_error(&format!("Could not load command history: {error}"));
+    }
+
+    app.state.updating.set(true);
+    app.widgets
+        .details_toggle
+        .set_active(app.config.borrow().details_visible);
+    app.widgets
+        .details
+        .root
+        .set_visible(app.config.borrow().details_visible);
+    app.state.updating.set(false);
 
     header::connect(&app);
     search::connect(&app);
@@ -309,6 +357,7 @@ pub fn build_window_at(
     tabs::connect(&app);
     connect_window(&app);
     watch_configuration(&app);
+    watch_desktop_appearance(&app);
 
     if app.state.view_mode.get() == ViewMode::List {
         app.widgets.list_toggle.set_active(true);
@@ -323,6 +372,35 @@ pub fn build_window_at(
     app
 }
 
+fn watch_desktop_appearance(app: &App) {
+    let Some(settings) = gtk::Settings::default() else {
+        return;
+    };
+    for property in [
+        "gtk-theme-name",
+        "gtk-icon-theme-name",
+        "gtk-application-prefer-dark-theme",
+    ] {
+        let appearance_changed = property != "gtk-icon-theme-name";
+        let weak = Rc::downgrade(app);
+        let handler = settings.connect_notify_local(Some(property), move |_, _| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            crate::icons::clear_caches();
+            ops::clear_application_cache();
+            if appearance_changed {
+                app.queue_theme_apply();
+            }
+            fileview::refresh_grid_factory(&app);
+        });
+        app.state
+            .desktop_handlers
+            .borrow_mut()
+            .push((settings.clone(), handler));
+    }
+}
+
 /// Re-apply the theme when the configuration file or the active Omarchy theme changes,
 /// so switching desktop themes restyles a running Teral.
 pub fn watch_configuration(app: &App) {
@@ -331,10 +409,12 @@ pub fn watch_configuration(app: &App) {
     // in use a moment ago.
     app.state.config_monitors.borrow_mut().clear();
 
-    let mut watched = vec![crate::config::config_path()];
+    let config_path = crate::config::config_path();
+    let mut watched = vec![config_path.clone()];
     watched.extend(crate::theme::omarchy_watch_paths());
 
     for path in watched {
+        let watches_theme = path != config_path;
         let file = gio::File::for_path(&path);
         let monitor = if path.is_dir() {
             file.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
@@ -344,26 +424,99 @@ pub fn watch_configuration(app: &App) {
 
         let Ok(monitor) = monitor else { continue };
         monitor.connect_changed({
-            let app = Rc::clone(app);
+            let weak = Rc::downgrade(app);
             move |_, _, _, _| {
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
                 // The Settings window owns the file while it is open; do not fight it.
                 if app.widgets.settings_window.borrow().is_some() {
                     return;
                 }
-                // The handler must not still be running when its own monitor is
-                // dropped by the rebuild below, so both happen on the next idle.
-                let app = Rc::clone(&app);
-                super::defer(move || {
-                    app.reload_theme();
-                    watch_configuration(&app);
-                });
+                if watches_theme {
+                    app.state.theme_reload_requested.set(true);
+                }
+                queue_configuration_reload(&app);
             }
         });
         app.state.config_monitors.borrow_mut().push(monitor);
     }
 }
 
+/// Merge the multiple events produced by an atomic rename into one reload. Teral's
+/// own settings writer also generates these events, so wait for it to finish before
+/// comparing the on-disk value with the already-current runtime configuration.
+fn queue_configuration_reload(app: &App) {
+    if app.state.config_reload_queued.replace(true) {
+        return;
+    }
+
+    let weak = Rc::downgrade(app);
+    glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        app.state.config_reload_queued.set(false);
+        if app.state.config_save_running.get() {
+            queue_configuration_reload(&app);
+            return;
+        }
+
+        let reload_theme_files = app.state.theme_reload_requested.replace(false);
+        let weak = Rc::downgrade(&app);
+        glib::spawn_future_local(async move {
+            let loaded = gio::spawn_blocking(crate::config::Config::load).await;
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            match loaded {
+                Ok(Ok(config)) => {
+                    let changed = config != *app.config.borrow();
+                    if changed {
+                        app.apply_config(config.clone(), false);
+                        app.apply_preferences();
+                    }
+                    if reload_theme_files {
+                        app.apply_resolved_theme(&config);
+                    }
+                    if changed || reload_theme_files {
+                        watch_configuration(&app);
+                    }
+                }
+                Ok(Err(error)) => app.show_error(&format!(
+                    "Could not reload settings; keeping the last valid values: {error}"
+                )),
+                Err(_) => app.show_error("The settings reader stopped unexpectedly"),
+            }
+        });
+    });
+}
+
 fn connect_window(app: &App) {
+    app.widgets.window.connect_close_request({
+        let app = Rc::clone(app);
+        move |_| {
+            if !app.state.running_command.get() {
+                return glib::Propagation::Proceed;
+            }
+            if !app.state.command_close_requested.replace(true) {
+                app.widgets.console.terminal.feed_child(&[0x03]);
+                app.set_message(
+                    "Interrupting the running command; close again to force it to stop",
+                    false,
+                );
+                return glib::Propagation::Stop;
+            }
+            if let Some(pid) = app.state.running_pid.get() {
+                let _status = std::process::Command::new("kill")
+                    .arg("-KILL")
+                    .arg(pid.0.to_string())
+                    .status();
+            }
+            glib::Propagation::Proceed
+        }
+    });
+
     app.widgets.new_folder.connect_clicked({
         let app = Rc::clone(app);
         move |_| new_folder(&app)
@@ -602,6 +755,7 @@ fn toggle_hidden(app: &App) {
         check.set_active(value);
         app.state.updating.set(false);
     }
+    app.persist_file_preferences();
 }
 
 /// Launch an entry with the desktop's default application.
@@ -624,13 +778,18 @@ pub fn open_entry(app: &App, entry: &FileEntry) {
         ));
         return;
     }
-    if let Err(error) = ops::open(entry.path()) {
-        app.show_error(&format!(
-            "Could not open {}: {}",
-            entry.display_name(),
-            error.message().trim()
-        ));
-    }
+    let weak = Rc::downgrade(app);
+    let path = entry.path().to_path_buf();
+    let name = entry.display_name().to_owned();
+    glib::spawn_future_local(async move {
+        let result = ops::open(path).await;
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        if let Err(error) = result {
+            app.show_error(&format!("Could not open {name}: {error}"));
+        }
+    });
 }
 
 pub fn open_terminal(app: &App, directory: &Path) {
@@ -638,13 +797,25 @@ pub fn open_terminal(app: &App, directory: &Path) {
         app.set_message("Open a folder to start a terminal in it", false);
         return;
     }
-    match ops::open_terminal(directory) {
-        Ok(()) => app.set_message(
-            &format!("Terminal opened in {}", directory.display()),
-            false,
-        ),
-        Err(error) => app.show_error(&format!("Could not open a terminal: {error}")),
-    }
+    let directory = directory.to_path_buf();
+    let shown = directory.clone();
+    let terminal = app.config.borrow().terminal.clone();
+    let weak = Rc::downgrade(app);
+    glib::spawn_future_local(async move {
+        let result =
+            gio::spawn_blocking(move || ops::open_terminal(&directory, &terminal)).await;
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        match result {
+            Ok(Ok(())) => app.set_message(
+                &format!("Terminal opened in {}", shown.display()),
+                false,
+            ),
+            Ok(Err(error)) => app.show_error(&format!("Could not open a terminal: {error}")),
+            Err(_) => app.show_error("The terminal launcher stopped unexpectedly"),
+        }
+    });
 }
 
 fn new_folder(app: &App) {
@@ -672,6 +843,34 @@ fn new_folder(app: &App) {
                         "Could not create {name}: {}",
                         error.message().trim()
                     )),
+                }
+            });
+        },
+    );
+}
+
+fn new_file(app: &App) {
+    let Some(parent) = app.location().working_directory().map(Path::to_path_buf) else {
+        app.set_message("Open a folder to create something in it", false);
+        return;
+    };
+    dialogs::prompt_name(
+        app,
+        "New file",
+        "Create",
+        "Untitled",
+        None,
+        move |app, name| {
+            let app = Rc::clone(app);
+            let parent = parent.clone();
+            glib::spawn_future_local(async move {
+                match ops::create_file(&parent, OsStr::new(&name)).await {
+                    Ok(path) => {
+                        *app.state.pending_selection.borrow_mut() = Some(path);
+                        app.set_message(&format!("Created {name}"), false);
+                        app.reload();
+                    }
+                    Err(error) => app.show_error(&format!("Could not create {name}: {error}")),
                 }
             });
         },
@@ -720,7 +919,13 @@ pub fn rename_selection(app: &App) {
                 glib::spawn_future_local(async move {
                     match ops::rename(&path, &name).await {
                         Ok(renamed) => {
-                            crate::tags::edit(|tags| tags.relocate(&path, &renamed));
+                            if let Err(error) =
+                                crate::tags::edit(|tags| tags.relocate(&path, &renamed)).await
+                            {
+                                app.show_error(&format!(
+                                    "Renamed, but could not save tags: {error}"
+                                ));
+                            }
                             sidebar::rebuild_tags(&app);
                             app.set_message(&format!("Renamed to {name}"), false);
                             app.reload();
@@ -828,7 +1033,7 @@ fn run_trash_job<Fut>(
     glib::spawn_future_local(async move {
         let report = job.await;
         app.state.running_transfer.borrow_mut().take();
-        apply_tag_results(&report);
+        apply_tag_results(&app, &report).await;
         sidebar::rebuild_tags(&app);
         report_job(&app, &report, &extra_problems);
         // Trashing something on another disk creates that disk's trash directory, so
@@ -843,19 +1048,23 @@ fn run_trash_job<Fut>(
 ///
 /// The decision about which items may move tags belongs to the report itself, where it
 /// is tested; this only carries it out.
-fn apply_tag_results(report: &ops::JobReport) {
+async fn apply_tag_results(app: &App, report: &ops::JobReport) {
     let updates = report.tag_updates();
     if updates.is_empty() {
         return;
     }
-    crate::tags::edit(|tags| {
+    if let Err(error) = crate::tags::edit(|tags| {
         for (source, destination) in updates {
             match destination {
                 Some(destination) => tags.relocate(source, destination),
                 None => tags.forget(source),
             }
         }
-    });
+    })
+    .await
+    {
+        app.show_error(&format!("Files changed, but tags could not be saved: {error}"));
+    }
 }
 
 /// Say what a finished job actually did.
@@ -951,7 +1160,7 @@ pub fn drop_files(
 ) -> bool {
     // A drop onto a gathered view has no folder to land in, and the trash is not a
     // place to put files that were never deleted.
-    if !destination.is_dir() || ops::is_in_trash(destination) {
+    if ops::is_in_trash(destination) {
         return false;
     }
 
@@ -1104,11 +1313,15 @@ fn start_transfer(
         app.state.running_transfer.borrow_mut().take();
 
         if kind == TransferKind::Move {
-            crate::tags::edit(|tags| {
+            if let Err(error) = crate::tags::edit(|tags| {
                 for (from, to) in report.completed_moves() {
                     tags.relocate(from, to);
                 }
-            });
+            })
+            .await
+            {
+                app.show_error(&format!("Files moved, but tags could not be saved: {error}"));
+            }
             sidebar::rebuild_tags(&app);
         }
 
@@ -1535,10 +1748,16 @@ pub fn tag_popover(app: &App, paths: &[PathBuf]) -> gtk::Popover {
             let paths = paths.clone();
             move |check| {
                 let tagged = check.is_active();
-                crate::tags::edit(|tags| tags.set_tagged(&name, &paths, tagged));
-
                 let app = Rc::clone(&app);
-                super::defer(move || {
+                let name = name.clone();
+                let paths = paths.clone();
+                glib::spawn_future_local(async move {
+                    if let Err(error) =
+                        crate::tags::edit(|tags| tags.set_tagged(&name, &paths, tagged)).await
+                    {
+                        app.show_error(&format!("Could not save tags: {error}"));
+                        return;
+                    }
                     sidebar::rebuild_tags(&app);
                     app.update_details();
                     let in_tag_view = app.location().is_virtual();
@@ -1686,6 +1905,44 @@ fn set_executable(app: &App, executable: bool) {
     });
 }
 
+fn edit_permissions(app: &App) {
+    let Some(entry) = app.single_selection() else {
+        return;
+    };
+    let Some(mode) = entry.data().mode else {
+        app.show_error("Permissions are unavailable for this entry");
+        return;
+    };
+    let path = entry.path().to_path_buf();
+    dialogs::prompt_text(
+        app,
+        "Permissions",
+        "Apply",
+        &format!("{:03o}", mode & 0o777),
+        move |app, value| {
+            let value = value.trim();
+            let permissions = match u32::from_str_radix(value, 8) {
+                Ok(parsed) if parsed <= 0o777 && value.len() <= 3 => parsed,
+                _ => {
+                    app.show_error("Use three octal digits from 000 to 777");
+                    return;
+                }
+            };
+            let app = Rc::clone(app);
+            let path = path.clone();
+            glib::spawn_future_local(async move {
+                match ops::set_permissions(path, permissions).await {
+                    Ok(()) => {
+                        app.set_message("Permissions updated", false);
+                        app.reload();
+                    }
+                    Err(error) => app.show_error(&format!("Could not set permissions: {error}")),
+                }
+            });
+        },
+    );
+}
+
 /// A group of entries the current listing can select in one go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SelectionGroup {
@@ -1783,6 +2040,7 @@ fn selection_groups(app: &App) -> Vec<(SelectionGroup, usize)> {
 pub fn run_menu_action(app: &App, action: header::MenuAction) {
     match action {
         header::MenuAction::NewFolder => new_folder(app),
+        header::MenuAction::NewFile => new_file(app),
         header::MenuAction::Paste => paste(app),
         header::MenuAction::Terminal => {
             let directory = app.current_dir();
@@ -1874,7 +2132,7 @@ fn context_menu_content(app: &App) -> gtk::Box {
     }
 
     if let Some(entry) = single.as_ref() {
-        if entry.is_directory() {
+        if entry.is_directory() && app.location().accepts_new_files() {
             items.push((
                 header::menu_item(icons::ui(icons::names::TERMINAL), "Open Terminal Here"),
                 ContextAction::TerminalHere,
@@ -1905,6 +2163,12 @@ fn context_menu_content(app: &App) -> gtk::Box {
     }
 
     if !in_trash {
+        if selected.len() == 1 && selected[0].data().mode.is_some() {
+            items.push((
+                header::menu_item(icons::ui(icons::names::PERMISSIONS), "Permissions…"),
+                ContextAction::Permissions,
+            ));
+        }
         items.push((
             header::menu_item(icons::ui(icons::names::COPY), "Copy"),
             ContextAction::Copy,
@@ -2012,6 +2276,10 @@ fn background_menu_content(app: &App) -> gtk::Box {
         items.push((
             header::menu_item(icons::ui(icons::names::NEW_FOLDER), "New Folder"),
             ContextAction::NewFolder,
+        ));
+        items.push((
+            header::menu_item(icons::ui(icons::names::NEW_FILE), "New File"),
+            ContextAction::NewFile,
         ));
 
         let paste = header::menu_item(icons::ui(icons::names::PASTE), "Paste");
@@ -2138,6 +2406,7 @@ enum ContextAction {
     ExtractToFolder,
     SetExecutable,
     ClearExecutable,
+    Permissions,
     SelectAll,
     EmptyTrash,
     TerminalHere,
@@ -2148,6 +2417,7 @@ enum ContextAction {
     Cut,
     Trash,
     NewFolder,
+    NewFile,
     Paste,
     Refresh,
     Compress,
@@ -2212,6 +2482,7 @@ fn run_context_action(app: &App, action: ContextAction) {
         }
         ContextAction::SetExecutable => set_executable(app, true),
         ContextAction::ClearExecutable => set_executable(app, false),
+        ContextAction::Permissions => edit_permissions(app),
         ContextAction::SelectAll => {
             app.state.selection.select_all();
         }
@@ -2223,6 +2494,7 @@ fn run_context_action(app: &App, action: ContextAction) {
         ContextAction::Cut => stage_transfer(app, TransferKind::Move),
         ContextAction::Trash => trash_selection(app),
         ContextAction::NewFolder => new_folder(app),
+        ContextAction::NewFile => new_file(app),
         ContextAction::Paste => paste(app),
         ContextAction::Refresh => app.reload(),
         ContextAction::Compress => compress_selection(app),

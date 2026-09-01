@@ -8,6 +8,7 @@ use gtk::gio::prelude::*;
 use gtk::glib;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -29,6 +30,25 @@ pub async fn create_directory(parent: &Path, name: &OsStr) -> Result<PathBuf, gl
     gio::File::for_path(&path)
         .make_directory_future(glib::Priority::DEFAULT)
         .await?;
+    Ok(path)
+}
+
+/// Atomically reserve a new empty file. `create_new` closes the check/create race and
+/// never truncates an entry another process created first.
+pub async fn create_file(parent: &Path, name: &OsStr) -> io::Result<PathBuf> {
+    crate::files::name::validate(name)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let path = parent.join(name);
+    let worker_path = path.clone();
+    gio::spawn_blocking(move || {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&worker_path)?;
+        Ok::<(), io::Error>(())
+    })
+    .await
+    .map_err(|_| io::Error::other("file worker stopped unexpectedly"))??;
     Ok(path)
 }
 
@@ -988,37 +1008,88 @@ pub async fn compress(directory: PathBuf, paths: Vec<PathBuf>) -> Result<PathBuf
     Err(message)
 }
 
-/// Launch an entry with the desktop's default application.
-pub fn open(path: &Path) -> Result<(), glib::Error> {
-    let uri = gio::File::for_path(path).uri();
-    gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
+/// Launch an entry with the desktop's default application without making GTK wait for
+/// the desktop MIME database or a portal.
+pub async fn open(path: PathBuf) -> Result<(), String> {
+    gio::spawn_blocking(move || {
+        let uri = gio::File::for_path(path).uri();
+        gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
+            .map_err(|error| error.message().trim().to_owned())
+    })
+    .await
+    .map_err(|_| "the application launcher stopped unexpectedly".to_owned())?
 }
 
 thread_local! {
     /// Querying the desktop's application database costs real time, and the details
     /// panel asks about the same handful of content types over and over.
-    static APPLICATIONS: std::cell::RefCell<std::collections::HashMap<String, Vec<gio::AppInfo>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static APPLICATIONS: std::cell::RefCell<
+        std::collections::HashMap<String, Vec<ApplicationChoice>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// Applications the desktop recommends for an entry's content type.
-pub fn applications_for(content_type: Option<&str>) -> Vec<gio::AppInfo> {
+/// Send-safe description of an application returned by the desktop MIME database.
+///
+/// GIO objects are bound to their creating thread and therefore cannot be returned
+/// from `spawn_blocking`. Keeping only owned text here lets the query stay off GTK's
+/// main thread; the selected application is looked up and launched on that same kind
+/// of worker later.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationChoice {
+    pub id: String,
+    pub display_name: String,
+    content_type: String,
+}
+
+/// Applications resolved for an entry's content type.
+pub fn applications_for(content_type: Option<&str>) -> Vec<ApplicationChoice> {
     let Some(content_type) = content_type else {
         return Vec::new();
     };
 
-    APPLICATIONS.with_borrow_mut(|cache| {
-        if let Some(applications) = cache.get(content_type) {
-            return applications.clone();
-        }
+    APPLICATIONS.with_borrow(|cache| cache.get(content_type).cloned().unwrap_or_default())
+}
 
-        let mut applications = gio::AppInfo::recommended_for_type(content_type);
+/// Resolve desktop MIME applications and populate the shared cache.
+///
+/// `gio::AppInfo` cannot cross a worker-thread boundary, so the worker returns plain
+/// owned descriptions. This keeps a slow MIME database query out of selection and
+/// context-menu callbacks without depending on optional desktop-entry bindings.
+pub async fn load_applications(content_type: String) -> Vec<ApplicationChoice> {
+    if let Some(cached) = APPLICATIONS.with_borrow(|cache| cache.get(&content_type).cloned()) {
+        return cached;
+    }
+
+    let query = content_type.clone();
+    let Ok(applications) = gio::spawn_blocking(move || {
+        let mut applications = gio::AppInfo::recommended_for_type(&query);
         if applications.is_empty() {
-            applications = gio::AppInfo::all_for_type(content_type);
+            applications = gio::AppInfo::all_for_type(&query);
         }
-        cache.insert(content_type.to_owned(), applications.clone());
         applications
+            .into_iter()
+            .filter_map(|application| {
+                application.id().map(|id| ApplicationChoice {
+                    id: id.to_string(),
+                    display_name: application.display_name().to_string(),
+                    content_type: query.clone(),
+                })
+            })
+            .collect::<Vec<_>>()
     })
+    .await
+    else {
+        return Vec::new();
+    };
+
+    APPLICATIONS.with_borrow_mut(|cache| {
+        cache.insert(content_type, applications.clone());
+    });
+    applications
+}
+
+pub fn clear_application_cache() {
+    APPLICATIONS.with_borrow_mut(std::collections::HashMap::clear);
 }
 
 /// True when marking this entry executable is a sensible thing to offer.
@@ -1090,26 +1161,62 @@ pub async fn set_executable(paths: Vec<PathBuf>, executable: bool) -> JobReport 
     })
 }
 
-/// Launch `path` with a specific application.
-pub fn open_with(application: &gio::AppInfo, path: &Path) -> Result<(), glib::Error> {
-    let file = gio::File::for_path(path);
-    application.launch(&[file], None::<&gio::AppLaunchContext>)
+/// Replace only owner/group/other rwx bits on one local entry. Symlinks are refused so
+/// the target is never changed unexpectedly; special mode bits remain untouched.
+pub async fn set_permissions(path: PathBuf, permissions: u32) -> io::Result<()> {
+    if permissions > 0o777 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "permissions must contain exactly owner/group/other rwx bits",
+        ));
+    }
+    gio::spawn_blocking(move || {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        // Linux O_NOFOLLOW: open the entry itself before inspecting its mode, so a
+        // rename-to-symlink race cannot redirect chmod onto a target.
+        const O_NOFOLLOW: i32 = 0o400000;
+        const O_NONBLOCK: i32 = 0o4000;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW | O_NONBLOCK)
+            .open(&path)?;
+        let metadata = file.metadata()?;
+        let current = metadata.permissions().mode();
+        let updated = (current & !0o777) | permissions;
+        file.set_permissions(fs::Permissions::from_mode(updated))
+    })
+    .await
+    .map_err(|_| io::Error::other("permission worker stopped unexpectedly"))?
+}
+
+/// Launch `path` with a specific desktop application away from GTK's main loop.
+pub async fn open_with(application: ApplicationChoice, path: PathBuf) -> Result<(), String> {
+    gio::spawn_blocking(move || {
+        let mut applications = gio::AppInfo::recommended_for_type(&application.content_type);
+        applications.extend(gio::AppInfo::all_for_type(&application.content_type));
+        let application = applications
+            .into_iter()
+            .find(|candidate| {
+                candidate
+                    .id()
+                    .is_some_and(|id| id.as_str() == application.id.as_str())
+            })
+            .ok_or_else(|| "that application is no longer installed".to_owned())?;
+        let file = gio::File::for_path(path);
+        application
+            .launch(&[file], None::<&gio::AppLaunchContext>)
+            .map_err(|error| error.message().trim().to_owned())
+    })
+    .await
+    .map_err(|_| "the application launcher stopped unexpectedly".to_owned())?
 }
 
 /// Open the user's terminal emulator in `directory`.
 ///
 /// Teral's own setting wins, then `TERAL_TERMINAL`, then the first terminal found on
 /// `PATH`, so the behaviour stays configurable without a Teral-only registry.
-pub fn open_terminal(directory: &Path) -> Result<(), String> {
-    let setting = crate::config::current().terminal;
-    let configured = Some(setting.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("TERAL_TERMINAL")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        });
+pub fn open_terminal(directory: &Path, setting: &str) -> Result<(), String> {
+    let configured = Some(setting.trim().to_owned()).filter(|value| !value.is_empty());
 
     const CANDIDATES: [&str; 10] = [
         "ghostty",
@@ -1124,16 +1231,32 @@ pub fn open_terminal(directory: &Path) -> Result<(), String> {
         "xterm",
     ];
 
-    let program = configured
-        .and_then(|value| glib::find_program_in_path(&value))
-        .or_else(|| CANDIDATES.iter().find_map(glib::find_program_in_path))
-        .ok_or_else(|| "no terminal emulator was found on PATH".to_owned())?;
+    let arguments = if let Some(configured) = configured {
+        let arguments = crate::command::parse_program_spec(&configured)?;
+        crate::command::validate_program(&arguments)?;
+        arguments
+    } else if let Some(environment) = std::env::var("TERAL_TERMINAL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let arguments = crate::command::parse_program_spec(&environment)?;
+        crate::command::validate_program(&arguments)?;
+        arguments
+    } else {
+        let program = CANDIDATES
+            .iter()
+            .find_map(glib::find_program_in_path)
+            .ok_or_else(|| "no terminal emulator was found on PATH".to_owned())?;
+        vec![program.to_string_lossy().into_owned()]
+    };
+    let (program, extra) = arguments.split_first().expect("validated arguments");
 
-    std::process::Command::new(&program)
+    std::process::Command::new(program)
+        .args(extra)
         .current_dir(directory)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("{}: {error}", program.display()))
+        .map_err(|error| format!("{program}: {error}"))
 }
 
 #[cfg(test)]

@@ -6,8 +6,9 @@
 //! file itself, so a tag follows its file instead of pointing at a hole.
 
 use crate::theme::data_home;
+use gtk::gio;
 use serde::Deserialize;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -55,6 +56,9 @@ struct RawTag {
     color: Option<String>,
     #[serde(default)]
     paths: Vec<String>,
+    /// Lossless Linux paths written by current Teral versions.
+    #[serde(default)]
+    path_hex: Vec<String>,
 }
 
 fn tags_path() -> PathBuf {
@@ -77,51 +81,53 @@ impl Tags {
     }
 
     /// Read the store, falling back to the defaults when there is nothing to read.
-    pub fn load() -> Self {
+    pub fn load() -> Result<Self, String> {
         let path = tags_path();
-        let Ok(raw) = fs::read_to_string(&path) else {
-            return Self::defaults();
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::defaults());
+            }
+            Err(error) => return Err(format!("could not read {}: {error}", path.display())),
         };
 
         match toml::from_str::<RawTags>(&raw) {
-            Ok(raw) => Self {
-                tags: raw
-                    .tag
-                    .into_iter()
-                    .map(|tag| Tag {
+            Ok(raw) => raw
+                .tag
+                .into_iter()
+                .map(|tag| {
+                    let mut paths = tag
+                        .path_hex
+                        .into_iter()
+                        .map(|encoded| crate::persistence::decode_path(&encoded))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    paths.extend(tag.paths.into_iter().map(PathBuf::from));
+                    Ok(Tag {
                         color: tag
                             .color
                             .filter(|color| crate::theme::valid_color(color))
                             .unwrap_or_else(|| "#e0a63c".to_owned()),
                         name: tag.name,
-                        // Files that have since disappeared are dropped quietly.
-                        paths: tag
-                            .paths
-                            .into_iter()
-                            .map(PathBuf::from)
-                            .filter(|path| path.symlink_metadata().is_ok())
-                            .collect(),
+                        // Do not treat an unavailable disk as proof that metadata is
+                        // stale. Missing entries remain visible in the tag count and
+                        // can reappear when their filesystem returns.
+                        paths,
                     })
-                    .filter(|tag| !tag.name.trim().is_empty())
-                    .collect(),
-            },
-            Err(error) => {
-                eprintln!("Teral: could not read {}: {error}", path.display());
-                Self::defaults()
-            }
+                })
+                .collect::<Result<Vec<_>, String>>()
+                .map(|tags| Self {
+                    tags: tags
+                        .into_iter()
+                        .filter(|tag| !tag.name.trim().is_empty())
+                        .collect(),
+                }),
+            Err(error) => Err(format!("could not parse {}: {error}", path.display())),
         }
     }
 
-    /// Persist the store.
-    pub fn save(&self) {
+    /// Serialize on the owning context before a worker performs the filesystem write.
+    fn payload(&self) -> (PathBuf, Vec<u8>) {
         let path = tags_path();
-        if let Some(parent) = path.parent()
-            && let Err(error) = fs::create_dir_all(parent)
-        {
-            eprintln!("Teral: could not create {}: {error}", parent.display());
-            return;
-        }
-
         let mut document = String::from("# Teral tags. Edit by hand if you like.\n\n");
         document.push_str(&format!("version = {TAGS_VERSION}\n"));
 
@@ -129,22 +135,17 @@ impl Tags {
             document.push_str("\n[[tag]]\n");
             document.push_str(&format!("name = \"{}\"\n", escape(&tag.name)));
             document.push_str(&format!("color = \"{}\"\n", escape(&tag.color)));
-            document.push_str("paths = [\n");
+            document.push_str("path_hex = [\n");
             for entry in &tag.paths {
-                match entry.to_str() {
-                    Some(text) => document.push_str(&format!("  \"{}\",\n", escape(text))),
-                    None => eprintln!(
-                        "Teral: cannot tag {} because its name is not valid UTF-8",
-                        entry.display()
-                    ),
-                }
+                document.push_str(&format!(
+                    "  \"{}\",\n",
+                    crate::persistence::encode_path(entry)
+                ));
             }
             document.push_str("]\n");
         }
 
-        if let Err(error) = fs::write(&path, document) {
-            eprintln!("Teral: could not write {}: {error}", path.display());
-        }
+        (path, document.into_bytes())
     }
 
     pub fn get(&self, name: &str) -> Option<&Tag> {
@@ -251,6 +252,7 @@ fn escape(value: &str) -> String {
 
 thread_local! {
     static CURRENT: RefCell<Tags> = RefCell::new(Tags::default());
+    static WRITE_RUNNING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The tag store currently in memory.
@@ -258,22 +260,41 @@ pub fn current() -> Tags {
     CURRENT.with_borrow(Clone::clone)
 }
 
-/// Replace the store in memory and write it out.
-pub fn set_current(tags: Tags) {
-    tags.save();
+/// Replace the store only after its worker-thread write succeeds.
+pub async fn set_current(tags: Tags) -> Result<(), String> {
+    if WRITE_RUNNING.with(|running| running.replace(true)) {
+        return Err("another tag change is still being saved".to_owned());
+    }
+    let (path, document) = tags.payload();
+    let result = gio::spawn_blocking(move || {
+        if let Some(parent) = path.parent()
+            && let Err(error) = fs::create_dir_all(parent)
+        {
+            return Err(format!("could not create {}: {error}", parent.display()));
+        }
+        crate::persistence::atomic_write(&path, &document)
+            .map_err(|error| format!("could not write {}: {error}", path.display()))
+    })
+    .await;
+    WRITE_RUNNING.with(|running| running.set(false));
+    result
+        .map_err(|_| "the tag writer stopped unexpectedly".to_owned())??;
     CURRENT.with_borrow_mut(|current| *current = tags);
+    Ok(())
 }
 
 /// Load the store at start-up without writing it back.
-pub fn init() {
-    CURRENT.with_borrow_mut(|current| *current = Tags::load());
+pub fn init() -> Result<(), String> {
+    let tags = Tags::load()?;
+    CURRENT.with_borrow_mut(|current| *current = tags);
+    Ok(())
 }
 
 /// Edit the store in place and save the result.
-pub fn edit(change: impl FnOnce(&mut Tags)) {
+pub async fn edit(change: impl FnOnce(&mut Tags)) -> Result<(), String> {
     let mut tags = current();
     change(&mut tags);
-    set_current(tags);
+    set_current(tags).await
 }
 
 #[cfg(test)]

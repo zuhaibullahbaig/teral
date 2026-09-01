@@ -41,7 +41,7 @@ impl SortKey {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sorting {
     pub key: SortKey,
     pub descending: bool,
@@ -60,6 +60,15 @@ impl Default for Sorting {
 
 /// Enumerate a directory without blocking the main loop.
 pub async fn scan_directory(path: &Path) -> Result<Vec<EntryData>, glib::Error> {
+    scan_directory_batched(path, |_| true).await
+}
+
+/// Enumerate a directory in bounded, ordered batches. Returning `false` from
+/// `receive` cancels publication after the current GIO batch.
+pub async fn scan_directory_batched(
+    path: &Path,
+    mut receive: impl FnMut(Vec<EntryData>) -> bool,
+) -> Result<Vec<EntryData>, glib::Error> {
     let directory = gio::File::for_path(path);
     let enumerator = directory
         .enumerate_children_future(
@@ -77,10 +86,16 @@ pub async fn scan_directory(path: &Path) -> Result<Vec<EntryData>, glib::Error> 
         if batch.is_empty() {
             break;
         }
-        entries.extend(batch.iter().map(|info| EntryData::from_info(path, info)));
+        let mut decoded: Vec<EntryData> = batch
+            .iter()
+            .map(|info| EntryData::from_info(path, info))
+            .collect();
+        resolve_links(&mut decoded).await;
+        entries.extend(decoded.iter().cloned());
+        if !receive(decoded) {
+            break;
+        }
     }
-
-    resolve_links(&mut entries).await;
     Ok(entries)
 }
 

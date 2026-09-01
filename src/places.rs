@@ -6,6 +6,8 @@ use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
 use serde::Deserialize;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,12 +19,13 @@ pub struct Place {
     pub path: PathBuf,
 }
 
-/// A mounted filesystem, with capacity when the kernel reports it.
+/// A mountable volume or mounted filesystem shown in the sidebar.
 #[derive(Debug, Clone)]
 pub struct Device {
     pub label: String,
     pub icon: Option<gio::Icon>,
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
+    pub volume: Option<gio::Volume>,
 }
 
 /// Standard XDG user directories that actually exist on this system.
@@ -118,32 +121,66 @@ fn trash_label(dir: &TrashDir, home: &TrashDir) -> String {
     }
 }
 
-/// Mounted filesystems discovered through GIO, plus the root filesystem.
+/// Mountable volumes and mounted filesystems discovered through GIO, plus root.
 pub fn devices() -> Vec<Device> {
     let mut devices = vec![Device {
         label: "Filesystem".to_owned(),
         icon: Some(gio::Icon::for_string("drive-harddisk-symbolic").expect("static icon name")),
-        path: PathBuf::from("/"),
+        path: Some(PathBuf::from("/")),
+        volume: None,
     }];
 
-    for mount in gio::VolumeMonitor::get().mounts() {
+    let monitor = gio::VolumeMonitor::get();
+    for volume in monitor.volumes() {
+        let path = volume.get_mount().and_then(|mount| mount.root().path());
+        if path.as_deref() == Some(Path::new("/")) {
+            continue;
+        }
+        devices.push(Device {
+            label: volume.name().to_string(),
+            icon: Some(volume.symbolic_icon()),
+            path,
+            volume: Some(volume),
+        });
+    }
+
+    // Some mounts, including manually-added remote locations, have no GVolume. Keep
+    // those navigable without duplicating the mounts already represented above.
+    for mount in monitor.mounts() {
         if mount.is_shadowed() {
+            continue;
+        }
+        if mount.volume().is_some() {
             continue;
         }
         let Some(path) = mount.root().path() else {
             continue;
         };
-        if path == Path::new("/") || devices.iter().any(|device| device.path == path) {
+        if path == Path::new("/")
+            || devices
+                .iter()
+                .any(|device| device.path.as_deref() == Some(path.as_path()))
+        {
             continue;
         }
 
         devices.push(Device {
             label: mount.name().to_string(),
             icon: Some(mount.symbolic_icon()),
-            path,
+            path: Some(path),
+            volume: None,
         });
     }
 
+    DEVICE_LABELS.with_borrow_mut(|labels| {
+        labels.clear();
+        labels.extend(devices.iter().filter_map(|device| {
+            device
+                .path
+                .clone()
+                .map(|path| (path, device.label.clone()))
+        }));
+    });
     devices
 }
 
@@ -151,6 +188,19 @@ pub fn devices() -> Vec<Device> {
 struct PinnedFile {
     #[serde(default)]
     pinned: Vec<String>,
+    #[serde(default)]
+    bookmark: Vec<RawBookmark>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawBookmark {
+    path_hex: String,
+    label: Option<String>,
+}
+
+thread_local! {
+    static BOOKMARK_LABELS: RefCell<HashMap<PathBuf, String>> = RefCell::new(HashMap::new());
+    static DEVICE_LABELS: RefCell<HashMap<PathBuf, String>> = RefCell::new(HashMap::new());
 }
 
 fn pinned_path() -> PathBuf {
@@ -158,53 +208,81 @@ fn pinned_path() -> PathBuf {
 }
 
 /// Load the user's pinned locations, dropping any that no longer exist.
-pub fn load_pinned() -> Vec<PathBuf> {
-    let Ok(raw) = fs::read_to_string(pinned_path()) else {
-        return Vec::new();
+pub fn load_pinned() -> Result<Vec<PathBuf>, String> {
+    let path = pinned_path();
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", path.display())),
     };
 
     match toml::from_str::<PinnedFile>(&raw) {
-        Ok(file) => file
-            .pinned
-            .into_iter()
-            .map(PathBuf::from)
-            .filter(|path| path.is_dir())
-            .collect(),
-        Err(error) => {
-            eprintln!("Teral: could not read pinned locations: {error}");
-            Vec::new()
+        Ok(file) => {
+            let mut pinned: Vec<PathBuf> = file.pinned.into_iter().map(PathBuf::from).collect();
+            let mut labels = HashMap::new();
+            for bookmark in file.bookmark {
+                let path = crate::persistence::decode_path(&bookmark.path_hex)?;
+                if !pinned.contains(&path) {
+                    pinned.push(path.clone());
+                }
+                if let Some(label) = bookmark.label.filter(|label| !label.trim().is_empty()) {
+                    labels.insert(path, label);
+                }
+            }
+            BOOKMARK_LABELS.with_borrow_mut(|current| *current = labels);
+            Ok(pinned)
         }
+        Err(error) => Err(format!("could not parse {}: {error}", path.display())),
     }
 }
 
-/// Persist the user's pinned locations.
-///
-/// Paths that are not valid UTF-8 cannot be represented in TOML and are reported rather
-/// than silently written back in a lossy form.
-pub fn save_pinned(pinned: &[PathBuf]) {
+/// Serialize bookmarks on the owning main context, where display-label overrides live.
+/// The returned plain data can then be written safely on a worker.
+pub fn pinned_payload(pinned: &[PathBuf]) -> (PathBuf, Vec<u8>) {
     let path = pinned_path();
+    let mut document = String::from("version = 2\n");
+    for pin in pinned {
+        document.push_str("\n[[bookmark]]\n");
+        document.push_str(&format!(
+            "path_hex = \"{}\"\n",
+            crate::persistence::encode_path(pin)
+        ));
+        if let Some(label) = bookmark_label_override(pin) {
+            document.push_str(&format!("label = \"{}\"\n", escape(&label)));
+        }
+    }
+    (path, document.into_bytes())
+}
+
+/// Complete a previously prepared bookmark write.
+pub fn write_pinned_payload(path: PathBuf, document: Vec<u8>) -> Result<(), String> {
     if let Some(parent) = path.parent()
         && let Err(error) = fs::create_dir_all(parent)
     {
-        eprintln!("Teral: could not create {}: {error}", parent.display());
-        return;
+        return Err(format!("could not create {}: {error}", parent.display()));
     }
 
-    let mut document = String::from("version = 1\npinned = [\n");
-    for pin in pinned {
-        match pin.to_str() {
-            Some(text) => document.push_str(&format!("  \"{}\",\n", escape(text))),
-            None => eprintln!(
-                "Teral: cannot pin {} because its name is not valid UTF-8",
-                pin.display()
-            ),
+    crate::persistence::atomic_write(&path, &document)
+        .map_err(|error| format!("could not write {}: {error}", path.display()))
+}
+
+pub fn bookmark_label(path: &Path) -> String {
+    bookmark_label_override(path).unwrap_or_else(|| display_label(path))
+}
+
+pub fn set_bookmark_label(path: &Path, label: Option<String>) {
+    BOOKMARK_LABELS.with_borrow_mut(|labels| match label.filter(|label| !label.trim().is_empty()) {
+        Some(label) => {
+            labels.insert(path.to_path_buf(), label);
         }
-    }
-    document.push_str("]\n");
+        None => {
+            labels.remove(path);
+        }
+    });
+}
 
-    if let Err(error) = fs::write(&path, document) {
-        eprintln!("Teral: could not write {}: {error}", path.display());
-    }
+fn bookmark_label_override(path: &Path) -> Option<String> {
+    BOOKMARK_LABELS.with_borrow(|labels| labels.get(path).cloned())
 }
 
 fn escape(value: &str) -> String {
@@ -219,6 +297,10 @@ pub fn display_label(path: &Path) -> String {
 
     if Some(path) == home_dir().as_deref() {
         return "Home".to_owned();
+    }
+
+    if let Some(label) = DEVICE_LABELS.with_borrow(|labels| labels.get(path).cloned()) {
+        return label;
     }
 
     // Every browsable trash path ends in "files". Checking that first keeps the

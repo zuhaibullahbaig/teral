@@ -86,8 +86,11 @@ fn present(application: &Application, request: Option<Request>) {
         return;
     }
 
-    crate::tags::init();
-    let config = Config::load();
+    let tags_error = crate::tags::init().err();
+    let (config, config_error) = match Config::load() {
+        Ok(config) => (config, None),
+        Err(error) => (Config::default(), Some(error)),
+    };
     let theme = ThemeConfig::resolve(&config);
     config::set_current(config.clone());
     style::apply(&theme);
@@ -98,19 +101,41 @@ fn present(application: &Application, request: Option<Request>) {
         gtk::Window::set_default_icon_name(&icon);
     }
 
+    let restore_session = request.is_none();
     let (directory, select) = match request {
         Some(request) => (Some(request.directory), request.select),
         None => (None, None),
     };
 
     let app = ui::build_window_at(application, config, theme, directory);
+    if let Some(error) = tags_error {
+        app.show_error(&format!("Could not load tags: {error}"));
+    }
+    if let Some(error) = config_error {
+        app.show_error(&format!("Could not load settings: {error}"));
+    }
     *app.state.pending_selection.borrow_mut() = select;
 
+    if restore_session {
+        match crate::session::load() {
+            Ok(Some(session)) => app.restore_session(session),
+            Ok(None) => {}
+            Err(error) => app.show_error(&format!("Could not restore the last session: {error}")),
+        }
+    }
+
     let window = app.widgets.window.clone();
-    RUNNING.with_borrow_mut(|running| *running = Some(app));
+    RUNNING.with_borrow_mut(|running| *running = Some(app.clone()));
 
     // The window outlives this function; dropping the record when it closes keeps a
     // later activation from presenting a window that is gone.
-    window.connect_destroy(|_| RUNNING.with_borrow_mut(|running| *running = None));
+    let app_for_close = app.clone();
+    window.connect_destroy(move |_| {
+        if let Err(error) = app_for_close.save_session() {
+            eprintln!("Teral: could not save the session: {error}");
+        }
+        app_for_close.disconnect_desktop_handlers();
+        RUNNING.with_borrow_mut(|running| *running = None);
+    });
     window.present();
 }

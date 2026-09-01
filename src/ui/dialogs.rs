@@ -2,8 +2,6 @@
 
 use super::App;
 use crate::files::{FileEntry, ops};
-use gtk::gio;
-use gtk::gio::prelude::*;
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::RefCell;
@@ -65,7 +63,19 @@ pub fn prompt_name(
     select_range: Option<(i32, i32)>,
     confirm: impl Fn(&App, String) + 'static,
 ) {
-    prompt_with(app, title, accept_label, initial, select_range, confirm);
+    prompt_with(app, title, accept_label, initial, select_range, true, confirm);
+}
+
+/// Ask for a display label. Unlike a filename this is presentation-only, so it may
+/// contain slashes; an empty value removes the override.
+pub fn prompt_text(
+    app: &App,
+    title: &str,
+    accept_label: &str,
+    initial: &str,
+    confirm: impl Fn(&App, String) + 'static,
+) {
+    prompt_with(app, title, accept_label, initial, None, false, confirm);
 }
 
 fn prompt_with(
@@ -74,6 +84,7 @@ fn prompt_with(
     accept_label: &str,
     initial: &str,
     select_range: Option<(i32, i32)>,
+    validate_filename: bool,
     confirm: impl Fn(&App, String) + 'static,
 ) {
     let heading = gtk::Label::new(Some(title));
@@ -132,11 +143,13 @@ fn prompt_with(
         let confirm = Rc::clone(&confirm);
         move || {
             let value = entry.text().to_string();
-            if let Err(error) = crate::files::name::validate(OsStr::new(&value)) {
-                problem.set_text(error.message());
-                problem.set_visible(true);
-                entry.grab_focus();
-                return;
+            if validate_filename {
+                if let Err(error) = crate::files::name::validate(OsStr::new(&value)) {
+                    problem.set_text(error.message());
+                    problem.set_visible(true);
+                    entry.grab_focus();
+                    return;
+                }
             }
             window.close();
             confirm(&app, value);
@@ -453,6 +466,7 @@ pub fn edit_tag(app: &App, existing: Option<&str>) {
         let swatch = swatch.clone();
         let window = window.clone();
         let message = message.clone();
+        let accept = accept.clone();
         let existing = existing.map(str::to_owned);
         move || {
             let name = entry.text().trim().to_owned();
@@ -472,10 +486,24 @@ pub fn edit_tag(app: &App, existing: Option<&str>) {
 
             match result {
                 Ok(()) => {
-                    crate::tags::set_current(store);
-                    super::sidebar::rebuild_tags(&app);
-                    app.update_details();
-                    window.close();
+                    accept.set_sensitive(false);
+                    let app = Rc::clone(&app);
+                    let window = window.clone();
+                    let message = message.clone();
+                    let accept = accept.clone();
+                    glib::spawn_future_local(async move {
+                        match crate::tags::set_current(store).await {
+                            Ok(()) => {
+                                super::sidebar::rebuild_tags(&app);
+                                app.update_details();
+                                window.close();
+                            }
+                            Err(error) => {
+                                accept.set_sensitive(true);
+                                message.set_text(&format!("Could not save tags: {error}"));
+                            }
+                        }
+                    });
                 }
                 Err(error) => message.set_text(&error),
             }
@@ -507,19 +535,26 @@ pub fn confirm_delete_tag(app: &App, name: &str) {
         &format!("{name} will be removed from every file carrying it. The files are not touched."),
         "Delete",
         move || {
-            crate::tags::edit(|tags| tags.delete(&name));
-            super::sidebar::rebuild_tags(&app_for_action);
-            if app_for_action
-                .state
-                .tag_view
-                .borrow()
-                .as_deref()
-                .is_some_and(|active| active.eq_ignore_ascii_case(&name))
-            {
-                let home = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-                app_for_action.navigate(&home);
-            }
-            app_for_action.update_details();
+            let app = Rc::clone(&app_for_action);
+            let name = name.clone();
+            glib::spawn_future_local(async move {
+                if let Err(error) = crate::tags::edit(|tags| tags.delete(&name)).await {
+                    app.show_error(&format!("Could not save tags: {error}"));
+                    return;
+                }
+                super::sidebar::rebuild_tags(&app);
+                if app
+                    .state
+                    .tag_view
+                    .borrow()
+                    .as_deref()
+                    .is_some_and(|active| active.eq_ignore_ascii_case(&name))
+                {
+                    let home = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                    app.navigate(&home);
+                }
+                app.update_details();
+            });
         },
     );
 }
@@ -532,7 +567,7 @@ fn channel(value: f32) -> u8 {
 pub fn open_with_popover(
     app: &App,
     entry: &FileEntry,
-    applications: Vec<gio::AppInfo>,
+    applications: Vec<ops::ApplicationChoice>,
 ) -> gtk::Popover {
     let popover = gtk::Popover::new();
     popover.add_css_class("teral-popover");
@@ -542,12 +577,9 @@ pub fn open_with_popover(
 
     for application in applications.into_iter().take(12) {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
-        let icon = match application.icon() {
-            Some(icon) => gtk::Image::from_gicon(&icon),
-            None => gtk::Image::from_icon_name("application-x-executable-symbolic"),
-        };
+        let icon = gtk::Image::from_icon_name("application-x-executable-symbolic");
         icon.set_pixel_size(15);
-        let label = gtk::Label::new(Some(&application.display_name()));
+        let label = gtk::Label::new(Some(&application.display_name));
         label.set_xalign(0.0);
         label.set_hexpand(true);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -562,15 +594,24 @@ pub fn open_with_popover(
         let app = Rc::clone(app);
         let popover = popover.clone();
         let path = entry.path().to_path_buf();
+        let application_name = application.display_name.clone();
         button.connect_clicked(move |_| {
             popover.popdown();
-            if let Err(error) = ops::open_with(&application, &path) {
-                app.show_error(&format!(
-                    "Could not open with {}: {}",
-                    application.display_name(),
-                    error.message().trim()
-                ));
-            }
+            let weak = Rc::downgrade(&app);
+            let path = path.clone();
+            let application = application.clone();
+            let application_name = application_name.clone();
+            gtk::glib::spawn_future_local(async move {
+                let result = ops::open_with(application, path).await;
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                if let Err(error) = result {
+                    app.show_error(&format!(
+                        "Could not open with {application_name}: {error}"
+                    ));
+                }
+            });
         });
 
         content.append(&button);

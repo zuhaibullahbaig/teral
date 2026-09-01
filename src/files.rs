@@ -6,6 +6,7 @@
 pub mod entry;
 pub mod name;
 pub mod ops;
+pub mod preview;
 pub mod scan;
 pub mod transfer;
 pub mod trash;

@@ -3,6 +3,8 @@
 use super::{App, ViewMode, icon_button, icon_toggle};
 use crate::files::SortKey;
 use crate::icons;
+use gtk::gio;
+use gtk::gio::prelude::*;
 use gtk::glib;
 use gtk::prelude::*;
 use std::path::{Path, PathBuf};
@@ -129,12 +131,32 @@ pub fn connect(app: &App) {
         move |entry| {
             let text = entry.text();
             let expanded = expand_path(text.as_str());
-            if expanded.is_dir() {
-                app.navigate(&expanded);
-                hide_location(&app);
-            } else {
-                app.show_error(&format!("{} is not a folder", expanded.display()));
-            }
+            let file = gio::File::for_path(&expanded);
+            let weak = Rc::downgrade(&app);
+            glib::spawn_future_local(async move {
+                let result = file
+                    .query_info_future(
+                        gio::FILE_ATTRIBUTE_STANDARD_TYPE,
+                        gio::FileQueryInfoFlags::NONE,
+                        glib::Priority::DEFAULT,
+                    )
+                    .await;
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(info) if info.file_type() == gio::FileType::Directory => {
+                        app.navigate(&expanded);
+                        hide_location(&app);
+                    }
+                    Ok(_) => app.show_error(&format!("{} is not a folder", expanded.display())),
+                    Err(error) => app.show_error(&format!(
+                        "Could not open {}: {}",
+                        expanded.display(),
+                        error.message().trim()
+                    )),
+                }
+            });
         }
     });
 
@@ -171,6 +193,9 @@ pub fn connect(app: &App) {
         move |button| {
             if button.is_active() {
                 app.set_view_mode(ViewMode::Grid);
+                if !app.state.updating.get() {
+                    app.persist_file_preferences();
+                }
             }
         }
     });
@@ -179,6 +204,9 @@ pub fn connect(app: &App) {
         move |button| {
             if button.is_active() {
                 app.set_view_mode(ViewMode::List);
+                if !app.state.updating.get() {
+                    app.persist_file_preferences();
+                }
             }
         }
     });
@@ -260,10 +288,7 @@ pub fn rebuild_breadcrumbs(app: &App, path: &Path) {
             content.append(&gtk::Label::new(Some("Filesystem")));
             button.set_child(Some(&content));
         } else {
-            let name = ancestor
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| ancestor.to_string_lossy().into_owned());
+            let name = crate::places::display_label(ancestor);
             button.set_child(Some(&gtk::Label::new(Some(&name))));
         }
 
@@ -310,6 +335,7 @@ fn sort_popover(app: &App) -> gtk::Popover {
             sorting.key = key;
             app.state.sorting.set(sorting);
             app.apply_filter();
+            app.persist_file_preferences();
         });
         content.append(&button);
     }
@@ -326,6 +352,7 @@ fn sort_popover(app: &App) -> gtk::Popover {
             sorting.descending = button.is_active();
             app.state.sorting.set(sorting);
             app.apply_filter();
+            app.persist_file_preferences();
         }
     });
     content.append(&descending);
@@ -340,6 +367,7 @@ fn sort_popover(app: &App) -> gtk::Popover {
             sorting.folders_first = button.is_active();
             app.state.sorting.set(sorting);
             app.apply_filter();
+            app.persist_file_preferences();
         }
     });
     content.append(&folders_first);
@@ -355,6 +383,7 @@ fn sort_popover(app: &App) -> gtk::Popover {
             }
             app.state.show_hidden.set(button.is_active());
             app.apply_filter();
+            app.persist_file_preferences();
         }
     });
     content.append(&hidden);
@@ -374,6 +403,7 @@ fn folder_popover(app: &App) -> gtk::Popover {
     content.set_width_request(210);
 
     let new_folder = menu_item(icons::ui(icons::names::NEW_FOLDER), "New Folder");
+    let new_file = menu_item(icons::ui(icons::names::NEW_FILE), "New File");
     let paste = menu_item(icons::ui(icons::names::PASTE), "Paste");
     let terminal = menu_item(icons::ui(icons::names::TERMINAL), "Open Terminal Here");
     let pin = menu_item(icons::ui(icons::names::PIN), "Bookmark This Folder");
@@ -384,6 +414,7 @@ fn folder_popover(app: &App) -> gtk::Popover {
 
     for (item, action) in [
         (&new_folder, MenuAction::NewFolder),
+        (&new_file, MenuAction::NewFile),
         (&paste, MenuAction::Paste),
         (&terminal, MenuAction::Terminal),
         (&pin, MenuAction::TogglePin),
@@ -401,6 +432,7 @@ fn folder_popover(app: &App) -> gtk::Popover {
     }
 
     content.append(&new_folder);
+    content.append(&new_file);
     content.append(&paste);
     content.append(&separator());
     content.append(&terminal);
@@ -414,9 +446,18 @@ fn folder_popover(app: &App) -> gtk::Popover {
     // Reflect the current clipboard and pin state whenever the menu opens.
     popover.connect_show({
         let app = Rc::clone(app);
+        let new_folder = new_folder.clone();
+        let new_file = new_file.clone();
         let paste = paste.clone();
+        let terminal = terminal.clone();
         let pin = pin.clone();
         move |_| {
+            let accepts_new_files = app.location().accepts_new_files();
+            new_folder.set_visible(accepts_new_files);
+            new_file.set_visible(accepts_new_files);
+            paste.set_visible(accepts_new_files);
+            terminal.set_visible(accepts_new_files);
+            pin.set_visible(accepts_new_files);
             paste.set_sensitive(crate::files::ops::clipboard_has_files(
                 &app.widgets.window.clipboard(),
             ));
@@ -442,6 +483,7 @@ fn folder_popover(app: &App) -> gtk::Popover {
 #[derive(Debug, Clone, Copy)]
 pub enum MenuAction {
     NewFolder,
+    NewFile,
     Paste,
     Terminal,
     TogglePin,

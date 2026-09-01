@@ -22,6 +22,9 @@ pub struct Details {
     pub stack: gtk::Stack,
     pub icon: gtk::Image,
     pub picture: gtk::Picture,
+    pub text_preview: gtk::TextView,
+    pub text_scroller: gtk::ScrolledWindow,
+    pub preview_message: gtk::Label,
     pub name: gtk::Label,
     pub kind: gtk::Label,
     pub size: gtk::Label,
@@ -84,6 +87,7 @@ pub fn build(width: i32) -> Details {
     title.set_xalign(0.0);
     title.set_hexpand(true);
     title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    title.set_max_width_chars(1);
     title.add_css_class("teral-details-title");
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -97,9 +101,31 @@ pub fn build(width: i32) -> Details {
 
     let picture = gtk::Picture::new();
     picture.set_content_fit(gtk::ContentFit::Contain);
+    picture.set_can_shrink(true);
     picture.set_hexpand(true);
     picture.set_vexpand(true);
     picture.set_visible(false);
+
+    let text_preview = gtk::TextView::new();
+    text_preview.set_editable(false);
+    text_preview.set_cursor_visible(false);
+    text_preview.set_monospace(true);
+    text_preview.set_wrap_mode(gtk::WrapMode::WordChar);
+    text_preview.add_css_class("teral-text-preview");
+
+    let text_scroller = gtk::ScrolledWindow::builder()
+        .child(&text_preview)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    text_scroller.set_visible(false);
+
+    let preview_message = gtk::Label::new(None);
+    preview_message.set_wrap(true);
+    preview_message.set_max_width_chars(1);
+    preview_message.add_css_class("teral-muted");
+    preview_message.set_visible(false);
 
     let preview = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     preview.add_css_class("teral-preview");
@@ -110,6 +136,8 @@ pub fn build(width: i32) -> Details {
     preview.set_vexpand(false);
     preview.append(&icon);
     preview.append(&picture);
+    preview.append(&text_scroller);
+    preview.append(&preview_message);
 
     let name = gtk::Label::new(None);
     name.set_xalign(0.0);
@@ -124,10 +152,14 @@ pub fn build(width: i32) -> Details {
 
     let kind = gtk::Label::new(None);
     kind.set_xalign(0.0);
+    kind.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    kind.set_max_width_chars(1);
     kind.add_css_class("teral-details-kind");
 
     let size = gtk::Label::new(None);
     size.set_xalign(0.0);
+    size.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    size.set_max_width_chars(1);
     size.add_css_class("teral-details-size");
 
     let summary = gtk::Box::new(gtk::Orientation::Vertical, 3);
@@ -225,6 +257,9 @@ pub fn build(width: i32) -> Details {
         stack,
         icon,
         picture,
+        text_preview,
+        text_scroller,
+        preview_message,
         name,
         kind,
         size,
@@ -365,6 +400,7 @@ fn action_content(icon_name: &str, label: &str) -> gtk::Box {
     let text = gtk::Label::new(Some(label));
     text.add_css_class("teral-action-label");
     text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    text.set_max_width_chars(1);
 
     content.append(&icon);
     content.append(&text);
@@ -457,12 +493,18 @@ fn rebuild_tag_chips(app: &App, entry: &FileEntry) {
             let name = tag.name.clone();
             let path = path.clone();
             move |_| {
-                crate::tags::edit(|tags| {
-                    tags.set_tagged(&name, std::slice::from_ref(&path), false)
-                });
-                // This handler's own button is about to be destroyed by the rebuild.
                 let app = Rc::clone(&app);
-                super::defer(move || {
+                let name = name.clone();
+                let path = path.clone();
+                gtk::glib::spawn_future_local(async move {
+                    if let Err(error) = crate::tags::edit(|tags| {
+                        tags.set_tagged(&name, std::slice::from_ref(&path), false)
+                    })
+                    .await
+                    {
+                        app.show_error(&format!("Could not save tags: {error}"));
+                        return;
+                    }
                     super::sidebar::rebuild_tags(&app);
                     app.update_details();
                 });
@@ -803,6 +845,8 @@ fn count_label(count: usize, noun: &str) -> String {
 
 /// Refresh the panel for the current selection.
 pub fn update(app: &App) {
+    let preview_generation = app.state.preview_generation.get().wrapping_add(1);
+    app.state.preview_generation.set(preview_generation);
     let details = &app.widgets.details;
     let selected = app.selected_entries();
 
@@ -814,6 +858,11 @@ pub fn update(app: &App) {
 
         let current = app.current_dir();
         let folder = &details.folder_actions;
+        let accepts_new_files = app.location().accepts_new_files();
+        folder.terminal.set_visible(accepts_new_files);
+        folder.new_folder.set_visible(accepts_new_files);
+        folder.paste.set_visible(accepts_new_files);
+        folder.bookmark.set_visible(accepts_new_files);
         folder
             .paste
             .set_sensitive(crate::files::ops::clipboard_has_files(
@@ -855,6 +904,8 @@ pub fn update(app: &App) {
     });
 
     icons::set_entry_icon(&details.icon, entry);
+    details.text_scroller.set_visible(false);
+    details.preview_message.set_visible(false);
     match entry.thumbnail() {
         Some(texture) => {
             details.picture.set_paintable(Some(&texture));
@@ -865,6 +916,54 @@ pub fn update(app: &App) {
             details.picture.set_visible(false);
             details.icon.set_visible(true);
             icons::request_thumbnail(entry);
+        }
+    }
+
+    if is_text_preview(data.content_type.as_deref()) {
+        details.picture.set_visible(false);
+        details.icon.set_visible(false);
+        if data.size > crate::files::preview::MAX_TEXT_BYTES {
+            details
+                .preview_message
+                .set_text("Text preview is limited to 2 MiB");
+            details.preview_message.set_visible(true);
+        } else {
+            details.preview_message.set_text("Loading preview…");
+            details.preview_message.set_visible(true);
+            let app = Rc::clone(app);
+            let path = entry.path().to_path_buf();
+            gtk::glib::spawn_future_local(async move {
+                let result = crate::files::preview::load_text(&path).await;
+                if app.state.preview_generation.get() != preview_generation
+                    || app
+                        .single_selection()
+                        .map(|entry| entry.path().to_path_buf())
+                        .as_ref()
+                        != Some(&path)
+                {
+                    return;
+                }
+                let details = &app.widgets.details;
+                match result {
+                    Ok(crate::files::preview::TextPreview::Text(text)) => {
+                        details.text_preview.buffer().set_text(&text);
+                        details.preview_message.set_visible(false);
+                        details.text_scroller.set_visible(true);
+                    }
+                    Ok(crate::files::preview::TextPreview::Oversized) => {
+                        details.preview_message.set_text("Text preview is limited to 2 MiB");
+                    }
+                    Ok(crate::files::preview::TextPreview::Binary) => {
+                        details.preview_message.set_text("This file contains binary data");
+                    }
+                    Ok(crate::files::preview::TextPreview::UnsupportedEncoding) => {
+                        details.preview_message.set_text("This text encoding is not supported");
+                    }
+                    Err(error) => details
+                        .preview_message
+                        .set_text(&format!("Preview unavailable: {error}")),
+                }
+            });
         }
     }
 
@@ -896,6 +995,9 @@ pub fn update(app: &App) {
 
     let actions = &details.actions;
     let in_trash = app.location().is_trash();
+    actions
+        .terminal
+        .set_visible(entry.is_directory() && app.location().accepts_new_files());
 
     relabel(&actions.cut, if in_trash { "Restore" } else { "Cut" });
     relabel(&actions.trash, if in_trash { "Delete" } else { "Trash" });
@@ -919,12 +1021,43 @@ pub fn update(app: &App) {
 
     // The popover is built when it is opened, not on every selection: building it
     // eagerly meant every click paid for icon lookups it usually never showed.
-    let applications = crate::files::ops::applications_for(data.content_type.as_deref());
-    let can_open_with = !entry.is_directory() && entry.is_openable() && !applications.is_empty();
-    actions.open_with.set_sensitive(can_open_with);
+    let content_type = data.content_type.clone();
+    let can_query = !entry.is_directory() && entry.is_openable() && content_type.is_some();
+    actions.open_with.set_sensitive(false);
     actions.open_with.set_popover(None::<&gtk::Popover>);
+    if can_query {
+        let app = Rc::clone(app);
+        let path = entry.path().to_path_buf();
+        let content_type = content_type.expect("checked above");
+        gtk::glib::spawn_future_local(async move {
+            let applications = crate::files::ops::load_applications(content_type).await;
+            let still_selected = app
+                .single_selection()
+                .is_some_and(|entry| entry.path() == path);
+            if still_selected {
+                app.widgets
+                    .details
+                    .actions
+                    .open_with
+                    .set_sensitive(!applications.is_empty());
+            }
+        });
+    }
 
     // A broken link has nothing behind it, and a FIFO or device would hang whatever
     // opened it, so the action is refused up front rather than failing on the click.
     actions.open.set_sensitive(entry.is_openable());
+}
+
+fn is_text_preview(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(|content_type| {
+        content_type.starts_with("text/")
+            || matches!(
+                content_type,
+                "application/json"
+                    | "application/toml"
+                    | "application/xml"
+                    | "application/x-yaml"
+            )
+    })
 }

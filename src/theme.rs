@@ -11,9 +11,6 @@
 //! broken theme can never leave Teral without a usable appearance.
 
 use crate::config::{Config, ThemeMode};
-use gtk::gio;
-use gtk::gio::prelude::*;
-use gtk::glib;
 use gtk::prelude::*;
 use serde::Deserialize;
 use std::env;
@@ -34,12 +31,12 @@ pub struct ThemeConfig {
     pub colors: ThemeColors,
     #[serde(default)]
     pub layout: ThemeLayout,
-    /// True when the resolved palette is a dark one, so GTK can be told to match.
+    /// True when the resolved palette is a dark one.
     #[serde(skip)]
     pub dark: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct ThemeColors {
     pub background: Option<String>,
     pub surface: Option<String>,
@@ -56,7 +53,7 @@ pub struct ThemeColors {
     pub success: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct ThemeLayout {
     pub window_width: Option<i32>,
     pub window_height: Option<i32>,
@@ -109,20 +106,11 @@ impl ThemeConfig {
         theme.dark = prefer_dark;
 
         if config.mode == ThemeMode::System {
-            // Tell GTK which way to lean before reading its colours back, so the
-            // palette Teral derives is the one the desktop is actually drawing.
-            if let Some(settings) = gtk::Settings::default() {
-                settings.set_gtk_application_prefer_dark_theme(prefer_dark);
-            }
-
             match omarchy.as_deref().and_then(omarchy_overlay) {
                 Some(overlay) => theme.overlay(overlay),
                 None => {
                     if let Some(palette) = system_palette(prefer_dark) {
                         theme.colors.overlay(palette);
-                    }
-                    if let Some(accent) = system_accent() {
-                        theme.colors.accent = Some(accent);
                     }
                     theme.name = Some("System".to_owned());
                 }
@@ -511,20 +499,11 @@ pub fn omarchy_watch_paths() -> Vec<PathBuf> {
 
 // ------------------------------------------------------- desktop integration ----
 
-/// Ask the desktop whether it prefers a dark appearance.
-///
-/// The FreeDesktop appearance portal is the cross-desktop answer; GTK's own settings
-/// are the fallback for desktops that do not run a portal.
+/// Ask GTK's live desktop settings whether the current appearance is dark.
 pub fn system_prefers_dark() -> bool {
-    if let Some(value) = portal_setting("color-scheme").and_then(|value| value.get::<u32>()) {
-        // 1 = prefer dark, 2 = prefer light, 0 = no preference.
-        match value {
-            1 => return true,
-            2 => return false,
-            _ => {}
-        }
-    }
-
+    // GTK mirrors the desktop/portal preference and emits notify signals when it
+    // changes. A synchronous portal round-trip here used to block every interactive
+    // theme application for up to 400 ms per setting.
     gtk::Settings::default().is_some_and(|settings| {
         settings.is_gtk_application_prefer_dark_theme()
             || settings
@@ -615,40 +594,8 @@ fn hex(color: gtk::gdk::RGBA) -> String {
     )
 }
 
-/// The desktop's accent colour, when it publishes one.
-fn system_accent() -> Option<String> {
-    let value = portal_setting("accent-color")?;
-    let (red, green, blue) = value.get::<(f64, f64, f64)>()?;
-    Some(format!(
-        "#{:02x}{:02x}{:02x}",
-        channel(red),
-        channel(green),
-        channel(blue)
-    ))
-}
-
 fn channel(value: f64) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
-}
-
-/// Read one `org.freedesktop.appearance` setting through the desktop portal.
-fn portal_setting(key: &str) -> Option<glib::Variant> {
-    let connection = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok()?;
-    let reply = connection
-        .call_sync(
-            Some("org.freedesktop.portal.Desktop"),
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.Settings",
-            "ReadOne",
-            Some(&("org.freedesktop.appearance", key).to_variant()),
-            None,
-            gio::DBusCallFlags::NONE,
-            400,
-            gio::Cancellable::NONE,
-        )
-        .ok()?;
-
-    reply.child_value(0).get::<glib::Variant>()
 }
 
 // -------------------------------------------------------------------- paths ----

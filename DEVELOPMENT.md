@@ -190,6 +190,66 @@ Run with disposable data after `./scripts/check.sh` succeeds.
 - [ ] Start Teral, close the window, and confirm the process exits. Repeat ten times and
   confirm no `teral` processes are left behind (`pgrep -f teral`).
 
+## Persistence, responsiveness and desktop integration checks
+
+Use isolated `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` directories for
+these checks. Never use a real profile containing valuable tags, bookmarks or sessions.
+
+- [ ] Save settings, tags, bookmarks, command history and a multi-tab session; interrupt
+  each write before rename and confirm the previous complete file still loads.
+- [ ] Make each state directory read-only, occupy several plausible temporary names,
+  replace a valid file with malformed TOML, and repeat rapid saves. Every error is shown
+  and no valid file is truncated.
+- [ ] Bookmark and tag a raw non-UTF-8 path on removable storage. Unmount and restart;
+  the metadata remains, then resolves to the exact bytes after remounting.
+- [ ] Reorder bookmarks and apply, replace and clear display labels. Restart and confirm
+  order, paths and labels are unchanged.
+- [ ] Browse synthetic directories containing 1,000, 10,000 and 100,000 entries while
+  navigating rapidly, filtering, sorting and generating monitor bursts. Record hardware,
+  filesystem, cold/warm cache state, first-batch time, completion time and peak memory.
+- [ ] Use malformed and oversized images, an image-heavy folder, disappearing files and
+  rapid navigation. Old thumbnails never land in the new folder and memory stays bounded.
+- [ ] Test a USB filesystem, a separate filesystem, a read-only mount, unmount while
+  browsing, and removal during Copy and Move. Record every partial result precisely.
+- [ ] Verify clipboard and drag-and-drop both directions with GNOME Files under Wayland,
+  then repeat on Omarchy/Arch. Test Copy, Move and Link modifiers.
+- [ ] Where available, connect an MTP device and a GVfs network location. Record that
+  non-local browsing is currently outside the supported boundary rather than inventing
+  a local path.
+- [ ] Switch GTK light/dark and icon themes while running. On Omarchy, replace the active
+  theme symlink and edit `teral.toml` and `colors.toml`, including malformed and partial
+  files. Confirm the window stays readable and cache changes appear live.
+- [ ] Drag and repeatedly click the bottom-right icon-size controls in a 10,000-entry
+  folder, then leave the window idle for one minute. Repeat while changing between Teral
+  and system appearance. The pointer, window and directory view must remain responsive,
+  and each settled preference must survive one restart.
+- [ ] Select files with single-component names near the filesystem limit, paths with
+  long components, and long MIME descriptions. The Details panel must keep one width;
+  names wrap or ellipsize inside it rather than resizing the file view.
+
+## Commands, previews, sessions and accessibility checks
+
+- [ ] Run a successful command, a non-zero command, a signal-terminated command and an
+  invalid executable. Interrupt a foreground pipeline, then exercise the separate force
+  stop. Confirm no child remains after exit or window close.
+- [ ] Run Quick Command in paths containing spaces and newlines. Select a non-UTF-8
+  directory and confirm execution is refused visibly rather than run elsewhere.
+- [ ] Restart with ordinary, missing, removed-media and tag tabs. Confirm recoverable tabs
+  remain recorded, one usable location appears, and repeated starts do not duplicate
+  windows.
+- [ ] Preview UTF-8 text, Markdown, source, binary, malformed UTF-8, oversized and
+  disappearing files. Confirm content is inert and no HTML, script or resource executes.
+- [ ] Create files with leading/trailing spaces and race another process for the same
+  name. Existing data is never replaced and the actual created file is selected.
+- [ ] Edit permissions on files and folders, including permission-denied and read-only
+  cases. Confirm special bits remain and symlink targets are never changed.
+- [ ] Traverse every visible action with only the keyboard. Check focus visibility,
+  screen-reader names, high contrast, empty/loading/error/disconnected states and the
+  absence of keyboard traps on Ubuntu and Omarchy.
+
+PDF and audio/video preview, recursive search, non-local GVfs browsing, and unmounted
+volume controls have no UI in this development snapshot. Do not mark those checks passed.
+
 ## Packaging
 
 ```bash

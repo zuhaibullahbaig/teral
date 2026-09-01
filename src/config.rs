@@ -108,7 +108,7 @@ fn parse_sort_key(value: &str) -> Option<SortKey> {
 }
 
 /// The resolved user configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub mode: ThemeMode,
     /// Overrides the accent colour of whichever palette is in use.
@@ -121,6 +121,8 @@ pub struct Config {
     pub sort: SortKey,
     pub descending: bool,
     pub view: ViewPreference,
+    /// Whether the information panel is visible when a window opens.
+    pub details_visible: bool,
     /// Shell used by Quick Command. Empty means "ask the environment".
     pub shell: String,
     /// Terminal used by Open Terminal Here. Empty means "detect one".
@@ -139,6 +141,7 @@ impl Default for Config {
             sort: SortKey::Name,
             descending: false,
             view: ViewPreference::default(),
+            details_visible: true,
             shell: String::new(),
             terminal: String::new(),
         }
@@ -172,6 +175,7 @@ struct RawFiles {
     sort: Option<String>,
     descending: Option<bool>,
     view: Option<String>,
+    details_visible: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -187,18 +191,19 @@ pub fn config_path() -> PathBuf {
 
 impl Config {
     /// Read the user configuration, falling back to defaults for anything missing.
-    pub fn load() -> Self {
+    pub fn load() -> Result<Self, String> {
         let path = config_path();
-        let Ok(raw) = fs::read_to_string(&path) else {
-            return Self::default();
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(error) => return Err(format!("could not read {}: {error}", path.display())),
         };
 
         match toml::from_str::<RawConfig>(&raw) {
-            Ok(raw) => Self::from_raw(raw),
-            Err(error) => {
-                eprintln!("Teral: could not read {}: {error}", path.display());
-                Self::default()
-            }
+            Ok(raw) => Ok(Self::from_raw(raw)),
+            Err(error) => Err(format!("could not parse {}: {error}", path.display())),
         }
     }
 
@@ -229,6 +234,10 @@ impl Config {
                 .as_deref()
                 .and_then(ViewPreference::parse)
                 .unwrap_or(defaults.view),
+            details_visible: raw
+                .files
+                .details_visible
+                .unwrap_or(defaults.details_visible),
             shell: raw.commands.shell.unwrap_or_default(),
             terminal: raw.commands.terminal.unwrap_or_default(),
         };
@@ -251,7 +260,8 @@ impl Config {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        fs::write(&path, self.to_toml()).map_err(|error| error.to_string())
+        crate::persistence::atomic_write(&path, self.to_toml().as_bytes())
+            .map_err(|error| error.to_string())
     }
 
     fn to_toml(&self) -> String {
@@ -289,6 +299,7 @@ impl Config {
         document.push_str(&format!("sort = \"{}\"\n", sort_key_name(self.sort)));
         document.push_str(&format!("descending = {}\n", self.descending));
         document.push_str(&format!("view = \"{}\"\n\n", self.view.key()));
+        document.push_str(&format!("details_visible = {}\n\n", self.details_visible));
 
         document.push_str("[commands]\n");
         document.push_str(&format!("shell = \"{}\"\n", escape(&self.shell)));
@@ -342,6 +353,7 @@ mod tests {
             sort: SortKey::Modified,
             descending: true,
             view: ViewPreference::List,
+            details_visible: false,
             shell: "/bin/dash".to_owned(),
             terminal: "kitty".to_owned(),
             ..Config::default()
@@ -357,6 +369,7 @@ mod tests {
         assert_eq!(restored.sort, SortKey::Modified);
         assert!(restored.descending);
         assert_eq!(restored.view, ViewPreference::List);
+        assert!(!restored.details_visible);
         assert_eq!(restored.shell, "/bin/dash");
         assert_eq!(restored.terminal, "kitty");
     }
