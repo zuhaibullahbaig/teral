@@ -394,6 +394,11 @@ fn resolve_next_conflict(
                 }
                 let next = next_conflict_index(&conflicts, index, policy);
                 window.close();
+                let app = Rc::clone(&app);
+                let conflicts = Rc::clone(&conflicts);
+                let rules = Rc::clone(&rules);
+                let defaults = Rc::clone(&defaults);
+                let action = Rc::clone(&action);
                 glib::idle_add_local_once(move || {
                     resolve_next_conflict(app, conflicts, next, rules, defaults, action);
                 });

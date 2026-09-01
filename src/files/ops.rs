@@ -21,7 +21,7 @@ use super::trash;
 
 pub use super::transfer::{
     CancelFlag, Clipboard, Conflict, ConflictKind, ConflictPolicy, ConflictRules, JobProgress,
-    JobReport, TransferKind, clipboard_has_files, conflicts, duplicate, read_clipboard, transfer,
+    JobReport, TransferKind, clipboard_has_files, conflicts, duplicate, read_clipboard,
     transfer_resolved, write_clipboard,
 };
 
