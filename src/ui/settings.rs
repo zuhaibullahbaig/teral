@@ -342,11 +342,11 @@ fn commands_section(app: &App) -> gtk::Box {
         let app = Rc::clone(app);
         move |entry| {
             let value = entry.text().to_string();
-            if !value.trim().is_empty() {
-                if let Err(error) = crate::command::parse_program_spec(&value) {
-                    app.show_error(&format!("Invalid Quick Command shell: {error}"));
-                    return;
-                }
+            if !value.trim().is_empty()
+                && let Err(error) = crate::command::parse_program_spec(&value)
+            {
+                app.show_error(&format!("Invalid Quick Command shell: {error}"));
+                return;
             }
             let mut config = app.config.borrow().clone();
             config.shell = value;
@@ -369,11 +369,11 @@ fn commands_section(app: &App) -> gtk::Box {
         let app = Rc::clone(app);
         move |entry| {
             let value = entry.text().to_string();
-            if !value.trim().is_empty() {
-                if let Err(error) = crate::command::parse_program_spec(&value) {
-                    app.show_error(&format!("Invalid terminal command: {error}"));
-                    return;
-                }
+            if !value.trim().is_empty()
+                && let Err(error) = crate::command::parse_program_spec(&value)
+            {
+                app.show_error(&format!("Invalid terminal command: {error}"));
+                return;
             }
             let mut config = app.config.borrow().clone();
             config.terminal = value;

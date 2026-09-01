@@ -151,13 +151,13 @@ fn prompt_with(
         let confirm = Rc::clone(&confirm);
         move || {
             let value = entry.text().to_string();
-            if validate_filename {
-                if let Err(error) = crate::files::name::validate(OsStr::new(&value)) {
-                    problem.set_text(error.message());
-                    problem.set_visible(true);
-                    entry.grab_focus();
-                    return;
-                }
+            if validate_filename
+                && let Err(error) = crate::files::name::validate(OsStr::new(&value))
+            {
+                problem.set_text(error.message());
+                problem.set_visible(true);
+                entry.grab_focus();
+                return;
             }
             window.close();
             confirm(&app, value);

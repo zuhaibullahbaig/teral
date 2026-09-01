@@ -530,10 +530,10 @@ fn connect_window(app: &App) {
                 );
                 return glib::Propagation::Stop;
             }
-            if let Some(pid) = app.state.running_pid.get() {
-                if let Err(error) = crate::command::force_stop(pid) {
-                    eprintln!("Teral: could not force-stop Quick Command: {error}");
-                }
+            if let Some(pid) = app.state.running_pid.get()
+                && let Err(error) = crate::command::force_stop(pid)
+            {
+                eprintln!("Teral: could not force-stop Quick Command: {error}");
             }
             glib::Propagation::Proceed
         }

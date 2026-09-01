@@ -98,11 +98,11 @@ pub fn encode_path(path: &Path) -> String {
 
 /// Decode a path previously produced by [`encode_path`].
 pub fn decode_path(encoded: &str) -> Result<PathBuf, String> {
-    if encoded.len() % 2 != 0 {
+    if !encoded.len().is_multiple_of(2) {
         return Err("encoded path has an odd number of digits".to_owned());
     }
     let mut bytes = Vec::with_capacity(encoded.len() / 2);
-    for pair in encoded.as_bytes().chunks_exact(2) {
+    for pair in encoded.as_bytes().as_chunks::<2>().0 {
         let high =
             hex_digit(pair[0]).ok_or_else(|| "encoded path is not hexadecimal".to_owned())?;
         let low = hex_digit(pair[1]).ok_or_else(|| "encoded path is not hexadecimal".to_owned())?;

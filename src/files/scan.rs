@@ -58,11 +58,6 @@ impl Default for Sorting {
     }
 }
 
-/// Enumerate a directory without blocking the main loop.
-pub async fn scan_directory(path: &Path) -> Result<Vec<EntryData>, glib::Error> {
-    scan_directory_batched(path, |_| true).await
-}
-
 /// Enumerate a directory in bounded, ordered batches. Returning `false` from
 /// `receive` cancels publication after the current GIO batch.
 pub async fn scan_directory_batched(
@@ -162,31 +157,6 @@ pub async fn scan_paths(paths: &[std::path::PathBuf]) -> Vec<EntryData> {
 
     resolve_links(&mut entries).await;
     entries
-}
-
-/// Count the children of a directory, used for the item count under folder tiles.
-pub async fn count_children(path: &Path) -> Result<usize, glib::Error> {
-    let directory = gio::File::for_path(path);
-    let enumerator = directory
-        .enumerate_children_future(
-            gio::FILE_ATTRIBUTE_STANDARD_NAME,
-            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
-            glib::Priority::LOW,
-        )
-        .await?;
-
-    let mut count = 0usize;
-    loop {
-        let batch = enumerator
-            .next_files_future(BATCH, glib::Priority::LOW)
-            .await?;
-        if batch.is_empty() {
-            break;
-        }
-        count += batch.len();
-    }
-
-    Ok(count)
 }
 
 /// Free and total bytes of the filesystem holding `path`.

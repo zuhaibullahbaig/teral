@@ -583,26 +583,6 @@ fn inspect_conflict(
     Ok(())
 }
 
-/// Run a copy or move on a worker thread.
-pub async fn transfer(
-    kind: TransferKind,
-    sources: Vec<PathBuf>,
-    destination: PathBuf,
-    policy: ConflictPolicy,
-    cancel: CancelFlag,
-    progress: mpsc::SyncSender<JobProgress>,
-) -> JobReport {
-    transfer_resolved(
-        kind,
-        sources,
-        destination,
-        ConflictRules::uniform(policy),
-        cancel,
-        progress,
-    )
-    .await
-}
-
 /// Run a transfer using the per-entry decisions collected by the interactive UI.
 pub async fn transfer_resolved(
     kind: TransferKind,
