@@ -260,12 +260,9 @@ pub fn connect(app: &App) {
                 _ => return gtk::glib::Propagation::Proceed,
             }
             app.state.command_history_index.set(index);
-            app.widgets.command_entry.set_text(
-                history
-                    .get(index)
-                    .map(String::as_str)
-                    .unwrap_or_default(),
-            );
+            app.widgets
+                .command_entry
+                .set_text(history.get(index).map(String::as_str).unwrap_or_default());
             app.widgets.command_entry.set_position(-1);
             gtk::glib::Propagation::Stop
         }

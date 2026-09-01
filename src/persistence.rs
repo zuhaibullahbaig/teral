@@ -24,7 +24,10 @@ pub fn atomic_write_with(
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "state file has no parent directory")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "state file has no parent directory",
+        )
     })?;
     fs::create_dir_all(parent)?;
 
@@ -100,7 +103,8 @@ pub fn decode_path(encoded: &str) -> Result<PathBuf, String> {
     }
     let mut bytes = Vec::with_capacity(encoded.len() / 2);
     for pair in encoded.as_bytes().chunks_exact(2) {
-        let high = hex_digit(pair[0]).ok_or_else(|| "encoded path is not hexadecimal".to_owned())?;
+        let high =
+            hex_digit(pair[0]).ok_or_else(|| "encoded path is not hexadecimal".to_owned())?;
         let low = hex_digit(pair[1]).ok_or_else(|| "encoded path is not hexadecimal".to_owned())?;
         bytes.push((high << 4) | low);
     }

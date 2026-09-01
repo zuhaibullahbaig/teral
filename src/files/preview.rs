@@ -1,7 +1,7 @@
 //! Bounded, inert previews for text-like files.
 
-use gtk::gio;
 use gtk::gdk::gdk_pixbuf;
+use gtk::gio;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -251,18 +251,16 @@ fn decode_image(path: &Path) -> io::Result<DecodedImage> {
     if path.metadata()?.len() > MAX_RENDER_BYTES {
         return Err(io::Error::other("rendered preview exceeded its size limit"));
     }
-    let pixbuf = gdk_pixbuf::Pixbuf::from_file_at_scale(
-        path,
-        MAX_RENDER_EDGE,
-        MAX_RENDER_EDGE,
-        true,
-    )
-    .map_err(|error| io::Error::other(error.to_string()))?;
+    let pixbuf =
+        gdk_pixbuf::Pixbuf::from_file_at_scale(path, MAX_RENDER_EDGE, MAX_RENDER_EDGE, true)
+            .map_err(|error| io::Error::other(error.to_string()))?;
     if pixbuf.width() > MAX_RENDER_EDGE
         || pixbuf.height() > MAX_RENDER_EDGE
         || pixbuf.byte_length() > MAX_RENDER_BYTES as usize
     {
-        return Err(io::Error::other("decoded preview exceeded its memory limit"));
+        return Err(io::Error::other(
+            "decoded preview exceeded its memory limit",
+        ));
     }
     Ok(DecodedImage {
         pixels: pixbuf.read_pixel_bytes().as_ref().to_vec(),

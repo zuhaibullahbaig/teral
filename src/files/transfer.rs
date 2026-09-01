@@ -1075,10 +1075,9 @@ fn merge_entry(
             total_items,
         ) {
             Ok(Execution::Completed(_)) => changed = true,
-            Ok(Execution::Skipped(_)) => incomplete.push(format!(
-                "{} was skipped",
-                child_name.to_string_lossy()
-            )),
+            Ok(Execution::Skipped(_)) => {
+                incomplete.push(format!("{} was skipped", child_name.to_string_lossy()))
+            }
             Ok(Execution::Partial(_, error)) => {
                 changed = true;
                 incomplete.push(error);
@@ -1092,8 +1091,7 @@ fn merge_entry(
         match fs::remove_dir(source) {
             Ok(()) => {}
             Err(error)
-                if !incomplete.is_empty()
-                    && error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+                if !incomplete.is_empty() && error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
             Err(error) if changed => incomplete.push(format!(
                 "the source folder remains because it could not be removed: {error}"
             )),
@@ -1749,12 +1747,8 @@ mod tests {
         let source = root.join("notes.txt");
         fs::write(&source, b"notes").unwrap();
 
-        let conflicts = inspect_conflicts(
-            TransferKind::Move,
-            std::slice::from_ref(&source),
-            &root,
-        )
-        .unwrap();
+        let conflicts =
+            inspect_conflicts(TransferKind::Move, std::slice::from_ref(&source), &root).unwrap();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].kind, ConflictKind::SelfMove);
         fs::remove_dir_all(root).unwrap();
@@ -1766,12 +1760,8 @@ mod tests {
         let source = root.join("notes.txt");
         fs::write(&source, b"notes").unwrap();
 
-        let conflicts = inspect_conflicts(
-            TransferKind::Copy,
-            std::slice::from_ref(&source),
-            &root,
-        )
-        .unwrap();
+        let conflicts =
+            inspect_conflicts(TransferKind::Copy, std::slice::from_ref(&source), &root).unwrap();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].kind, ConflictKind::SameEntry);
         fs::remove_dir_all(root).unwrap();

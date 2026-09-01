@@ -859,16 +859,14 @@ pub fn open_terminal(app: &App, directory: &Path) {
     let terminal = app.config.borrow().terminal.clone();
     let weak = Rc::downgrade(app);
     glib::spawn_future_local(async move {
-        let result =
-            gio::spawn_blocking(move || ops::open_terminal(&directory, &terminal)).await;
+        let result = gio::spawn_blocking(move || ops::open_terminal(&directory, &terminal)).await;
         let Some(app) = weak.upgrade() else {
             return;
         };
         match result {
-            Ok(Ok(())) => app.set_message(
-                &format!("Terminal opened in {}", shown.display()),
-                false,
-            ),
+            Ok(Ok(())) => {
+                app.set_message(&format!("Terminal opened in {}", shown.display()), false)
+            }
             Ok(Err(error)) => app.show_error(&format!("Could not open a terminal: {error}")),
             Err(_) => app.show_error("The terminal launcher stopped unexpectedly"),
         }
@@ -1120,7 +1118,9 @@ async fn apply_tag_results(app: &App, report: &ops::JobReport) {
     })
     .await
     {
-        app.show_error(&format!("Files changed, but tags could not be saved: {error}"));
+        app.show_error(&format!(
+            "Files changed, but tags could not be saved: {error}"
+        ));
     }
 }
 
@@ -1377,7 +1377,9 @@ fn start_transfer(
             })
             .await
             {
-                app.show_error(&format!("Files moved, but tags could not be saved: {error}"));
+                app.show_error(&format!(
+                    "Files moved, but tags could not be saved: {error}"
+                ));
             }
             sidebar::rebuild_tags(&app);
         }

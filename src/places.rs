@@ -187,12 +187,11 @@ pub fn devices() -> Vec<Device> {
 
     DEVICE_LABELS.with_borrow_mut(|labels| {
         labels.clear();
-        labels.extend(devices.iter().filter_map(|device| {
-            device
-                .path
-                .clone()
-                .map(|path| (path, device.label.clone()))
-        }));
+        labels.extend(
+            devices
+                .iter()
+                .filter_map(|device| device.path.clone().map(|path| (path, device.label.clone()))),
+        );
     });
     devices
 }
@@ -284,12 +283,14 @@ pub fn bookmark_label(path: &Path) -> String {
 }
 
 pub fn set_bookmark_label(path: &Path, label: Option<String>) {
-    BOOKMARK_LABELS.with_borrow_mut(|labels| match label.filter(|label| !label.trim().is_empty()) {
-        Some(label) => {
-            labels.insert(path.to_path_buf(), label);
-        }
-        None => {
-            labels.remove(path);
+    BOOKMARK_LABELS.with_borrow_mut(|labels| {
+        match label.filter(|label| !label.trim().is_empty()) {
+            Some(label) => {
+                labels.insert(path.to_path_buf(), label);
+            }
+            None => {
+                labels.remove(path);
+            }
         }
     });
 }

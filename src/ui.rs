@@ -165,8 +165,7 @@ pub struct State {
     pub global_search: RefCell<Option<(PathBuf, String)>>,
     pub global_search_return: RefCell<Option<PathBuf>>,
     pub global_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
-    pub global_search_receiver:
-        RefCell<Option<mpsc::Receiver<crate::files::search::SearchEvent>>>,
+    pub global_search_receiver: RefCell<Option<mpsc::Receiver<crate::files::search::SearchEvent>>>,
     pub global_search_pending: RefCell<VecDeque<Vec<PathBuf>>>,
     pub global_search_scan_running: Cell<bool>,
     pub global_search_finished: Cell<bool>,
@@ -410,13 +409,7 @@ impl AppInner {
         let worker_query = query.to_owned();
         let show_hidden = self.state.show_hidden.get();
         let _worker = std::thread::spawn(move || {
-            crate::files::search::run(
-                worker_root,
-                worker_query,
-                show_hidden,
-                cancelled,
-                sender,
-            );
+            crate::files::search::run(worker_root, worker_query, show_hidden, cancelled, sender);
         });
 
         let weak = Rc::downgrade(self);
@@ -447,7 +440,10 @@ impl AppInner {
             for event in events {
                 match event {
                     crate::files::search::SearchEvent::Batch(paths) => {
-                        app.state.global_search_pending.borrow_mut().push_back(paths);
+                        app.state
+                            .global_search_pending
+                            .borrow_mut()
+                            .push_back(paths);
                     }
                     crate::files::search::SearchEvent::Finished { unreadable } => {
                         app.state.global_search_unreadable.set(unreadable);
@@ -797,16 +793,14 @@ impl AppInner {
             source.remove();
         }
         let weak = Rc::downgrade(self);
-        let source = glib::timeout_add_local_once(
-            std::time::Duration::from_millis(90),
-            move || {
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(90), move || {
                 let Some(app) = weak.upgrade() else {
                     return;
                 };
                 app.state.filter_source.set(None);
                 app.apply_filter();
-            },
-        );
+            });
         self.state.filter_source.set(Some(source));
     }
 
@@ -820,7 +814,9 @@ impl AppInner {
             header::show_search_crumb(self, &query);
             sidebar::mark_active(self, Path::new(""));
             sidebar::mark_active_tag(self, None);
-            self.widgets.back.set_sensitive(!self.state.back.borrow().is_empty());
+            self.widgets
+                .back
+                .set_sensitive(!self.state.back.borrow().is_empty());
             self.widgets
                 .forward
                 .set_sensitive(!self.state.forward.borrow().is_empty());
@@ -983,10 +979,8 @@ impl AppInner {
         };
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(move || {
-                places::write_pinned_payload(path, document)
-            })
-            .await;
+            let result =
+                gio::spawn_blocking(move || places::write_pinned_payload(path, document)).await;
             let Some(app) = weak.upgrade() else {
                 return;
             };
@@ -1177,9 +1171,7 @@ impl AppInner {
         *self.state.forward.borrow_mut() = tab.forward;
         match (tab.search, tab.tag) {
             (Some(query), _) => self.show_global_search(&query),
-            (None, Some(tag)) if crate::tags::current().get(&tag).is_some() => {
-                self.show_tag(&tag)
-            }
+            (None, Some(tag)) if crate::tags::current().get(&tag).is_some() => self.show_tag(&tag),
             _ if tab.path.is_dir() => self.load(&tab.path, None),
             _ => {
                 let fallback = crate::theme::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -1263,17 +1255,15 @@ impl AppInner {
             source.remove();
         }
         let weak = Rc::downgrade(self);
-        let source = glib::timeout_add_local_once(
-            std::time::Duration::from_millis(75),
-            move || {
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(75), move || {
                 let Some(app) = weak.upgrade() else {
                     return;
                 };
                 app.state.theme_apply_source.set(None);
                 let config = app.config.borrow().clone();
                 app.apply_resolved_theme(&config);
-            },
-        );
+            });
         self.state.theme_apply_source.set(Some(source));
     }
 
@@ -1406,16 +1396,13 @@ impl AppInner {
             return;
         }
         let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(
-            std::time::Duration::from_millis(16),
-            move || {
-                let Some(app) = weak.upgrade() else {
-                    return;
-                };
-                app.state.icon_refresh_queued.set(false);
-                fileview::refresh_grid_factory(&app);
-            },
-        );
+        glib::timeout_add_local_once(std::time::Duration::from_millis(16), move || {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            app.state.icon_refresh_queued.set(false);
+            fileview::refresh_grid_factory(&app);
+        });
     }
 
     pub fn set_view_mode(self: &App, mode: ViewMode) {

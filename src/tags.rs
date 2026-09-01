@@ -277,8 +277,7 @@ pub async fn set_current(tags: Tags) -> Result<(), String> {
     })
     .await;
     WRITE_RUNNING.with(|running| running.set(false));
-    result
-        .map_err(|_| "the tag writer stopped unexpectedly".to_owned())??;
+    result.map_err(|_| "the tag writer stopped unexpectedly".to_owned())??;
     CURRENT.with_borrow_mut(|current| *current = tags);
     Ok(())
 }

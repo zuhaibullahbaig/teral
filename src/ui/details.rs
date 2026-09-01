@@ -1018,13 +1018,19 @@ pub fn update(app: &App) {
                         details.text_scroller.set_visible(true);
                     }
                     Ok(crate::files::preview::TextPreview::Oversized) => {
-                        details.preview_message.set_text("Text preview is limited to 2 MiB");
+                        details
+                            .preview_message
+                            .set_text("Text preview is limited to 2 MiB");
                     }
                     Ok(crate::files::preview::TextPreview::Binary) => {
-                        details.preview_message.set_text("This file contains binary data");
+                        details
+                            .preview_message
+                            .set_text("This file contains binary data");
                     }
                     Ok(crate::files::preview::TextPreview::UnsupportedEncoding) => {
-                        details.preview_message.set_text("This text encoding is not supported");
+                        details
+                            .preview_message
+                            .set_text("This text encoding is not supported");
                     }
                     Err(error) => details
                         .preview_message
@@ -1121,10 +1127,7 @@ fn is_text_preview(content_type: Option<&str>) -> bool {
         content_type.starts_with("text/")
             || matches!(
                 content_type,
-                "application/json"
-                    | "application/toml"
-                    | "application/xml"
-                    | "application/x-yaml"
+                "application/json" | "application/toml" | "application/xml" | "application/x-yaml"
             )
     })
 }

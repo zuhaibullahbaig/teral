@@ -63,14 +63,14 @@ pub async fn run(
 
     terminal
         .spawn_future(
-        vte::PtyFlags::DEFAULT,
-        Some(directory),
-        &argv,
-        &[],
-        glib::SpawnFlags::DEFAULT,
-        || {},
-        -1,
-    )
+            vte::PtyFlags::DEFAULT,
+            Some(directory),
+            &argv,
+            &[],
+            glib::SpawnFlags::DEFAULT,
+            || {},
+            -1,
+        )
         .await
         .map_err(|error| error.message().to_owned())
 }
@@ -226,7 +226,10 @@ pub fn save_history(commands: &[String]) -> Result<(), String> {
     for command in commands.iter().rev().take(HISTORY_LIMIT).rev() {
         document.push_str(&format!(
             "  \"{}\",\n",
-            command.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
+            command
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
         ));
     }
     document.push_str("]\n");

@@ -4,8 +4,8 @@ use std::collections::VecDeque;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 
 const RESULT_BATCH: usize = 48;

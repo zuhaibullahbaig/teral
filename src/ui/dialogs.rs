@@ -63,7 +63,15 @@ pub fn prompt_name(
     select_range: Option<(i32, i32)>,
     confirm: impl Fn(&App, String) + 'static,
 ) {
-    prompt_with(app, title, accept_label, initial, select_range, true, confirm);
+    prompt_with(
+        app,
+        title,
+        accept_label,
+        initial,
+        select_range,
+        true,
+        confirm,
+    );
 }
 
 /// Ask for a display label. Unlike a filename this is presentation-only, so it may
@@ -822,9 +830,7 @@ pub fn open_with_popover(
                     return;
                 };
                 if let Err(error) = result {
-                    app.show_error(&format!(
-                        "Could not open with {application_name}: {error}"
-                    ));
+                    app.show_error(&format!("Could not open with {application_name}: {error}"));
                 }
             });
         });

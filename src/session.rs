@@ -100,7 +100,10 @@ pub fn save(session: &Session) -> Result<(), String> {
 }
 
 fn decode_paths(values: Vec<String>) -> Result<Vec<PathBuf>, String> {
-    values.into_iter().map(|value| decode_path(&value)).collect()
+    values
+        .into_iter()
+        .map(|value| decode_path(&value))
+        .collect()
 }
 
 fn write_paths(document: &mut String, key: &str, paths: &[PathBuf]) {
@@ -140,7 +143,9 @@ mod tests {
 
     #[test]
     fn history_is_bounded_to_the_most_recent_entries() {
-        let paths: Vec<PathBuf> = (0..200).map(|index| PathBuf::from(format!("/{index}"))).collect();
+        let paths: Vec<PathBuf> = (0..200)
+            .map(|index| PathBuf::from(format!("/{index}")))
+            .collect();
         let mut document = String::new();
         write_paths(&mut document, "back_hex", &paths);
         let raw: toml::Value = toml::from_str(&document).expect("valid TOML");

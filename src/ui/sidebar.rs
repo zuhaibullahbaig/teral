@@ -585,9 +585,8 @@ fn device_row(app: &App, device: &Device) -> gtk::Button {
                 glib::spawn_future_local(async move {
                     match mounting.await {
                         Ok(()) => {
-                            if let Some(path) = volume
-                                .get_mount()
-                                .and_then(|mount| mount.root().path())
+                            if let Some(path) =
+                                volume.get_mount().and_then(|mount| mount.root().path())
                             {
                                 app.navigate(&path);
                             } else {
@@ -628,10 +627,8 @@ fn attach_unmounted_eject(app: &App, button: &gtk::Button, volume: &gio::Volume)
             button.set_sensitive(false);
             app.set_message("Ejecting device…", false);
             let operation = gtk::MountOperation::new(Some(&app.widgets.window));
-            let future = volume.eject_with_operation_future(
-                gio::MountUnmountFlags::NONE,
-                Some(&operation),
-            );
+            let future =
+                volume.eject_with_operation_future(gio::MountUnmountFlags::NONE, Some(&operation));
             let app = Rc::clone(&app);
             let button = button.clone();
             glib::spawn_future_local(async move {
@@ -674,9 +671,15 @@ fn attach_device_menu(app: &App, button: &gtk::Button, device: &Device, root: Pa
     let eject = gtk::Button::with_label("Eject");
     eject.add_css_class("teral-menu-item");
     eject.set_halign(gtk::Align::Fill);
-    let can_unmount = device.mount.as_ref().is_some_and(|mount| mount.can_unmount());
+    let can_unmount = device
+        .mount
+        .as_ref()
+        .is_some_and(|mount| mount.can_unmount());
     let can_eject = device.mount.as_ref().is_some_and(|mount| mount.can_eject())
-        || device.volume.as_ref().is_some_and(|volume| volume.can_eject());
+        || device
+            .volume
+            .as_ref()
+            .is_some_and(|volume| volume.can_eject());
     unmount.set_visible(can_unmount);
     eject.set_visible(can_eject);
     content.append(&unmount);
@@ -694,10 +697,8 @@ fn attach_device_menu(app: &App, button: &gtk::Button, device: &Device, root: Pa
                 button.set_sensitive(false);
                 app.set_message("Unmounting device…", false);
                 let operation = gtk::MountOperation::new(Some(&app.widgets.window));
-                let future = mount.unmount_with_operation_future(
-                    gio::MountUnmountFlags::NONE,
-                    Some(&operation),
-                );
+                let future = mount
+                    .unmount_with_operation_future(gio::MountUnmountFlags::NONE, Some(&operation));
                 let app = Rc::clone(&app);
                 let root = root.clone();
                 let button = button.clone();
@@ -729,15 +730,11 @@ fn attach_device_menu(app: &App, button: &gtk::Button, device: &Device, root: Pa
                 app.set_message("Ejecting device…", false);
                 let operation = gtk::MountOperation::new(Some(&app.widgets.window));
                 let future = if mount.can_eject() {
-                    mount.eject_with_operation_future(
-                        gio::MountUnmountFlags::NONE,
-                        Some(&operation),
-                    )
+                    mount
+                        .eject_with_operation_future(gio::MountUnmountFlags::NONE, Some(&operation))
                 } else if let Some(volume) = volume.as_ref() {
-                    volume.eject_with_operation_future(
-                        gio::MountUnmountFlags::NONE,
-                        Some(&operation),
-                    )
+                    volume
+                        .eject_with_operation_future(gio::MountUnmountFlags::NONE, Some(&operation))
                 } else {
                     button.set_sensitive(true);
                     return;
@@ -844,10 +841,8 @@ fn attach_context_menu(app: &App, button: &gtk::Button, path: PathBuf) {
         "Rename Bookmark",
     );
     let move_up = super::header::menu_item(crate::icons::ui(crate::icons::names::UP), "Move Up");
-    let move_down = super::header::menu_item(
-        crate::icons::ui(crate::icons::names::DOWN),
-        "Move Down",
-    );
+    let move_down =
+        super::header::menu_item(crate::icons::ui(crate::icons::names::DOWN), "Move Down");
     let terminal = super::header::menu_item(
         crate::icons::ui(crate::icons::names::TERMINAL),
         "Open Terminal Here",
