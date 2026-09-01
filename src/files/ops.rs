@@ -20,8 +20,9 @@ use super::transfer::{
 use super::trash;
 
 pub use super::transfer::{
-    CancelFlag, Clipboard, ConflictPolicy, JobProgress, JobReport, TransferKind,
-    clipboard_has_files, conflicts, duplicate, read_clipboard, transfer, write_clipboard,
+    CancelFlag, Clipboard, Conflict, ConflictKind, ConflictPolicy, ConflictRules, JobProgress,
+    JobReport, TransferKind, clipboard_has_files, conflicts, duplicate, read_clipboard, transfer,
+    transfer_resolved, write_clipboard,
 };
 
 /// Create a directory, reporting the GIO error if it already exists or is refused.
@@ -153,18 +154,20 @@ pub fn refresh_trash_dirs(finished: impl FnOnce() + 'static) {
     let mounts = mount_points();
 
     glib::spawn_future_local(async move {
-        let found = gio::spawn_blocking(move || match trash::current_uid() {
-            Some(uid) => trash::discover(&data_home, &mounts, uid),
-            // Without a user id the per-filesystem naming scheme cannot be applied, and
-            // guessing an id would point at another user's trash.
-            None => {
-                let home = trash::home_trash(&data_home);
-                if home.is_present() {
-                    vec![home]
-                } else {
-                    Vec::new()
-                }
+        let found = gio::spawn_blocking(move || {
+            let home = trash::ensure_home_trash(&data_home).ok();
+            let mut found = match trash::current_uid() {
+                Some(uid) => trash::discover(&data_home, &mounts, uid),
+                // Without a user id the per-filesystem naming scheme cannot be applied,
+                // and guessing an id would point at another user's trash.
+                None => Vec::new(),
+            };
+            if let Some(home) = home
+                && !found.contains(&home)
+            {
+                found.insert(0, home);
             }
+            found
         })
         .await
         .unwrap_or_default();

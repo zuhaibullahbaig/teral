@@ -1229,8 +1229,7 @@ pub fn drop_action(target: &gtk::DropTarget) -> gdk::DragAction {
     }
 }
 
-/// Check conflicts away from GTK, then either start immediately or ask once for the
-/// policy that applies to the whole batch.
+/// Check conflicts away from GTK, then collect the required per-item decisions.
 fn prepare_transfer(
     app: &App,
     kind: TransferKind,
@@ -1246,28 +1245,28 @@ fn prepare_transfer(
     app.set_message("Checking destination…", false);
     let app = Rc::clone(app);
     glib::spawn_future_local(async move {
-        match ops::conflicts(sources.clone(), destination.clone()).await {
+        match ops::conflicts(kind, sources.clone(), destination.clone()).await {
             Ok(conflicts) if conflicts.is_empty() => start_transfer(
                 &app,
                 kind,
                 sources,
                 destination,
-                ops::ConflictPolicy::RenameIncoming,
+                ops::ConflictRules::uniform(ops::ConflictPolicy::RenameIncoming),
                 from_clipboard,
             ),
             Ok(conflicts) => {
                 let app_for_choice = Rc::clone(&app);
-                dialogs::resolve_transfer_conflicts(&app, conflicts.len(), move |policy| {
-                    if policy == ops::ConflictPolicy::Cancel {
+                dialogs::resolve_transfer_conflicts(&app, conflicts, move |rules| {
+                    let Some(rules) = rules else {
                         app_for_choice.set_message("Transfer cancelled", false);
                         return;
-                    }
+                    };
                     start_transfer(
                         &app_for_choice,
                         kind,
                         sources,
                         destination,
-                        policy,
+                        rules,
                         from_clipboard,
                     );
                 });
@@ -1283,7 +1282,7 @@ fn start_transfer(
     kind: TransferKind,
     sources: Vec<PathBuf>,
     destination: PathBuf,
-    policy: ops::ConflictPolicy,
+    rules: ops::ConflictRules,
     from_clipboard: bool,
 ) {
     if app.state.running_transfer.borrow().is_some() {
@@ -1309,7 +1308,8 @@ fn start_transfer(
 
     let app = Rc::clone(app);
     glib::spawn_future_local(async move {
-        let report = ops::transfer(kind, sources, destination, policy, cancel, progress).await;
+        let report =
+            ops::transfer_resolved(kind, sources, destination, rules, cancel, progress).await;
         app.state.running_transfer.borrow_mut().take();
 
         if kind == TransferKind::Move {
@@ -1633,7 +1633,7 @@ fn ask_about_restore_conflicts(
     }
 
     let app_for_choice = Rc::clone(app);
-    dialogs::resolve_transfer_conflicts(app, conflicts, move |policy| {
+    dialogs::resolve_restore_conflicts(app, conflicts, move |policy| {
         if policy == ops::ConflictPolicy::Cancel {
             app_for_choice.set_message("Restore cancelled", false);
             return;

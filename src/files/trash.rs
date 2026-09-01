@@ -14,7 +14,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 /// The suffix every restore record carries, per the trash specification.
@@ -81,6 +81,22 @@ pub fn current_uid() -> Option<u32> {
 /// malformed case where one is stored relative.
 pub fn home_trash(data_home: &Path) -> TrashDir {
     TrashDir::new(data_home.join("Trash"), PathBuf::from("/"))
+}
+
+/// Ensure the user's home trash is browsable even before the first deletion.
+///
+/// Desktop file managers expose Trash as a permanent logical location. Creating its
+/// two specification directories on the worker used for discovery gives an empty
+/// Trash the same behaviour without touching the GTK thread.
+pub fn ensure_home_trash(data_home: &Path) -> io::Result<TrashDir> {
+    let trash = home_trash(data_home);
+    for directory in [trash.files(), trash.info()] {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory)?;
+    }
+    Ok(trash)
 }
 
 /// The trash directory a filesystem uses, following the specification's order.
@@ -834,6 +850,16 @@ mod tests {
         assert_eq!(found[0].root, data_home.join("Trash"));
         assert_eq!(found[1].root, usb.join(".Trash-1000"));
         assert_eq!(found[1].top_dir, usb);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn an_empty_home_trash_can_be_browsed_before_the_first_deletion() {
+        let root = scratch("ensure-home-trash");
+        let data_home = root.join("data");
+        let trash = ensure_home_trash(&data_home).expect("create home trash");
+        assert!(trash.files().is_dir());
+        assert!(trash.info().is_dir());
         fs::remove_dir_all(root).expect("cleanup");
     }
 

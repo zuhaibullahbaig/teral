@@ -4,7 +4,7 @@ use super::App;
 use crate::files::{FileEntry, ops};
 use gtk::glib;
 use gtk::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -231,42 +231,255 @@ pub fn confirm(
     window.present();
 }
 
-/// Resolve every destination conflict in one transfer. The chosen action applies to
-/// the whole batch, so a large paste never interrupts the user once per file.
+/// Resolve transfer collisions one at a time, with an explicit apply-to-all choice.
 pub fn resolve_transfer_conflicts(
+    app: &App,
+    conflicts: Vec<ops::Conflict>,
+    action: impl FnOnce(Option<ops::ConflictRules>) + 'static,
+) {
+    type Decision = Box<dyn FnOnce(Option<ops::ConflictRules>)>;
+    let action: Rc<RefCell<Option<Decision>>> = Rc::new(RefCell::new(Some(Box::new(action))));
+    resolve_next_conflict(
+        Rc::clone(app),
+        Rc::new(conflicts),
+        0,
+        Rc::new(RefCell::new(ops::ConflictRules::new(
+            ops::ConflictPolicy::RenameIncoming,
+        ))),
+        Rc::new(RefCell::new((None, None))),
+        action,
+    );
+}
+
+type ConflictDefaults = (Option<ops::ConflictPolicy>, Option<ops::ConflictPolicy>);
+type ConflictDecision = Box<dyn FnOnce(Option<ops::ConflictRules>)>;
+
+fn resolve_next_conflict(
+    app: App,
+    conflicts: Rc<Vec<ops::Conflict>>,
+    mut index: usize,
+    rules: Rc<RefCell<ops::ConflictRules>>,
+    defaults: Rc<RefCell<ConflictDefaults>>,
+    action: Rc<RefCell<Option<ConflictDecision>>>,
+) {
+    while let Some(conflict) = conflicts.get(index) {
+        let default = match conflict.kind {
+            ops::ConflictKind::Folder => defaults.borrow().0,
+            ops::ConflictKind::File => defaults.borrow().1,
+            ops::ConflictKind::SameEntry | ops::ConflictKind::SelfMove => None,
+        };
+        let Some(policy) = default else { break };
+        rules.borrow_mut().set(conflict, policy);
+        index = next_conflict_index(&conflicts, index, policy);
+    }
+
+    let Some(conflict) = conflicts.get(index).cloned() else {
+        if let Some(action) = action.borrow_mut().take() {
+            action(Some(rules.borrow().clone()));
+        }
+        return;
+    };
+
+    let name = conflict
+        .source
+        .file_name()
+        .unwrap_or(conflict.source.as_os_str())
+        .to_string_lossy();
+    let (title, explanation) = match conflict.kind {
+        ops::ConflictKind::Folder => (
+            format!("Merge folder “{name}”?"),
+            "A folder with this name already exists. Merge their contents, keep both \
+             with a new name, or skip it.",
+        ),
+        ops::ConflictKind::File => (
+            format!("“{name}” already exists"),
+            "A file with this name already exists. Replace it, keep both with a new \
+             name, or skip it.",
+        ),
+        ops::ConflictKind::SelfMove => (
+            "You cannot move an item onto itself".to_owned(),
+            "The source item and destination are the same. Nothing has been changed.",
+        ),
+        ops::ConflictKind::SameEntry => (
+            "This item is already here".to_owned(),
+            "Choose Rename to create another copy, or Skip to leave it unchanged.",
+        ),
+    };
+
+    let heading = gtk::Label::new(Some(&title));
+    heading.set_xalign(0.0);
+    heading.add_css_class("teral-dialog-title");
+
+    let text = gtk::Label::new(Some(explanation));
+    text.set_xalign(0.0);
+    text.set_wrap(true);
+    text.add_css_class("teral-status-item");
+
+    let apply_all = gtk::CheckButton::with_label("Apply this action to similar conflicts");
+    apply_all.set_visible(matches!(
+        conflict.kind,
+        ops::ConflictKind::Folder | ops::ConflictKind::File
+    ));
+
+    let cancel = gtk::Button::with_label("Cancel");
+    cancel.add_css_class("teral-secondary");
+    let skip = gtk::Button::with_label("Skip");
+    skip.add_css_class("teral-secondary");
+    let rename = gtk::Button::with_label("Rename");
+    rename.add_css_class("teral-secondary");
+    let primary_policy = if conflict.kind == ops::ConflictKind::Folder {
+        ops::ConflictPolicy::Merge
+    } else {
+        ops::ConflictPolicy::Replace
+    };
+    let primary = gtk::Button::with_label(if primary_policy == ops::ConflictPolicy::Merge {
+        "Merge"
+    } else {
+        "Replace"
+    });
+    primary.add_css_class("teral-primary");
+    if primary_policy == ops::ConflictPolicy::Replace {
+        primary.remove_css_class("teral-primary");
+        primary.add_css_class("destructive-action");
+    }
+
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk::Align::End);
+    buttons.set_margin_top(6);
+    buttons.append(&cancel);
+    buttons.append(&skip);
+    if conflict.kind != ops::ConflictKind::SelfMove {
+        buttons.append(&rename);
+    }
+    if matches!(
+        conflict.kind,
+        ops::ConflictKind::Folder | ops::ConflictKind::File
+    ) {
+        buttons.append(&primary);
+    }
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    content.append(&heading);
+    content.append(&text);
+    content.append(&apply_all);
+    content.append(&buttons);
+
+    let window = window(&app, "File Conflict", 560, -1, &content);
+    window.set_resizable(false);
+    let handled = Rc::new(Cell::new(false));
+    let decide = |button: &gtk::Button, policy| {
+        button.connect_clicked({
+            let app = Rc::clone(&app);
+            let conflicts = Rc::clone(&conflicts);
+            let rules = Rc::clone(&rules);
+            let defaults = Rc::clone(&defaults);
+            let action = Rc::clone(&action);
+            let conflict = conflict.clone();
+            let apply_all = apply_all.clone();
+            let window = window.clone();
+            let handled = Rc::clone(&handled);
+            move |_| {
+                handled.set(true);
+                rules.borrow_mut().set(&conflict, policy);
+                if apply_all.is_active() {
+                    match conflict.kind {
+                        ops::ConflictKind::Folder => defaults.borrow_mut().0 = Some(policy),
+                        ops::ConflictKind::File => defaults.borrow_mut().1 = Some(policy),
+                        ops::ConflictKind::SameEntry | ops::ConflictKind::SelfMove => {}
+                    }
+                }
+                let next = next_conflict_index(&conflicts, index, policy);
+                window.close();
+                glib::idle_add_local_once(move || {
+                    resolve_next_conflict(app, conflicts, next, rules, defaults, action);
+                });
+            }
+        });
+    };
+
+    decide(&skip, ops::ConflictPolicy::Skip);
+    decide(&rename, ops::ConflictPolicy::RenameIncoming);
+    decide(&primary, primary_policy);
+    cancel.connect_clicked({
+        let action = Rc::clone(&action);
+        let window = window.clone();
+        let handled = Rc::clone(&handled);
+        move |_| {
+            handled.set(true);
+            window.close();
+            if let Some(action) = action.borrow_mut().take() {
+                action(None);
+            }
+        }
+    });
+    window.connect_close_request({
+        let action = Rc::clone(&action);
+        let handled = Rc::clone(&handled);
+        move |_| {
+            if !handled.get()
+                && let Some(action) = action.borrow_mut().take()
+            {
+                action(None);
+            }
+            glib::Propagation::Proceed
+        }
+    });
+    window.present();
+}
+
+fn next_conflict_index(
+    conflicts: &[ops::Conflict],
+    index: usize,
+    policy: ops::ConflictPolicy,
+) -> usize {
+    let Some(current) = conflicts.get(index) else {
+        return index;
+    };
+    let mut next = index + 1;
+    if current.kind == ops::ConflictKind::Folder && policy != ops::ConflictPolicy::Merge {
+        while conflicts.get(next).is_some_and(|conflict| {
+            conflict.source.starts_with(&current.source)
+                && conflict.destination.starts_with(&current.destination)
+        }) {
+            next += 1;
+        }
+    }
+    next
+}
+
+/// Resolve restore collisions as one batch. Restore records are already grouped by
+/// their original locations, so this dialog deliberately keeps one policy for them.
+pub fn resolve_restore_conflicts(
     app: &App,
     count: usize,
     action: impl FnOnce(ops::ConflictPolicy) + 'static,
 ) {
-    let heading = gtk::Label::new(Some("Files already exist"));
+    let heading = gtk::Label::new(Some("Items already exist"));
     heading.set_xalign(0.0);
     heading.add_css_class("teral-dialog-title");
 
-    let noun = if count == 1 {
-        "destination"
-    } else {
-        "destinations"
-    };
     let text = gtk::Label::new(Some(&format!(
-        "{count} requested {noun} already exist. Choose how Teral should handle every \
-         conflict in this transfer."
+        "{count} original locations are occupied. Choose what to do with those restored items."
     )));
     text.set_xalign(0.0);
     text.set_wrap(true);
     text.add_css_class("teral-status-item");
 
-    let cancel = gtk::Button::with_label("Cancel Transfer");
+    let cancel = gtk::Button::with_label("Cancel");
     cancel.add_css_class("teral-secondary");
-    let skip = gtk::Button::with_label("Skip Existing");
+    let skip = gtk::Button::with_label("Skip");
     skip.add_css_class("teral-secondary");
-    let rename = gtk::Button::with_label("Rename Incoming");
+    let rename = gtk::Button::with_label("Rename");
     rename.add_css_class("teral-primary");
-    let replace = gtk::Button::with_label("Replace Existing");
+    let replace = gtk::Button::with_label("Replace");
     replace.add_css_class("destructive-action");
 
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons.set_halign(gtk::Align::End);
-    buttons.set_margin_top(6);
     buttons.append(&cancel);
     buttons.append(&skip);
     buttons.append(&rename);
@@ -281,9 +494,8 @@ pub fn resolve_transfer_conflicts(
     content.append(&text);
     content.append(&buttons);
 
-    let window = window(app, "Resolve File Conflicts", 560, -1, &content);
+    let window = window(app, "Restore Conflict", 520, -1, &content);
     window.set_resizable(false);
-
     type Decision = Box<dyn FnOnce(ops::ConflictPolicy)>;
     let action: Rc<RefCell<Option<Decision>>> = Rc::new(RefCell::new(Some(Box::new(action))));
     let decide = |button: &gtk::Button, policy| {
@@ -291,15 +503,13 @@ pub fn resolve_transfer_conflicts(
             let action = Rc::clone(&action);
             let window = window.clone();
             move |_| {
-                let action = action.borrow_mut().take();
                 window.close();
-                if let Some(action) = action {
+                if let Some(action) = action.borrow_mut().take() {
                     action(policy);
                 }
             }
         });
     };
-
     decide(&cancel, ops::ConflictPolicy::Cancel);
     decide(&skip, ops::ConflictPolicy::Skip);
     decide(&rename, ops::ConflictPolicy::RenameIncoming);

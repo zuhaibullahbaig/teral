@@ -152,13 +152,15 @@ pub fn build(width: i32) -> Details {
 
     let kind = gtk::Label::new(None);
     kind.set_xalign(0.0);
-    kind.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    kind.set_wrap(true);
+    kind.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     kind.set_max_width_chars(1);
     kind.add_css_class("teral-details-kind");
 
     let size = gtk::Label::new(None);
     size.set_xalign(0.0);
-    size.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    size.set_wrap(true);
+    size.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     size.set_max_width_chars(1);
     size.add_css_class("teral-details-size");
 
@@ -400,7 +402,11 @@ fn action_content(icon_name: &str, label: &str) -> gtk::Box {
     let text = gtk::Label::new(Some(label));
     text.add_css_class("teral-action-label");
     text.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    text.set_max_width_chars(1);
+    // Action captions are controlled product text, not untrusted filenames. Reserve
+    // enough room for every current caption while keeping the four-column action grid
+    // inside the fixed-width details panel.
+    text.set_width_chars(10);
+    text.set_max_width_chars(10);
 
     content.append(&icon);
     content.append(&text);
@@ -438,8 +444,8 @@ fn meta_row(key: &str) -> MetaRow {
     value.set_hexpand(true);
     value.set_wrap(true);
     value.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    value.set_lines(if key == "Path" { 4 } else { 2 });
-    value.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    // This limits the natural width request, not the displayed content. The row still
+    // receives the panel's available width and wraps every character without ellipsis.
     value.set_max_width_chars(1);
     value.set_selectable(true);
     // Selectable labels take keyboard focus by default, which paints a focus block

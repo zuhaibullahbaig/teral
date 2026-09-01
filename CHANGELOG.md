@@ -35,8 +35,8 @@ These items describe the current development foundation, not a stable-release gu
 - One transfer engine behind Copy, Move, Link, Paste, drag-and-drop and Duplicate, with
   per-item requested and actual destinations and explicit completion states.
 - Atomic no-overwrite destination creation, raw-filename conflict names, and explicit
-  Replace, Rename Incoming, Skip and Cancel handling with backup-and-restore behaviour
-  for replacements.
+  per-item Merge, Replace, Rename, Skip and Cancel handling, an apply-to-all option,
+  self-move rejection, and backup-and-restore behaviour for replacements.
 - Bounded byte and item progress, cancellation during file copies, tracked partial
   cleanup, and an explicit partial state when a cross-filesystem move cannot remove its
   source.

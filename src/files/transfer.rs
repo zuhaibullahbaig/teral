@@ -10,6 +10,7 @@ use gtk::gio::prelude::*;
 use gtk::glib;
 use gtk::glib::prelude::StaticType;
 use gtk::glib::value::ToValue;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -93,9 +94,65 @@ impl TransferKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictPolicy {
     Replace,
+    Merge,
     RenameIncoming,
     Skip,
     Cancel,
+}
+
+/// What kind of collision was found before a transfer started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictKind {
+    File,
+    Folder,
+    SameEntry,
+    SelfMove,
+}
+
+/// One source and destination that need a deliberate user decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    pub source: PathBuf,
+    pub destination: PathBuf,
+    pub kind: ConflictKind,
+}
+
+/// Per-entry decisions collected by the conflict UI.
+///
+/// A race can create another destination after inspection. Such a late conflict uses
+/// `fallback`, which is Rename for interactive transfers and the caller's uniform
+/// policy for non-interactive jobs and tests.
+#[derive(Debug, Clone)]
+pub struct ConflictRules {
+    decisions: HashMap<(PathBuf, PathBuf), ConflictPolicy>,
+    fallback: ConflictPolicy,
+}
+
+impl ConflictRules {
+    pub fn new(fallback: ConflictPolicy) -> Self {
+        Self {
+            decisions: HashMap::new(),
+            fallback,
+        }
+    }
+
+    pub fn uniform(policy: ConflictPolicy) -> Self {
+        Self::new(policy)
+    }
+
+    pub fn set(&mut self, conflict: &Conflict, policy: ConflictPolicy) {
+        self.decisions.insert(
+            (conflict.source.clone(), conflict.destination.clone()),
+            policy,
+        );
+    }
+
+    fn policy_for(&self, source: &Path, destination: &Path) -> ConflictPolicy {
+        self.decisions
+            .get(&(source.to_path_buf(), destination.to_path_buf()))
+            .copied()
+            .unwrap_or(self.fallback)
+    }
 }
 
 /// Sources advertised through the desktop clipboard.
@@ -441,28 +498,89 @@ fn validate_clipboard(kind: TransferKind, sources: Vec<PathBuf>) -> Result<Clipb
 /// Inspect conflicts off the GTK thread. This is advisory only; the job still performs
 /// atomic destination creation because the filesystem may change after this returns.
 pub async fn conflicts(
+    kind: TransferKind,
     sources: Vec<PathBuf>,
     destination: PathBuf,
-) -> Result<Vec<PathBuf>, String> {
-    gio::spawn_blocking(move || inspect_conflicts(&sources, &destination))
+) -> Result<Vec<Conflict>, String> {
+    gio::spawn_blocking(move || inspect_conflicts(kind, &sources, &destination))
         .await
         .map_err(|_| "the conflict check worker stopped unexpectedly".to_owned())?
 }
 
-fn inspect_conflicts(sources: &[PathBuf], destination: &Path) -> Result<Vec<PathBuf>, String> {
+fn inspect_conflicts(
+    kind: TransferKind,
+    sources: &[PathBuf],
+    destination: &Path,
+) -> Result<Vec<Conflict>, String> {
     let mut conflicts = Vec::new();
     for source in sources {
         let Some(name) = source.file_name() else {
             return Err(format!("{} has no file name", source.display()));
         };
         let requested = destination.join(name);
-        match requested.symlink_metadata() {
-            Ok(_) => conflicts.push(requested),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("{}: {error}", requested.display())),
-        }
+        inspect_conflict(kind, source, &requested, &mut conflicts)?;
     }
     Ok(conflicts)
+}
+
+fn inspect_conflict(
+    kind: TransferKind,
+    source: &Path,
+    destination: &Path,
+    conflicts: &mut Vec<Conflict>,
+) -> Result<(), String> {
+    if same_entry(source, destination) {
+        conflicts.push(Conflict {
+            source: source.to_path_buf(),
+            destination: destination.to_path_buf(),
+            kind: if kind == TransferKind::Move {
+                ConflictKind::SelfMove
+            } else {
+                ConflictKind::SameEntry
+            },
+        });
+        return Ok(());
+    }
+
+    let destination_metadata = match destination.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("{}: {error}", destination.display())),
+    };
+    let source_metadata = source
+        .symlink_metadata()
+        .map_err(|error| format!("{}: {error}", source.display()))?;
+    let folders = kind != TransferKind::Link
+        && source_metadata.is_dir()
+        && !source_metadata.file_type().is_symlink()
+        && destination_metadata.is_dir()
+        && !destination_metadata.file_type().is_symlink();
+    conflicts.push(Conflict {
+        source: source.to_path_buf(),
+        destination: destination.to_path_buf(),
+        kind: if folders {
+            ConflictKind::Folder
+        } else {
+            ConflictKind::File
+        },
+    });
+
+    if folders {
+        let mut children = fs::read_dir(source)
+            .map_err(|error| format!("{}: {error}", source.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("{}: {error}", source.display()))?;
+        children.sort_by_key(fs::DirEntry::file_name);
+        for child in children {
+            inspect_conflict(
+                kind,
+                &child.path(),
+                &destination.join(child.file_name()),
+                conflicts,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Run a copy or move on a worker thread.
@@ -474,10 +592,30 @@ pub async fn transfer(
     cancel: CancelFlag,
     progress: mpsc::SyncSender<JobProgress>,
 ) -> JobReport {
+    transfer_resolved(
+        kind,
+        sources,
+        destination,
+        ConflictRules::uniform(policy),
+        cancel,
+        progress,
+    )
+    .await
+}
+
+/// Run a transfer using the per-entry decisions collected by the interactive UI.
+pub async fn transfer_resolved(
+    kind: TransferKind,
+    sources: Vec<PathBuf>,
+    destination: PathBuf,
+    rules: ConflictRules,
+    cancel: CancelFlag,
+    progress: mpsc::SyncSender<JobProgress>,
+) -> JobReport {
     let fallback_sources = sources.clone();
     let fallback_destination = destination.clone();
     gio::spawn_blocking(move || {
-        run_transfer(kind, &sources, &destination, policy, &cancel, &progress)
+        run_transfer_with_rules(kind, &sources, &destination, &rules, &cancel, &progress)
     })
     .await
     .unwrap_or_else(|_| worker_failure(kind.into(), fallback_sources, fallback_destination))
@@ -511,6 +649,7 @@ pub async fn duplicate(
         let mut report = JobReport::new(OperationKind::Duplicate);
         let total_bytes = measure_sources(&sources, &cancel).unwrap_or(0);
         let mut completed_bytes = 0;
+        let rules = ConflictRules::uniform(ConflictPolicy::RenameIncoming);
 
         for (index, source) in sources.iter().enumerate() {
             if cancel.is_cancelled() {
@@ -528,7 +667,7 @@ pub async fn duplicate(
                 TransferKind::Copy,
                 source,
                 parent,
-                ConflictPolicy::RenameIncoming,
+                &rules,
                 &cancel,
                 &progress,
                 &mut completed_bytes,
@@ -564,11 +703,24 @@ fn worker_failure(kind: OperationKind, sources: Vec<PathBuf>, destination: PathB
     }
 }
 
+#[cfg(test)]
 fn run_transfer(
     kind: TransferKind,
     sources: &[PathBuf],
     destination: &Path,
     policy: ConflictPolicy,
+    cancel: &CancelFlag,
+    progress: &mpsc::SyncSender<JobProgress>,
+) -> JobReport {
+    let rules = ConflictRules::uniform(policy);
+    run_transfer_with_rules(kind, sources, destination, &rules, cancel, progress)
+}
+
+fn run_transfer_with_rules(
+    kind: TransferKind,
+    sources: &[PathBuf],
+    destination: &Path,
+    rules: &ConflictRules,
     cancel: &CancelFlag,
     progress: &mpsc::SyncSender<JobProgress>,
 ) -> JobReport {
@@ -612,7 +764,7 @@ fn run_transfer(
             kind,
             source,
             destination,
-            policy,
+            rules,
             cancel,
             progress,
             &mut completed_bytes,
@@ -635,7 +787,7 @@ fn transfer_one(
     kind: TransferKind,
     source: &Path,
     destination: &Path,
-    policy: ConflictPolicy,
+    rules: &ConflictRules,
     cancel: &CancelFlag,
     progress: &mpsc::SyncSender<JobProgress>,
     completed_bytes: &mut u64,
@@ -651,7 +803,7 @@ fn transfer_one(
     let requested = destination.join(name);
     let mut result = ItemResult::new(source.to_path_buf(), requested.clone());
 
-    if source.parent() == Some(destination) && kind == TransferKind::Move {
+    if kind == TransferKind::Move && same_entry(source, &requested) {
         result.actual_destination = Some(source.to_path_buf());
         result.state = ItemState::Skipped;
         return result;
@@ -663,12 +815,12 @@ fn transfer_one(
     }
 
     let before = *completed_bytes;
-    let outcome = execute_with_policy(
+    let outcome = execute_with_rules(
         kind,
         source,
         destination,
         name,
-        policy,
+        rules,
         cancel,
         progress,
         completed_bytes,
@@ -735,13 +887,56 @@ pub(super) fn execute_with_policy(
     completed_items: usize,
     total_items: usize,
 ) -> io::Result<Execution> {
+    let rules = ConflictRules::uniform(policy);
+    execute_with_rules(
+        kind,
+        source,
+        destination,
+        name,
+        &rules,
+        cancel,
+        progress,
+        completed_bytes,
+        total_bytes,
+        completed_items,
+        total_items,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_with_rules(
+    kind: TransferKind,
+    source: &Path,
+    destination: &Path,
+    name: &OsStr,
+    rules: &ConflictRules,
+    cancel: &CancelFlag,
+    progress: &mpsc::SyncSender<JobProgress>,
+    completed_bytes: &mut u64,
+    total_bytes: u64,
+    completed_items: usize,
+    total_items: usize,
+) -> io::Result<Execution> {
     let requested = destination.join(name);
+    let policy = rules.policy_for(source, &requested);
     if policy != ConflictPolicy::RenameIncoming {
         match path_exists(&requested)? {
             true => {
                 return match policy {
                     ConflictPolicy::Skip => Ok(Execution::Skipped(requested)),
                     ConflictPolicy::Cancel => Err(cancelled_error()),
+                    ConflictPolicy::Merge => merge_entry(
+                        kind,
+                        source,
+                        &requested,
+                        rules,
+                        cancel,
+                        progress,
+                        completed_bytes,
+                        total_bytes,
+                        completed_items,
+                        total_items,
+                    ),
                     ConflictPolicy::Replace => replace_entry(
                         kind,
                         source,
@@ -774,6 +969,18 @@ pub(super) fn execute_with_policy(
                     return match policy {
                         ConflictPolicy::Skip => Ok(Execution::Skipped(requested)),
                         ConflictPolicy::Cancel => Err(cancelled_error()),
+                        ConflictPolicy::Merge => merge_entry(
+                            kind,
+                            source,
+                            &requested,
+                            rules,
+                            cancel,
+                            progress,
+                            completed_bytes,
+                            total_bytes,
+                            completed_items,
+                            total_items,
+                        ),
                         ConflictPolicy::Replace => replace_entry(
                             kind,
                             source,
@@ -816,6 +1023,92 @@ pub(super) fn execute_with_policy(
     Err(io::Error::other(
         "could not reserve an unused name in the destination folder",
     ))
+}
+
+/// Combine one real directory with another, applying the decisions collected for each
+/// child collision. Existing destination directories stay in place; only their
+/// contents are changed.
+#[allow(clippy::too_many_arguments)]
+fn merge_entry(
+    kind: TransferKind,
+    source: &Path,
+    target: &Path,
+    rules: &ConflictRules,
+    cancel: &CancelFlag,
+    progress: &mpsc::SyncSender<JobProgress>,
+    completed_bytes: &mut u64,
+    total_bytes: u64,
+    completed_items: usize,
+    total_items: usize,
+) -> io::Result<Execution> {
+    let source_metadata = fs::symlink_metadata(source)?;
+    let target_metadata = fs::symlink_metadata(target)?;
+    if !source_metadata.is_dir()
+        || source_metadata.file_type().is_symlink()
+        || !target_metadata.is_dir()
+        || target_metadata.file_type().is_symlink()
+    {
+        return Err(io::Error::other("only two folders can be merged"));
+    }
+
+    let mut changed = false;
+    let mut incomplete = Vec::new();
+    let mut children = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
+    children.sort_by_key(fs::DirEntry::file_name);
+    for child in children {
+        if cancel.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        let child_source = child.path();
+        let child_name = child.file_name();
+        match execute_with_rules(
+            kind,
+            &child_source,
+            target,
+            &child_name,
+            rules,
+            cancel,
+            progress,
+            completed_bytes,
+            total_bytes,
+            completed_items,
+            total_items,
+        ) {
+            Ok(Execution::Completed(_)) => changed = true,
+            Ok(Execution::Skipped(_)) => incomplete.push(format!(
+                "{} was skipped",
+                child_name.to_string_lossy()
+            )),
+            Ok(Execution::Partial(_, error)) => {
+                changed = true;
+                incomplete.push(error);
+            }
+            Err(error) if !changed => return Err(error),
+            Err(error) => incomplete.push(error.to_string()),
+        }
+    }
+
+    if kind == TransferKind::Move {
+        match fs::remove_dir(source) {
+            Ok(()) => {}
+            Err(error)
+                if !incomplete.is_empty()
+                    && error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+            Err(error) if changed => incomplete.push(format!(
+                "the source folder remains because it could not be removed: {error}"
+            )),
+            Err(error) => return Err(error),
+        }
+    }
+
+    if incomplete.is_empty() {
+        Ok(Execution::Completed(target.to_path_buf()))
+    } else {
+        Ok(Execution::Partial(
+            target.to_path_buf(),
+            incomplete.join("; "),
+        ))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1200,6 +1493,20 @@ fn path_exists(path: &Path) -> io::Result<bool> {
     }
 }
 
+/// True when two paths name the same directory entry, including through a symlinked
+/// parent directory. Metadata is not followed when the entry itself is a symlink.
+fn same_entry(left: &Path, right: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(left) = fs::symlink_metadata(left) else {
+        return false;
+    };
+    let Ok(right) = fs::symlink_metadata(right) else {
+        return false;
+    };
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
 /// True when both paths live on the same filesystem.
 pub fn same_filesystem(source: &Path, destination: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -1434,6 +1741,89 @@ mod tests {
                 b'n', 0xff, b' ', b'(', b'c', b'o', b'p', b'y', b')', b'.', b't', b'x', b't'
             ]
         );
+    }
+
+    #[test]
+    fn moving_an_item_to_its_own_folder_is_reported_before_the_job() {
+        let root = scratch("self-move-conflict");
+        let source = root.join("notes.txt");
+        fs::write(&source, b"notes").unwrap();
+
+        let conflicts = inspect_conflicts(
+            TransferKind::Move,
+            std::slice::from_ref(&source),
+            &root,
+        )
+        .unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].kind, ConflictKind::SelfMove);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn copying_an_item_onto_itself_only_offers_a_new_name() {
+        let root = scratch("same-copy-conflict");
+        let source = root.join("notes.txt");
+        fs::write(&source, b"notes").unwrap();
+
+        let conflicts = inspect_conflicts(
+            TransferKind::Copy,
+            std::slice::from_ref(&source),
+            &root,
+        )
+        .unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].kind, ConflictKind::SameEntry);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_merge_uses_individual_file_decisions() {
+        let root = scratch("merge-decisions");
+        let source_parent = root.join("source");
+        let destination = root.join("destination");
+        let source = source_parent.join("project");
+        let target = destination.join("project");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("replace.txt"), b"new").unwrap();
+        fs::write(source.join("skip.txt"), b"new").unwrap();
+        fs::write(source.join("added.txt"), b"added").unwrap();
+        fs::write(target.join("replace.txt"), b"old").unwrap();
+        fs::write(target.join("skip.txt"), b"old").unwrap();
+
+        let conflicts = inspect_conflicts(
+            TransferKind::Copy,
+            std::slice::from_ref(&source),
+            &destination,
+        )
+        .unwrap();
+        let mut rules = ConflictRules::new(ConflictPolicy::RenameIncoming);
+        for conflict in &conflicts {
+            let policy = if conflict.kind == ConflictKind::Folder {
+                ConflictPolicy::Merge
+            } else if conflict.source.ends_with("replace.txt") {
+                ConflictPolicy::Replace
+            } else {
+                ConflictPolicy::Skip
+            };
+            rules.set(conflict, policy);
+        }
+
+        let (progress, _) = mpsc::sync_channel(1);
+        let report = run_transfer_with_rules(
+            TransferKind::Copy,
+            &[source],
+            &destination,
+            &rules,
+            &CancelFlag::new(),
+            &progress,
+        );
+        assert_eq!(fs::read(target.join("replace.txt")).unwrap(), b"new");
+        assert_eq!(fs::read(target.join("skip.txt")).unwrap(), b"old");
+        assert_eq!(fs::read(target.join("added.txt")).unwrap(), b"added");
+        assert_eq!(report.items[0].state, ItemState::Partial);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

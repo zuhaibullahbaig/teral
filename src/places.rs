@@ -96,14 +96,22 @@ pub fn user_places() -> Vec<Place> {
 /// unplugged simply stops appearing.
 pub fn trash_places() -> Vec<Place> {
     let home = crate::files::trash::home_trash(&data_home());
-    crate::files::ops::trash_dirs()
-        .into_iter()
-        .map(|dir| Place {
-            label: trash_label(&dir, &home),
-            icon_name: "user-trash-symbolic".to_owned(),
-            path: dir.files(),
-        })
-        .collect()
+    let mut places = vec![Place {
+        label: "Trash".to_owned(),
+        icon_name: "user-trash-symbolic".to_owned(),
+        path: home.files(),
+    }];
+    places.extend(
+        crate::files::ops::trash_dirs()
+            .into_iter()
+            .filter(|dir| dir.root != home.root)
+            .map(|dir| Place {
+                label: trash_label(&dir, &home),
+                icon_name: "user-trash-symbolic".to_owned(),
+                path: dir.files(),
+            }),
+    );
+    places
 }
 
 /// The label one trash location should carry in the sidebar.
@@ -307,6 +315,9 @@ pub fn display_label(path: &Path) -> String {
     // volume-monitor lookup out of ordinary breadcrumb and title rendering.
     if path.file_name() == Some(std::ffi::OsStr::new("files")) {
         let home = crate::files::trash::home_trash(&data_home());
+        if home.files() == path {
+            return "Trash".to_owned();
+        }
         if let Some(dir) = crate::files::ops::trash_dirs()
             .iter()
             .find(|dir| dir.files() == path)

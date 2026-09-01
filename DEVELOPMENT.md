@@ -80,8 +80,13 @@ exercised by hand.
   deep trees, relative symlinks, absolute symlinks, and broken symlinks.
 - [ ] Permissions, timestamps, xattrs/ACLs where supported, and sparse allocation are
   retained to the extent supported by the source and destination filesystems.
-- [ ] Replace, Rename Incoming, Skip, and Cancel preserve the old destination correctly;
+- [ ] Replace, Rename, Skip, and Cancel preserve the old destination correctly;
   repeat while another process creates the requested destination during the operation.
+- [ ] Paste same-name folders and verify each folder can be merged, renamed or skipped.
+  Inside a merge, verify same-name files are asked about individually and that applying
+  Replace or Skip to all similar conflicts does not affect folder decisions.
+- [ ] Cut an item and paste it back into its current folder. Verify Teral refuses the
+  self-move without changing or duplicating the item.
 - [ ] Cancel a multi-gigabyte copy while bytes are moving. The source and any unrelated
   destination remain intact, and no hidden `.teral-*` partial is left behind.
 - [ ] Copy and Move on one filesystem, then Move between two filesystems. Unmount or
@@ -120,7 +125,7 @@ is not sufficient; the device and multi-filesystem behaviour has to be exercised
   to `.Trash-$uid` instead.
 - [ ] Unmount the second filesystem with items still in its trash. Its sidebar entry
   disappears, Teral stays usable, and remounting brings the items and their records back.
-- [ ] Restore into an occupied original location. Verify Replace, Rename Incoming, Skip
+- [ ] Restore into an occupied original location. Verify Replace, Rename, Skip
   and Cancel each behave as they do for Paste, and that Skip leaves the item and its
   record in the trash.
 - [ ] Delete an original folder, then restore an item from it. Verify the choice between
