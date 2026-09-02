@@ -9,12 +9,12 @@ use vte::prelude::*;
 
 /// Widgets of the bottom bar and the Quick Command console above it.
 pub struct StatusBar {
-    pub root: gtk::Box,
+    pub root: gtk::Overlay,
     pub left: gtk::Box,
     pub middle: gtk::Box,
     pub right: gtk::Box,
-    pub left_divider: gtk::Separator,
-    pub right_divider: gtk::Separator,
+    pub left_revealer: gtk::Revealer,
+    pub right_revealer: gtk::Revealer,
     pub command_entry: gtk::Entry,
     pub selection: gtk::Label,
     pub size: gtk::Label,
@@ -204,23 +204,49 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
     right.append(&size);
     right.append(&zoom_group);
 
-    let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    root.add_css_class("teral-status-bar");
     let left_divider = divider();
+    let left_shell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    left_shell.append(&left);
+    left_shell.append(&left_divider);
+
     let right_divider = divider();
-    root.append(&left);
-    root.append(&left_divider);
-    root.append(&middle);
-    root.append(&right_divider);
-    root.append(&right);
+    let right_shell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    right_shell.append(&right_divider);
+    right_shell.append(&right);
+
+    let left_revealer = gtk::Revealer::new();
+    left_revealer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+    left_revealer.set_transition_duration(180);
+    left_revealer.set_halign(gtk::Align::Start);
+    left_revealer.set_valign(gtk::Align::Fill);
+    left_revealer.set_child(Some(&left_shell));
+    left_revealer.set_reveal_child(true);
+
+    let right_revealer = gtk::Revealer::new();
+    right_revealer.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
+    right_revealer.set_transition_duration(180);
+    right_revealer.set_halign(gtk::Align::End);
+    right_revealer.set_valign(gtk::Align::Fill);
+    right_revealer.set_child(Some(&right_shell));
+    right_revealer.set_reveal_child(true);
+
+    // Quick Command is always the base layer. Navigation and Details footer controls
+    // reserve space beside it on wide windows and slide over it in compact mode.
+    middle.set_margin_start(sidebar_width);
+    middle.set_margin_end(details_width);
+    let root = gtk::Overlay::new();
+    root.add_css_class("teral-status-bar");
+    root.set_child(Some(&middle));
+    root.add_overlay(&left_revealer);
+    root.add_overlay(&right_revealer);
 
     StatusBar {
         root,
         left,
         middle,
         right,
-        left_divider,
-        right_divider,
+        left_revealer,
+        right_revealer,
         command_entry,
         selection,
         size,
@@ -293,18 +319,16 @@ pub fn connect(app: &App) {
         let app = Rc::clone(app);
         move |button| {
             let active = button.is_active();
-            if !app.state.updating.get() {
-                let mut config = app.config.borrow().clone();
-                config.details_visible = active;
-                app.apply_config(config, true);
-            }
             if super::window::is_compact_layout(&app) {
-                if active {
-                    app.widgets.compact_details.set_active(true);
-                } else if app.widgets.compact_details.is_active() {
-                    app.widgets.compact_files.set_active(true);
-                }
+                super::window::set_details_drawer_pinned(&app, active);
+                return;
             }
+            if app.state.updating.get() {
+                return;
+            }
+            let mut config = app.config.borrow().clone();
+            config.details_visible = active;
+            app.apply_config(config, true);
             super::window::apply_responsive_layout(&app);
         }
     });

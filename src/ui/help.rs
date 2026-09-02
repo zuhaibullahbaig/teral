@@ -24,7 +24,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("Ctrl+I", "Show or hide the details panel"),
             (
                 "Ctrl+1 / Ctrl+2 / Ctrl+3",
-                "Compact Navigation / Files / Details",
+                "Navigation drawer / Files / Details drawer",
             ),
             ("Ctrl+F", "Search this folder"),
             ("Ctrl+Shift+F", "Search Home and subfolders"),

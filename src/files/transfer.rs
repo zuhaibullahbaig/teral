@@ -23,6 +23,24 @@ const URI_LIST: &str = "text/uri-list";
 const KDE_CUT_SELECTION: &str = "application/x-kde-cutselection";
 const COPY_BUFFER_SIZE: usize = 1024 * 1024;
 
+/// Advertise a file drag in both GTK's typed form and the URI formats Wayland file
+/// managers negotiate across process boundaries.
+pub fn drag_content_provider(files: &[gio::File]) -> Option<gdk::ContentProvider> {
+    if files.is_empty() {
+        return None;
+    }
+    let uris: Vec<String> = files.iter().map(|file| file.uri().to_string()).collect();
+    let uri_list = format!("{}\r\n", uris.join("\r\n"));
+    let special = format!("copy\n{}", uris.join("\n"));
+    let file_list = gdk::FileList::from_array(files);
+    let providers = [
+        gdk::ContentProvider::for_value(&file_list.to_value()),
+        gdk::ContentProvider::for_bytes(URI_LIST, &glib::Bytes::from(uri_list.as_bytes())),
+        gdk::ContentProvider::for_bytes(GNOME_COPIED_FILES, &glib::Bytes::from(special.as_bytes())),
+    ];
+    Some(gdk::ContentProvider::new_union(&providers))
+}
+
 /// Whether a job copies or moves its sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferKind {

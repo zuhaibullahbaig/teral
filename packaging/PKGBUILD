@@ -4,7 +4,7 @@
 #
 #   makepkg -si
 pkgname=teral
-pkgver=0.1.2
+pkgver=0.1.3
 pkgrel=1
 pkgdesc="A modern native Linux file manager written in Rust with GTK4"
 # Add another architecture only after its release artifact has been built and tested.

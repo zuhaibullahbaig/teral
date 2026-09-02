@@ -20,8 +20,6 @@ pub struct Header {
     pub global_search_close: gtk::Button,
     pub compact_group: gtk::Box,
     pub compact_navigation: gtk::ToggleButton,
-    pub compact_files: gtk::ToggleButton,
-    pub compact_details: gtk::ToggleButton,
     pub compact_title: gtk::Label,
     pub back: gtk::Button,
     pub forward: gtk::Button,
@@ -65,19 +63,13 @@ pub fn build(search: &gtk::Revealer) -> Header {
     global_search_box.append(&global_search_close);
     global_search_box.set_visible(false);
 
-    let compact_navigation =
-        icon_toggle(icons::ui(icons::names::SIDEBAR), "Navigation pane (Ctrl+1)");
-    let compact_files = icon_toggle(icons::ui(icons::names::OPEN_FOLDER), "Files pane (Ctrl+2)");
-    let compact_details = icon_toggle(icons::ui(icons::names::PANEL), "Details pane (Ctrl+3)");
-    compact_files.set_group(Some(&compact_navigation));
-    compact_details.set_group(Some(&compact_navigation));
-    compact_files.set_active(true);
+    let compact_navigation = icon_toggle(
+        icons::ui(icons::names::SIDEBAR),
+        "Show navigation drawer (Ctrl+1)",
+    );
 
     let compact_group = gtk::Box::new(gtk::Orientation::Horizontal, 1);
-    compact_group.add_css_class("teral-button-group");
     compact_group.append(&compact_navigation);
-    compact_group.append(&compact_files);
-    compact_group.append(&compact_details);
     compact_group.set_visible(false);
 
     let compact_title = gtk::Label::new(Some("Home"));
@@ -161,8 +153,6 @@ pub fn build(search: &gtk::Revealer) -> Header {
         global_search_close,
         compact_group,
         compact_navigation,
-        compact_files,
-        compact_details,
         compact_title,
         back,
         forward,
@@ -311,6 +301,7 @@ pub fn connect(app: &App) {
 }
 
 pub fn open_global_search(app: &App) {
+    super::window::show_files_workspace(app);
     show_global_search_controls(app);
     app.widgets.global_search_entry.grab_focus();
     app.widgets.global_search_entry.select_region(0, -1);
@@ -381,6 +372,7 @@ pub fn show_search_crumb(app: &App, query: &str) {
 
 /// Swap the breadcrumbs for an editable path entry (Ctrl+L).
 pub fn show_location(app: &App) {
+    super::window::show_files_workspace(app);
     let current = app.current_dir();
     app.widgets.location.set_text(&current.to_string_lossy());
     app.widgets.location.select_region(0, -1);

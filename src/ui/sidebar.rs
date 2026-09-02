@@ -200,8 +200,11 @@ fn rebuild_devices(app: &App) {
 fn connect_pin_target(app: &App) {
     let target = gtk::DropTarget::new(
         gtk::gdk::FileList::static_type(),
-        gtk::gdk::DragAction::COPY,
+        gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::LINK,
     );
+    // Resolve the small file-list value before the pointer is released. This lets
+    // Wayland confirm the target and display the bookmark hint during drag motion.
+    target.set_preload(true);
 
     target.connect_drop({
         let app = Rc::clone(app);
@@ -401,7 +404,7 @@ pub fn mark_active_tag(app: &App, active: Option<&str>) {
 ///
 /// The same row carries both states, so the hint appears exactly where "No bookmarks"
 /// was rather than beside it, and disappears again with the section still empty.
-fn show_drop_hint(app: &App, dragging: bool) {
+pub(crate) fn show_drop_hint(app: &App, dragging: bool) {
     let label = &app.widgets.pin_drop;
     let empty = app.state.pinned.borrow().is_empty();
 

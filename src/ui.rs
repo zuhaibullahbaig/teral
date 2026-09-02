@@ -182,6 +182,16 @@ pub struct State {
     pub icon_size_save: Cell<Option<glib::SourceId>>,
     /// At most one grid-factory replacement is queued per rendered frame.
     pub icon_refresh_queued: Cell<bool>,
+    /// True only while the compositor has allocated the compact drawer layout.
+    pub compact_layout: Cell<bool>,
+    /// Keyboard-opened Details stays open until explicitly dismissed.
+    pub details_drawer_pinned: Cell<bool>,
+    /// One delayed hover close at most; returning to the drawer cancels it.
+    pub details_close_source: Cell<Option<glib::SourceId>>,
+    /// Suppresses hover drawers while a file drag is in progress.
+    pub drag_active: Cell<bool>,
+    /// True when a folder drag temporarily revealed compact Navigation.
+    pub drag_opened_navigation: Cell<bool>,
 }
 
 /// One browsing tab: a location and its own history.
@@ -267,6 +277,7 @@ impl AppInner {
 
     /// Navigate to `path`, recording the current directory in the back history.
     pub fn navigate(self: &App, path: &Path) {
+        window::close_navigation_drawer(self);
         if self.state.global_search.borrow().is_none() && *self.state.current.borrow() == path {
             return;
         }

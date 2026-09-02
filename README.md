@@ -15,7 +15,7 @@ Teral is a three-pane file manager: locations on the left, files in the middle, 
 and actions for the selection on the right, and a terminal rooted in the folder you are
 browsing. It is one application for Ubuntu, Arch, Omarchy and other Linux desktops.
 
-> **Teral 0.1.2 is an early public release under active development.** Keep another file
+> **Teral 0.1.3 is an early public release under active development.** Keep another file
 > manager installed, back up important files, and report anything that behaves incorrectly.
 
 ## Features
@@ -38,7 +38,8 @@ browsing. It is one application for Ubuntu, Arch, Omarchy and other Linux deskto
 - Recursive, cancellable Home search with streamed results, bounded first-page PDF
   previews, and bounded audio/video metadata and video-frame previews.
 - Live mount, unmount and eject controls for removable devices.
-- An adaptive compact workspace for narrow tiling layouts, with direct pane shortcuts.
+- Overlay Navigation and Details drawers for narrow tiling layouts, while Files and
+  Quick Command remain available underneath.
 - A checksum-verified `teral-update` command for installing future releases.
 
 ## Install
@@ -48,20 +49,20 @@ Prebuilt packages for x86_64 Linux are available from the
 
 ### Ubuntu and Debian
 
-Download `teral_0.1.2_amd64.deb`, then install it with the system package manager so its
+Download `teral_0.1.3_amd64.deb`, then install it with the system package manager so its
 GTK and VTE dependencies are resolved automatically:
 
 ```bash
-sudo apt install ./teral_0.1.2_amd64.deb
+sudo apt install ./teral_0.1.3_amd64.deb
 ```
 
 ### Other x86_64 Linux distributions
 
-Download `teral-0.1.2-x86_64-linux.tar.gz`, extract it, and run the included installer:
+Download `teral-0.1.3-x86_64-linux.tar.gz`, extract it, and run the included installer:
 
 ```bash
-tar -xzf teral-0.1.2-x86_64-linux.tar.gz
-cd teral-0.1.2
+tar -xzf teral-0.1.3-x86_64-linux.tar.gz
+cd teral-0.1.3
 sudo ./scripts/install.sh
 ```
 
@@ -146,7 +147,7 @@ Ctrl+T / Ctrl+W     New tab / close tab
 Ctrl+Tab            Next tab (add Shift for previous)
 Ctrl+,              Settings
 Ctrl+I              Show or hide the details panel
-Ctrl+1 / 2 / 3      Compact Navigation / Files / Details pane
+Ctrl+1 / 2 / 3      Navigation drawer / Files / Details drawer
 Ctrl+= / Ctrl+-     Larger / smaller grid icons
 Ctrl+0              Reset the grid icon size
 F2                  Rename

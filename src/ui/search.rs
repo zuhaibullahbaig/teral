@@ -106,6 +106,7 @@ pub fn connect(app: &App) {
 
 /// Reveal the field and put the cursor in it.
 pub fn open(app: &App) {
+    super::window::show_files_workspace(app);
     app.widgets.search.root.set_reveal_child(true);
     sync_toggle(app, true);
     super::window::apply_responsive_layout(app);

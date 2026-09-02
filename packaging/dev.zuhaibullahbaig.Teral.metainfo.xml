@@ -25,6 +25,12 @@
   </provides>
   <url type="homepage">https://github.com/zuhaibullahbaig/teral</url>
   <releases>
+    <release version="0.1.3" date="2026-09-02">
+      <description>
+        <p>Adds compact overlay drawers, improves Wayland bookmark dragging, and removes
+        continuous responsive-layout frame polling while the application is idle.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-09-02">
       <description>
         <p>Adds an adaptive one-pane workspace for narrow tiled windows and keeps the

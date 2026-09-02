@@ -497,23 +497,38 @@ fn attach_drag_source(app: &App, widget: &gtk::Box, item: &gtk::ListItem) {
     let source = gtk::DragSource::new();
     source.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE | gdk::DragAction::LINK);
 
-    let app = Rc::clone(app);
+    let app_for_prepare = Rc::clone(app);
     let item = item.clone();
     source.connect_prepare(move |_, _, _| {
         let position = item.position();
-        if position != gtk::INVALID_LIST_POSITION && !app.state.selection.is_selected(position) {
-            app.state.selection.select_item(position, true);
+        if position != gtk::INVALID_LIST_POSITION
+            && !app_for_prepare.state.selection.is_selected(position)
+        {
+            app_for_prepare.state.selection.select_item(position, true);
         }
 
-        let files: Vec<gtk::gio::File> =
-            app.selected_entries().iter().map(FileEntry::file).collect();
+        let files: Vec<gtk::gio::File> = app_for_prepare
+            .selected_entries()
+            .iter()
+            .map(FileEntry::file)
+            .collect();
         if files.is_empty() {
             return None;
         }
 
-        Some(gdk::ContentProvider::for_value(
-            &gdk::FileList::from_array(&files).to_value(),
-        ))
+        crate::files::transfer::drag_content_provider(&files)
+    });
+
+    source.connect_drag_begin({
+        let app = Rc::clone(app);
+        move |_, _| {
+            let folders_only = app.selected_entries().iter().all(FileEntry::is_directory);
+            super::window::begin_file_drag(&app, folders_only);
+        }
+    });
+    source.connect_drag_end({
+        let app = Rc::clone(app);
+        move |_, _, _| super::window::end_file_drag(&app)
     });
 
     widget.add_controller(source);

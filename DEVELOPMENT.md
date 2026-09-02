@@ -239,10 +239,17 @@ these checks. Never use a real profile containing valuable tags, bookmarks or se
   long components, and long MIME descriptions. The Details panel must keep one width;
   names wrap or ellipsize inside it rather than resizing the file view.
 - [ ] Resize through 1080 px while browsing, filtering, globally searching and running
-  Quick Command. Compact mode must show one complete Navigation, Files or Details pane;
-  Ctrl+1/2/3 and the header controls must switch panes; paths reduce to the current
-  folder; every search and console close button stays reachable. Growing the window must
-  restore the complete three-pane layout and the saved Details preference.
+  Quick Command. Compact mode must keep Files and Quick Command underneath a sliding
+  Navigation drawer and hoverable Details drawer; Ctrl+1/2/3 must operate them without
+  clearing the selection. Paths reduce to the current folder and every search and
+  console close button stays reachable. Growing the window must restore the unchanged
+  three-pane layout and the saved Details preference.
+- [ ] On Wayland, drag folders from both grid and list views into Bookmarks with the
+  Navigation drawer initially open and closed. The drop hint must appear, no source may
+  be moved, and cancelling the drag must restore the ordinary bookmark placeholder.
+- [ ] Leave Teral idle, return to it, and resize it under both Ubuntu and Omarchy. The
+  pointer must remain smooth and the process must not keep a frame callback active while
+  no animation, search, transfer or command is running.
 
 ## Commands, previews, sessions and accessibility checks
 

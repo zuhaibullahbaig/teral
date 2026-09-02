@@ -6,6 +6,22 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 No changes yet.
 
+## 0.1.3 - 2026-09-02
+
+### Changed
+
+- Narrow windows keep Files and Quick Command as the permanent workspace. Navigation
+  slides over them from the left, while Details and its footer controls slide in from
+  the right on hover or through the existing keyboard shortcuts. Wide layouts retain
+  the complete three-pane presentation.
+
+### Fixed
+
+- Responsive sizing now follows compositor surface changes instead of running a
+  permanent frame callback, preventing needless rendering work while Teral is idle.
+- File drags advertise typed file lists and standard URI formats, and the Bookmarks drop
+  region recognizes folder drags consistently under Wayland and Omarchy.
+
 ## 0.1.2 - 2026-09-02
 
 ### Changed

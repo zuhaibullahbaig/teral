@@ -35,8 +35,6 @@ pub struct Widgets {
     pub global_search_close: gtk::Button,
     pub compact_group: gtk::Box,
     pub compact_navigation: gtk::ToggleButton,
-    pub compact_files: gtk::ToggleButton,
-    pub compact_details: gtk::ToggleButton,
     pub compact_title: gtk::Label,
     pub back: gtk::Button,
     pub forward: gtk::Button,
@@ -60,6 +58,10 @@ pub struct Widgets {
 
     pub content: gtk::Box,
     pub sidebar_root: gtk::Box,
+    pub sidebar_revealer: gtk::Revealer,
+    pub details_revealer: gtk::Revealer,
+    pub details_handle: gtk::Button,
+    pub details_handle_icon: gtk::Image,
     pub file_paned: gtk::Paned,
     pub search: search::Search,
     pub view_stack: gtk::Stack,
@@ -83,8 +85,8 @@ pub struct Widgets {
     pub footer_left: gtk::Box,
     pub footer_middle: gtk::Box,
     pub footer_right: gtk::Box,
-    pub footer_left_divider: gtk::Separator,
-    pub footer_right_divider: gtk::Separator,
+    pub footer_left_revealer: gtk::Revealer,
+    pub footer_right_revealer: gtk::Revealer,
     pub status_selection: gtk::Label,
     pub status_size: gtk::Label,
     pub status_message: gtk::Label,
@@ -205,15 +207,58 @@ pub fn build_window_at(
 
     context_menu.set_parent(&content);
 
-    let panes = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    panes.set_vexpand(true);
-    panes.append(&side.root);
-    panes.append(&content);
-    panes.append(&detail.root);
+    let sidebar_revealer = gtk::Revealer::new();
+    sidebar_revealer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+    sidebar_revealer.set_transition_duration(180);
+    sidebar_revealer.set_halign(gtk::Align::Start);
+    sidebar_revealer.set_valign(gtk::Align::Fill);
+    sidebar_revealer.set_child(Some(&side.root));
+    sidebar_revealer.set_reveal_child(true);
+
+    let details_revealer = gtk::Revealer::new();
+    details_revealer.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
+    details_revealer.set_transition_duration(180);
+    details_revealer.set_halign(gtk::Align::End);
+    details_revealer.set_valign(gtk::Align::Fill);
+    details_revealer.set_child(Some(&detail.root));
+    details_revealer.set_reveal_child(config.details_visible);
+
+    let details_handle_icon = gtk::Image::from_icon_name(icons::ui(icons::names::BACK));
+    let details_handle = gtk::Button::new();
+    details_handle.set_child(Some(&details_handle_icon));
+    details_handle.add_css_class("teral-details-handle");
+    details_handle.set_has_frame(false);
+    details_handle.set_halign(gtk::Align::End);
+    details_handle.set_valign(gtk::Align::Center);
+    details_handle.set_tooltip_text(Some("Hover to show Details (Ctrl+3)"));
+    details_handle.set_visible(false);
+
+    // Files remain the permanent base layer. On wide windows the two overlay children
+    // occupy reserved margins; on compact windows they become drawers over Files.
+    content.set_margin_start(theme.sidebar_width());
+    content.set_margin_end(if config.details_visible {
+        theme.details_width()
+    } else {
+        0
+    });
+    status.middle.set_margin_end(if config.details_visible {
+        theme.details_width()
+    } else {
+        0
+    });
+    status
+        .right_revealer
+        .set_reveal_child(config.details_visible);
+    let workspace = gtk::Overlay::new();
+    workspace.set_vexpand(true);
+    workspace.set_child(Some(&content));
+    workspace.add_overlay(&sidebar_revealer);
+    workspace.add_overlay(&details_revealer);
+    workspace.add_overlay(&details_handle);
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.add_css_class("teral-root");
-    root.append(&panes);
+    root.append(&workspace);
     root.append(&status.root);
 
     let window = gtk::ApplicationWindow::builder()
@@ -235,8 +280,6 @@ pub fn build_window_at(
         global_search_close: head.global_search_close,
         compact_group: head.compact_group,
         compact_navigation: head.compact_navigation,
-        compact_files: head.compact_files,
-        compact_details: head.compact_details,
         compact_title: head.compact_title,
         back: head.back,
         forward: head.forward,
@@ -257,6 +300,10 @@ pub fn build_window_at(
         new_folder,
         content,
         sidebar_root: side.root,
+        sidebar_revealer,
+        details_revealer,
+        details_handle,
+        details_handle_icon,
         file_paned,
         search: search_field,
         view_stack,
@@ -277,8 +324,8 @@ pub fn build_window_at(
         footer_left: status.left,
         footer_middle: status.middle,
         footer_right: status.right,
-        footer_left_divider: status.left_divider,
-        footer_right_divider: status.right_divider,
+        footer_left_revealer: status.left_revealer,
+        footer_right_revealer: status.right_revealer,
         status_selection: status.selection,
         status_size: status.size,
         status_message: status.message,
@@ -367,6 +414,11 @@ pub fn build_window_at(
         retained_selection: RefCell::new(Vec::new()),
         icon_size_save: Cell::new(None),
         icon_refresh_queued: Cell::new(false),
+        compact_layout: Cell::new(false),
+        details_drawer_pinned: Cell::new(false),
+        details_close_source: Cell::new(None),
+        drag_active: Cell::new(false),
+        drag_opened_navigation: Cell::new(false),
     };
 
     let app: App = Rc::new(AppInner {
@@ -387,10 +439,9 @@ pub fn build_window_at(
     app.widgets
         .details_toggle
         .set_active(app.config.borrow().details_visible);
-    app.widgets
-        .details
-        .root
-        .set_visible(app.config.borrow().details_visible);
+    // The revealer owns visibility. Keeping the panel itself alive lets compact mode
+    // show it temporarily without changing the user's wide-layout preference.
+    app.widgets.details.root.set_visible(true);
     app.state.updating.set(false);
 
     header::connect(&app);
@@ -539,40 +590,39 @@ fn queue_configuration_reload(app: &App) {
 }
 
 fn connect_window(app: &App) {
-    for button in [
-        &app.widgets.compact_navigation,
-        &app.widgets.compact_files,
-        &app.widgets.compact_details,
-    ] {
-        button.connect_toggled({
-            let app = Rc::clone(app);
-            move |button| {
-                if button.is_active() {
-                    apply_responsive_layout(&app);
-                }
+    app.widgets.compact_navigation.connect_toggled({
+        let app = Rc::clone(app);
+        move |button| {
+            if is_compact_layout(&app) {
+                set_navigation_drawer(&app, button.is_active());
             }
-        });
-    }
+        }
+    });
+
+    attach_details_hover(app, &app.widgets.details_handle);
+    attach_details_hover(app, &app.widgets.details_revealer);
+    attach_details_hover(app, &app.widgets.footer_right_revealer);
 
     app.widgets.window.connect_map({
         let app = Rc::clone(app);
         move |_| apply_responsive_layout(&app)
     });
-    // GTK4 has no size-allocation signal for application code. A tick callback is the
-    // supported way to observe compositor-driven allocation changes; the layout work
-    // only runs when the integer width actually changes.
-    let last_width = Cell::new(-1);
-    let _ = app.widgets.window.add_tick_callback({
+    // The GDK surface reports compositor-driven size changes directly. Unlike a GTK
+    // tick callback this leaves the frame clock asleep while the file manager is idle.
+    app.widgets.window.connect_realize({
         let weak = Rc::downgrade(app);
-        move |window, _| {
-            let width = window.width();
-            if last_width.replace(width) == width {
-                return glib::ControlFlow::Continue;
-            }
-            if let Some(app) = weak.upgrade() {
-                apply_responsive_layout(&app);
-            }
-            glib::ControlFlow::Continue
+        move |window| {
+            let Some(surface) = window.surface() else {
+                return;
+            };
+            surface.connect_width_notify({
+                let weak = weak.clone();
+                move |_| {
+                    if let Some(app) = weak.upgrade() {
+                        apply_responsive_layout(&app);
+                    }
+                }
+            });
         }
     });
 
@@ -691,11 +741,156 @@ fn connect_window(app: &App) {
     app.widgets.view_stack.add_controller(drop);
 }
 
+fn attach_details_hover(app: &App, widget: &impl IsA<gtk::Widget>) {
+    let motion = gtk::EventControllerMotion::new();
+    motion.connect_enter({
+        let app = Rc::clone(app);
+        move |_, _, _| {
+            if is_compact_layout(&app) && !app.state.drag_active.get() {
+                open_details_drawer(&app, false);
+            }
+        }
+    });
+    motion.connect_leave({
+        let app = Rc::clone(app);
+        move |_| schedule_details_close(&app)
+    });
+    widget.add_controller(motion);
+}
+
+fn cancel_details_close(app: &App) {
+    if let Some(source) = app.state.details_close_source.replace(None) {
+        source.remove();
+    }
+}
+
+fn schedule_details_close(app: &App) {
+    if !is_compact_layout(app) || app.state.details_drawer_pinned.get() {
+        return;
+    }
+    cancel_details_close(app);
+    let weak = Rc::downgrade(app);
+    let source = glib::timeout_add_local_once(Duration::from_millis(180), move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        app.state.details_close_source.set(None);
+        if !app.state.details_drawer_pinned.get() {
+            close_details_drawer(&app);
+        }
+    });
+    app.state.details_close_source.set(Some(source));
+}
+
+fn set_navigation_drawer(app: &App, open: bool) {
+    if !is_compact_layout(app) {
+        return;
+    }
+    if open {
+        close_details_drawer(app);
+    }
+    if app.widgets.compact_navigation.is_active() != open {
+        app.widgets.compact_navigation.set_active(open);
+    }
+    app.widgets.sidebar_revealer.set_reveal_child(open);
+    app.widgets.footer_left_revealer.set_reveal_child(open);
+}
+
+pub fn close_navigation_drawer(app: &App) {
+    if is_compact_layout(app) {
+        set_navigation_drawer(app, false);
+    }
+}
+
+fn open_details_drawer(app: &App, pinned: bool) {
+    if !is_compact_layout(app) || app.state.drag_active.get() {
+        return;
+    }
+    cancel_details_close(app);
+    set_navigation_drawer(app, false);
+    if pinned {
+        app.state.details_drawer_pinned.set(true);
+    }
+    app.widgets.details_revealer.set_reveal_child(true);
+    app.widgets.footer_right_revealer.set_reveal_child(true);
+    app.widgets
+        .details_handle_icon
+        .set_icon_name(Some(icons::ui(icons::names::FORWARD)));
+}
+
+fn close_details_drawer(app: &App) {
+    cancel_details_close(app);
+    app.state.details_drawer_pinned.set(false);
+    if is_compact_layout(app) {
+        app.widgets.details_revealer.set_reveal_child(false);
+        app.widgets.footer_right_revealer.set_reveal_child(false);
+    }
+    app.widgets
+        .details_handle_icon
+        .set_icon_name(Some(icons::ui(icons::names::BACK)));
+    if is_compact_layout(app) && app.widgets.details_toggle.is_active() {
+        app.state.updating.set(true);
+        app.widgets.details_toggle.set_active(false);
+        app.state.updating.set(false);
+    }
+}
+
+pub fn show_details_drawer(app: &App) {
+    if is_compact_layout(app) {
+        let open = !app.state.details_drawer_pinned.get();
+        set_details_drawer_pinned(app, open);
+        app.state.updating.set(true);
+        app.widgets.details_toggle.set_active(open);
+        app.state.updating.set(false);
+    }
+}
+
+pub fn set_details_drawer_pinned(app: &App, open: bool) {
+    if is_compact_layout(app) {
+        if open {
+            open_details_drawer(app, true);
+        } else {
+            close_details_drawer(app);
+        }
+    }
+}
+
+pub fn show_files_workspace(app: &App) {
+    if is_compact_layout(app) {
+        set_navigation_drawer(app, false);
+        close_details_drawer(app);
+        app.state.updating.set(true);
+        app.widgets.details_toggle.set_active(false);
+        app.state.updating.set(false);
+        focus_file_view(app);
+    }
+}
+
+pub fn begin_file_drag(app: &App, folders_only: bool) {
+    close_details_drawer(app);
+    app.state.drag_active.set(true);
+    if folders_only {
+        sidebar::show_drop_hint(app, true);
+        let auto_open = is_compact_layout(app) && !app.widgets.compact_navigation.is_active();
+        app.state.drag_opened_navigation.set(auto_open);
+        if auto_open {
+            set_navigation_drawer(app, true);
+        }
+    }
+}
+
+pub fn end_file_drag(app: &App) {
+    app.state.drag_active.set(false);
+    sidebar::show_drop_hint(app, false);
+    if app.state.drag_opened_navigation.replace(false) {
+        set_navigation_drawer(app, false);
+    }
+}
+
 /// Reflow the application around the width the compositor actually allocated.
 ///
-/// Wide windows retain the complete three-column workspace. Compact windows show one
-/// useful pane at a time and expose explicit Navigation, Files and Details controls,
-/// instead of shrinking all three panes until none of them can be operated.
+/// Wide windows retain the complete three-column workspace. Compact windows keep Files
+/// and Quick Command as the base and reveal Navigation or Details over that workspace.
 pub fn apply_responsive_layout(app: &App) {
     let width = app.widgets.window.width();
     if width <= 0 {
@@ -703,6 +898,7 @@ pub fn apply_responsive_layout(app: &App) {
     }
 
     let compact = width < COMPACT_WIDTH;
+    let changed_mode = app.state.compact_layout.replace(compact) != compact;
     let searching = app.widgets.global_search_box.get_visible();
     let filtering = app.widgets.search.root.reveals_child();
     app.widgets
@@ -721,43 +917,29 @@ pub fn apply_responsive_layout(app: &App) {
         .set_max_width_chars(if compact { 12 } else { 24 });
 
     if compact {
-        app.widgets.sidebar_root.set_size_request(-1, -1);
-        app.widgets.sidebar_root.set_hexpand(true);
+        let sidebar_width = width.min(app.theme.borrow().sidebar_width());
+        let details_width = width.min(app.theme.borrow().details_width());
+        app.widgets.content.set_margin_start(0);
+        app.widgets.content.set_margin_end(0);
+        app.widgets.footer_middle.set_margin_start(0);
+        app.widgets.footer_middle.set_margin_end(0);
+        app.widgets.sidebar_root.set_size_request(sidebar_width, -1);
+        app.widgets.sidebar_root.set_hexpand(false);
         app.widgets.details.root.set_hexpand(false);
-        app.widgets
-            .details
-            .root
-            .set_size_request(width.min(app.theme.borrow().details_width()), -1);
-
-        let navigation = app.widgets.compact_navigation.is_active();
-        let details = app.widgets.compact_details.is_active();
-        app.widgets.sidebar_root.set_visible(navigation);
-        app.widgets.content.set_visible(!navigation && !details);
-        app.widgets.details.root.set_visible(details);
-
-        app.widgets.footer_left.set_visible(navigation);
-        app.widgets.footer_left.set_size_request(
-            if navigation {
-                width.min(app.theme.borrow().sidebar_width())
-            } else {
-                -1
-            },
-            -1,
-        );
-        app.widgets.footer_left_divider.set_visible(false);
-        app.widgets
-            .footer_middle
-            .set_visible(!navigation && !details);
-        app.widgets.footer_right_divider.set_visible(false);
-        app.widgets.footer_right.set_visible(details);
-        app.widgets.footer_right.set_size_request(
-            if details {
-                width.min(app.theme.borrow().details_width())
-            } else {
-                -1
-            },
-            -1,
-        );
+        app.widgets.details.root.set_size_request(details_width, -1);
+        app.widgets.footer_left.set_size_request(sidebar_width, -1);
+        app.widgets.footer_right.set_size_request(details_width, -1);
+        app.widgets.sidebar_root.set_visible(true);
+        app.widgets.details.root.set_visible(true);
+        app.widgets.content.set_visible(true);
+        app.widgets.footer_middle.set_visible(true);
+        app.widgets.details_handle.set_visible(true);
+        if changed_mode {
+            app.widgets.compact_navigation.set_active(false);
+            app.widgets.sidebar_revealer.set_reveal_child(false);
+            app.widgets.footer_left_revealer.set_reveal_child(false);
+            close_details_drawer(app);
+        }
         app.widgets
             .command_entry
             .set_placeholder_text(Some("Quick Command (Ctrl+K)"));
@@ -792,33 +974,45 @@ pub fn apply_responsive_layout(app: &App) {
         app.widgets.sort_button.set_visible(show_secondary);
         app.widgets.location.set_width_request(-1);
     } else {
+        cancel_details_close(app);
+        app.state.details_drawer_pinned.set(false);
+        app.widgets.compact_navigation.set_active(false);
+        let sidebar_width = app.theme.borrow().sidebar_width();
+        let details_width = app.theme.borrow().details_width();
+        let details_visible = app.config.borrow().details_visible;
+        app.state.updating.set(true);
+        app.widgets.details_toggle.set_active(details_visible);
+        app.state.updating.set(false);
+        app.widgets.content.set_margin_start(sidebar_width);
         app.widgets
-            .sidebar_root
-            .set_size_request(app.theme.borrow().sidebar_width(), -1);
+            .content
+            .set_margin_end(if details_visible { details_width } else { 0 });
+        app.widgets.footer_middle.set_margin_start(sidebar_width);
+        app.widgets
+            .footer_middle
+            .set_margin_end(if details_visible { details_width } else { 0 });
+        app.widgets.sidebar_root.set_size_request(sidebar_width, -1);
         app.widgets.sidebar_root.set_hexpand(false);
         app.widgets.details.root.set_hexpand(false);
-        app.widgets
-            .details
-            .root
-            .set_size_request(app.theme.borrow().details_width(), -1);
+        app.widgets.details.root.set_size_request(details_width, -1);
         app.widgets.sidebar_root.set_visible(true);
         app.widgets.content.set_visible(true);
+        app.widgets.details.root.set_visible(true);
+        app.widgets.sidebar_revealer.set_reveal_child(true);
         app.widgets
-            .details
-            .root
-            .set_visible(app.config.borrow().details_visible);
+            .details_revealer
+            .set_reveal_child(details_visible);
 
         app.widgets.footer_left.set_visible(true);
-        app.widgets
-            .footer_left
-            .set_size_request(app.theme.borrow().sidebar_width(), -1);
-        app.widgets.footer_left_divider.set_visible(true);
+        app.widgets.footer_left.set_size_request(sidebar_width, -1);
         app.widgets.footer_middle.set_visible(true);
-        app.widgets.footer_right_divider.set_visible(true);
         app.widgets.footer_right.set_visible(true);
+        app.widgets.footer_right.set_size_request(details_width, -1);
+        app.widgets.footer_left_revealer.set_reveal_child(true);
         app.widgets
-            .footer_right
-            .set_size_request(app.theme.borrow().details_width(), -1);
+            .footer_right_revealer
+            .set_reveal_child(details_visible);
+        app.widgets.details_handle.set_visible(false);
         app.widgets
             .command_entry
             .set_placeholder_text(Some("Quick command in this folder (Ctrl+K)"));
@@ -841,8 +1035,7 @@ pub fn apply_responsive_layout(app: &App) {
 }
 
 pub fn is_compact_layout(app: &App) -> bool {
-    let width = app.widgets.window.width();
-    width > 0 && width < COMPACT_WIDTH
+    app.state.compact_layout.get()
 }
 
 fn connect_search_paging(app: &App) {
@@ -906,9 +1099,12 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         }
         gdk::Key::w | gdk::Key::W if control => app.close_tab(app.state.active_tab.get()),
         gdk::Key::Tab | gdk::Key::ISO_Left_Tab if control => app.cycle_tab(!shift),
-        gdk::Key::_1 if control => app.widgets.compact_navigation.set_active(true),
-        gdk::Key::_2 if control => app.widgets.compact_files.set_active(true),
-        gdk::Key::_3 if control => app.widgets.compact_details.set_active(true),
+        gdk::Key::_1 if control => {
+            let open = !app.widgets.compact_navigation.is_active();
+            app.widgets.compact_navigation.set_active(open);
+        }
+        gdk::Key::_2 if control => show_files_workspace(app),
+        gdk::Key::_3 if control => show_details_drawer(app),
         gdk::Key::d | gdk::Key::D if control => duplicate_selection(app),
         gdk::Key::comma if control => settings::present(app),
         gdk::Key::F1 => help::present_shortcuts(app),
@@ -928,6 +1124,13 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
             header::close_global_search(app);
         }
         gdk::Key::Escape if search::is_open(app) => search::close(app),
+        gdk::Key::Escape
+            if is_compact_layout(app)
+                && (app.widgets.compact_navigation.is_active()
+                    || app.widgets.details_revealer.reveals_child()) =>
+        {
+            show_files_workspace(app);
+        }
         gdk::Key::Escape => {
             let cancelled = app
                 .state
