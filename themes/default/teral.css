@@ -49,6 +49,7 @@ headerbar.teral-toolbar windowcontrols button.close {
   border: 1px solid transparent;
   border-radius: 999px;
   box-shadow: none;
+  outline: none;
 }
 
 headerbar.teral-toolbar windowcontrols button:hover {
@@ -56,13 +57,23 @@ headerbar.teral-toolbar windowcontrols button:hover {
   color: @teral_text;
 }
 
-headerbar.teral-toolbar windowcontrols button.close:hover {
+headerbar.teral-toolbar windowcontrols button.close:hover,
+headerbar.teral-toolbar windowcontrols button.close:active,
+headerbar.teral-toolbar windowcontrols button.close:focus {
   background: @teral_danger;
   background-image: none;
   border-radius: 999px;
   border-color: transparent;
   box-shadow: none;
+  outline: none;
   color: @teral_text_bright;
+}
+
+headerbar.teral-toolbar windowcontrols button.close image {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  outline: none;
 }
 
 .teral-brand {
@@ -830,7 +841,13 @@ button.teral-tab-close:hover {
 }
 
 .teral-footer-navigation {
+  background-color: @teral_surface;
   padding: 8px 10px;
+}
+
+.teral-footer-navigation-shell,
+.teral-footer-details-shell {
+  background-color: @teral_surface;
 }
 
 .teral-footer-navigation .teral-icon-button:checked {
@@ -844,6 +861,7 @@ button.teral-tab-close:hover {
 }
 
 .teral-footer-details {
+  background-color: @teral_surface;
   padding: 8px 14px;
 }
 

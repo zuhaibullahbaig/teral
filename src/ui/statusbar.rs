@@ -206,11 +206,13 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
 
     let left_divider = divider();
     let left_shell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    left_shell.add_css_class("teral-footer-navigation-shell");
     left_shell.append(&left);
     left_shell.append(&left_divider);
 
     let right_divider = divider();
     let right_shell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    right_shell.add_css_class("teral-footer-details-shell");
     right_shell.append(&right_divider);
     right_shell.append(&right);
 

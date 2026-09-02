@@ -55,6 +55,7 @@ pub struct Widgets {
     pub folder_title: gtk::Label,
     pub folder_subtitle: gtk::Label,
     pub new_folder: gtk::Button,
+    pub content_header: gtk::Box,
 
     pub content: gtk::Box,
     pub sidebar_root: gtk::Box,
@@ -203,6 +204,16 @@ pub fn build_window_at(
     content.set_hexpand(true);
     content.append(&tab_bar.root);
     content.append(&content_header);
+    let details_handle_icon = gtk::Image::from_icon_name(icons::ui(icons::names::BACK));
+    let details_handle = gtk::Button::new();
+    details_handle.set_child(Some(&details_handle_icon));
+    details_handle.add_css_class("teral-details-handle");
+    details_handle.set_has_frame(false);
+    details_handle.set_halign(gtk::Align::End);
+    details_handle.set_valign(gtk::Align::Start);
+    details_handle.set_tooltip_text(Some("Hover to show Details (Ctrl+3)"));
+    details_handle.set_visible(false);
+
     content.append(&file_paned);
 
     context_menu.set_parent(&content);
@@ -222,16 +233,6 @@ pub fn build_window_at(
     details_revealer.set_valign(gtk::Align::Fill);
     details_revealer.set_child(Some(&detail.root));
     details_revealer.set_reveal_child(config.details_visible);
-
-    let details_handle_icon = gtk::Image::from_icon_name(icons::ui(icons::names::BACK));
-    let details_handle = gtk::Button::new();
-    details_handle.set_child(Some(&details_handle_icon));
-    details_handle.add_css_class("teral-details-handle");
-    details_handle.set_has_frame(false);
-    details_handle.set_halign(gtk::Align::End);
-    details_handle.set_valign(gtk::Align::Center);
-    details_handle.set_tooltip_text(Some("Hover to show Details (Ctrl+3)"));
-    details_handle.set_visible(false);
 
     // Files remain the permanent base layer. On wide windows the two overlay children
     // occupy reserved margins; on compact windows they become drawers over Files.
@@ -254,6 +255,8 @@ pub fn build_window_at(
     workspace.set_child(Some(&content));
     workspace.add_overlay(&sidebar_revealer);
     workspace.add_overlay(&details_revealer);
+    // This must be the topmost overlay: when Details slides in, the same affordance
+    // changes direction and remains available to close it.
     workspace.add_overlay(&details_handle);
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -298,6 +301,7 @@ pub fn build_window_at(
         folder_title,
         folder_subtitle,
         new_folder,
+        content_header,
         content,
         sidebar_root: side.root,
         sidebar_revealer,
@@ -602,6 +606,14 @@ fn connect_window(app: &App) {
     attach_details_hover(app, &app.widgets.details_handle);
     attach_details_hover(app, &app.widgets.details_revealer);
     attach_details_hover(app, &app.widgets.footer_right_revealer);
+    app.widgets.details_handle.connect_clicked({
+        let app = Rc::clone(app);
+        move |_| {
+            if is_compact_layout(&app) && app.widgets.details_revealer.reveals_child() {
+                close_details_drawer(&app);
+            }
+        }
+    });
 
     app.widgets.window.connect_map({
         let app = Rc::clone(app);
@@ -917,6 +929,7 @@ pub fn apply_responsive_layout(app: &App) {
         .set_max_width_chars(if compact { 12 } else { 24 });
 
     if compact {
+        position_details_handle(app);
         let sidebar_width = width.min(app.theme.borrow().sidebar_width());
         let details_width = width.min(app.theme.borrow().details_width());
         app.widgets.content.set_margin_start(0);
@@ -1032,6 +1045,15 @@ pub fn apply_responsive_layout(app: &App) {
         app.widgets.global_search_button.set_visible(!searching);
         app.widgets.location.set_width_request(360);
     }
+}
+
+/// Place the drawer affordance just inside the file canvas, below tabs and the folder
+/// header. The small inset keeps it from looking fused to the separator line.
+fn position_details_handle(app: &App) {
+    const FILE_CANVAS_INSET: i32 = 11;
+    let top =
+        app.widgets.tabs.root.height() + app.widgets.content_header.height() + FILE_CANVAS_INSET;
+    app.widgets.details_handle.set_margin_top(top);
 }
 
 pub fn is_compact_layout(app: &App) -> bool {

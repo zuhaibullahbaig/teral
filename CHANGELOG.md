@@ -4,7 +4,13 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 ## Unreleased
 
-No changes yet.
+### Fixed
+
+- Compact Navigation and Details drawers now paint their footer controls opaquely, so
+  the permanent Quick Command layer does not show through an open drawer.
+- The Details hover handle now sits just inside the upper file-canvas edge, remains
+  visible as a close arrow over the open drawer, and the title-bar close control rejects
+  rectangular focus and active styling from desktop themes.
 
 ## 0.1.3 - 2026-09-02
 
