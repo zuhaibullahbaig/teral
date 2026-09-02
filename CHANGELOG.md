@@ -4,13 +4,7 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 ## Unreleased
 
-### Fixed
-
-- Compact Navigation and Details drawers now paint their footer controls opaquely, so
-  the permanent Quick Command layer does not show through an open drawer.
-- The Details hover handle now sits just inside the upper file-canvas edge, remains
-  visible as a close arrow over the open drawer, and the title-bar close control rejects
-  rectangular focus and active styling from desktop themes.
+No changes yet.
 
 ## 0.1.3 - 2026-09-02
 
@@ -27,6 +21,11 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
   permanent frame callback, preventing needless rendering work while Teral is idle.
 - File drags advertise typed file lists and standard URI formats, and the Bookmarks drop
   region recognizes folder drags consistently under Wayland and Omarchy.
+- Compact Navigation and Details drawers paint their footer controls opaquely, so the
+  permanent Quick Command layer does not show through an open drawer.
+- The Details hover handle sits just inside the upper file-canvas edge, remains visible
+  as a close arrow over the open drawer, and the title-bar close control rejects
+  rectangular focus and active styling from desktop themes.
 
 ## 0.1.2 - 2026-09-02
 
