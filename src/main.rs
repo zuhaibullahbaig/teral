@@ -14,11 +14,22 @@ mod ui;
 use gtk::Application;
 use gtk::glib;
 use gtk::prelude::*;
+use std::ffi::OsStr;
 
 /// Teral's D-Bus name, and the name its installed desktop entry and icon carry.
 pub const APP_ID: &str = "dev.zuhaibullahbaig.Teral";
 
 fn main() -> glib::ExitCode {
+    let mut arguments = std::env::args_os();
+    let _program = arguments.next();
+    if let Some(argument) = arguments.next()
+        && arguments.next().is_none()
+        && (argument == OsStr::new("--version") || argument == OsStr::new("-V"))
+    {
+        println!("teral {}", env!("CARGO_PKG_VERSION"));
+        return glib::ExitCode::SUCCESS;
+    }
+
     // HANDLES_OPEN is what lets the desktop entry's `%U` and `teral ~/Documents` reach
     // Teral at all; without it GApplication refuses arguments outright, so opening a
     // folder from another application does nothing.

@@ -8,6 +8,7 @@ use gtk::gio::prelude::*;
 use gtk::prelude::*;
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 
 thread_local! {
     /// The window this process is showing, if it has built one yet.
@@ -130,12 +131,25 @@ fn present(application: &Application, request: Option<Request>) {
     // The window outlives this function; dropping the record when it closes keeps a
     // later activation from presenting a window that is gone.
     let app_for_close = app.clone();
+    let application_for_close = application.clone();
     window.connect_destroy(move |_| {
+        if let Some(cancel) = app_for_close.state.running_transfer.borrow().as_ref() {
+            cancel.cancel();
+        }
+        if let Some(cancel) = app_for_close.state.global_search_cancel.borrow().as_ref() {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Some(pid) = app_for_close.state.running_pid.get()
+            && let Err(error) = crate::command::force_stop(pid)
+        {
+            eprintln!("Teral: could not stop Quick Command during shutdown: {error}");
+        }
         if let Err(error) = app_for_close.save_session() {
             eprintln!("Teral: could not save the session: {error}");
         }
         app_for_close.disconnect_desktop_handlers();
         RUNNING.with_borrow_mut(|running| *running = None);
+        application_for_close.quit();
     });
     window.present();
 }

@@ -44,6 +44,10 @@ impl EntryData {
         let display_name = info.display_name().to_string();
         let file_type = info.file_type();
         let is_symlink = info.is_symlink() || file_type == gio::FileType::SymbolicLink;
+        let is_hidden =
+            info.has_attribute(gio::FILE_ATTRIBUTE_STANDARD_IS_HIDDEN) && info.is_hidden();
+        let is_backup =
+            info.has_attribute(gio::FILE_ATTRIBUTE_STANDARD_IS_BACKUP) && info.is_backup();
 
         let content_type = info.content_type().map(|value| value.to_string());
         let resolved = Resolution::of_plain(is_symlink, file_type);
@@ -67,7 +71,7 @@ impl EntryData {
             is_symlink,
             is_broken_symlink: resolved.is_broken_symlink,
             is_special: resolved.is_special,
-            is_hidden: info.is_hidden() || info.is_backup(),
+            is_hidden: is_hidden || is_backup,
             symlink_target: info
                 .has_attribute(gio::FILE_ATTRIBUTE_STANDARD_SYMLINK_TARGET)
                 .then(|| info.symlink_target())
@@ -75,7 +79,11 @@ impl EntryData {
             size: u64::try_from(info.size()).unwrap_or(0),
             content_type,
             kind,
-            icon: info.icon(),
+            icon: if info.has_attribute(gio::FILE_ATTRIBUTE_STANDARD_ICON) {
+                info.icon()
+            } else {
+                None
+            },
             modified: info.modification_date_time(),
             created: attribute_time(info, gio::FILE_ATTRIBUTE_TIME_CREATED),
             accessed: attribute_time(info, gio::FILE_ATTRIBUTE_TIME_ACCESS),

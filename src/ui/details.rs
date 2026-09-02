@@ -49,7 +49,7 @@ pub struct MultiActions {
 
 /// Actions offered for the folder being browsed, with nothing selected.
 pub struct FolderActions {
-    pub root: gtk::Grid,
+    pub root: gtk::FlowBox,
     pub terminal: gtk::Button,
     pub new_folder: gtk::Button,
     pub paste: gtk::Button,
@@ -60,7 +60,7 @@ pub struct FolderActions {
 
 /// Action buttons in the details panel.
 pub struct Actions {
-    pub root: gtk::Grid,
+    pub root: gtk::FlowBox,
     pub open: gtk::Button,
     pub open_with: gtk::MenuButton,
     pub copy_path: gtk::Button,
@@ -82,7 +82,7 @@ const ROW_KEYS: [&str; 7] = [
     "Path",
 ];
 
-pub fn build(width: i32) -> Details {
+pub fn build(_preferred_width: i32) -> Details {
     let title = gtk::Label::new(Some("Details"));
     title.set_xalign(0.0);
     title.set_hexpand(true);
@@ -247,9 +247,9 @@ pub fn build(width: i32) -> Details {
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.add_css_class("teral-details");
-    // Child labels expand; the pane itself must not inherit that.
+    // The pane takes its natural width on a roomy window, but its children all have
+    // small minimum widths so a tiling compositor can shrink it without clipping.
     root.set_hexpand(false);
-    root.set_size_request(width, -1);
     root.append(&header);
     root.append(&stack);
 
@@ -285,10 +285,7 @@ fn build_multi_actions() -> MultiActions {
     heading.set_margin_top(14);
     heading.set_margin_bottom(8);
 
-    let grid = gtk::Grid::new();
-    grid.set_row_spacing(7);
-    grid.set_column_spacing(7);
-    grid.set_column_homogeneous(true);
+    let actions = action_flow(3);
 
     let copy = action_button(icons::ui(names::COPY), "Copy");
     let cut = action_button(icons::ui(names::CUT), "Cut");
@@ -298,18 +295,18 @@ fn build_multi_actions() -> MultiActions {
     let trash = action_button(icons::ui(names::TRASH), "Trash");
     trash.add_css_class("destructive");
 
-    grid.attach(&copy, 0, 0, 1, 1);
-    grid.attach(&cut, 1, 0, 1, 1);
-    grid.attach(&compress, 2, 0, 1, 1);
-    grid.attach(&tags, 0, 1, 1, 1);
-    grid.attach(&copy_paths, 1, 1, 1, 1);
-    grid.attach(&trash, 2, 1, 1, 1);
+    actions.insert(&copy, -1);
+    actions.insert(&cut, -1);
+    actions.insert(&compress, -1);
+    actions.insert(&tags, -1);
+    actions.insert(&copy_paths, -1);
+    actions.insert(&trash, -1);
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.add_css_class("teral-details-body");
     root.append(&summary);
     root.append(&heading);
-    root.append(&grid);
+    root.append(&actions);
 
     MultiActions {
         root,
@@ -324,10 +321,7 @@ fn build_multi_actions() -> MultiActions {
 }
 
 fn build_folder_actions() -> FolderActions {
-    let grid = gtk::Grid::new();
-    grid.set_row_spacing(7);
-    grid.set_column_spacing(7);
-    grid.set_column_homogeneous(true);
+    let actions = action_flow(3);
 
     let terminal = action_button(icons::ui(names::TERMINAL), "Terminal");
     let new_folder = action_button(icons::ui(names::NEW_FOLDER), "New Folder");
@@ -336,15 +330,15 @@ fn build_folder_actions() -> FolderActions {
     let new_tab = action_button(icons::ui(names::ADD), "New Tab");
     let new_window = action_button(icons::ui(names::WINDOW), "New Window");
 
-    grid.attach(&terminal, 0, 0, 1, 1);
-    grid.attach(&new_folder, 1, 0, 1, 1);
-    grid.attach(&paste, 2, 0, 1, 1);
-    grid.attach(&bookmark, 0, 1, 1, 1);
-    grid.attach(&new_tab, 1, 1, 1, 1);
-    grid.attach(&new_window, 2, 1, 1, 1);
+    actions.insert(&terminal, -1);
+    actions.insert(&new_folder, -1);
+    actions.insert(&paste, -1);
+    actions.insert(&bookmark, -1);
+    actions.insert(&new_tab, -1);
+    actions.insert(&new_window, -1);
 
     FolderActions {
-        root: grid,
+        root: actions,
         terminal,
         new_folder,
         paste,
@@ -355,10 +349,7 @@ fn build_folder_actions() -> FolderActions {
 }
 
 fn build_actions() -> Actions {
-    let grid = gtk::Grid::new();
-    grid.set_row_spacing(7);
-    grid.set_column_spacing(7);
-    grid.set_column_homogeneous(true);
+    let actions = action_flow(4);
 
     let open = action_button(icons::ui(names::OPEN), "Open");
     let open_with = action_menu_button(icons::ui(names::OPEN_WITH), "Open With");
@@ -370,17 +361,17 @@ fn build_actions() -> Actions {
     let trash = action_button(icons::ui(names::TRASH), "Trash");
     trash.add_css_class("destructive");
 
-    grid.attach(&open, 0, 0, 1, 1);
-    grid.attach(&open_with, 1, 0, 1, 1);
-    grid.attach(&copy_path, 2, 0, 1, 1);
-    grid.attach(&terminal, 3, 0, 1, 1);
-    grid.attach(&rename, 0, 1, 1, 1);
-    grid.attach(&cut, 1, 1, 1, 1);
-    grid.attach(&copy, 2, 1, 1, 1);
-    grid.attach(&trash, 3, 1, 1, 1);
+    actions.insert(&open, -1);
+    actions.insert(&open_with, -1);
+    actions.insert(&copy_path, -1);
+    actions.insert(&terminal, -1);
+    actions.insert(&rename, -1);
+    actions.insert(&cut, -1);
+    actions.insert(&copy, -1);
+    actions.insert(&trash, -1);
 
     Actions {
-        root: grid,
+        root: actions,
         open,
         open_with,
         copy_path,
@@ -390,6 +381,17 @@ fn build_actions() -> Actions {
         copy,
         trash,
     }
+}
+
+fn action_flow(maximum_per_line: u32) -> gtk::FlowBox {
+    let actions = gtk::FlowBox::new();
+    actions.set_selection_mode(gtk::SelectionMode::None);
+    actions.set_homogeneous(true);
+    actions.set_min_children_per_line(1);
+    actions.set_max_children_per_line(maximum_per_line);
+    actions.set_row_spacing(7);
+    actions.set_column_spacing(7);
+    actions
 }
 
 fn action_content(icon_name: &str, label: &str) -> gtk::Box {
@@ -402,10 +404,7 @@ fn action_content(icon_name: &str, label: &str) -> gtk::Box {
     let text = gtk::Label::new(Some(label));
     text.add_css_class("teral-action-label");
     text.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    // Action captions are controlled product text, not untrusted filenames. Reserve
-    // enough room for every current caption while keeping the four-column action grid
-    // inside the fixed-width details panel.
-    text.set_width_chars(10);
+    // Captions may ellipsise in a narrow tile; they must not set the pane's minimum.
     text.set_max_width_chars(10);
 
     content.append(&icon);
@@ -419,6 +418,7 @@ fn action_button(icon_name: &str, label: &str) -> gtk::Button {
     button.add_css_class("teral-action");
     button.set_has_frame(false);
     button.set_tooltip_text(Some(label));
+    button.set_hexpand(true);
     button
 }
 
@@ -429,6 +429,7 @@ fn action_menu_button(icon_name: &str, label: &str) -> gtk::MenuButton {
     button.add_css_class("teral-action");
     button.set_has_frame(false);
     button.set_tooltip_text(Some(label));
+    button.set_hexpand(true);
     button
 }
 
@@ -1068,9 +1069,10 @@ pub fn update(app: &App) {
 
     let actions = &details.actions;
     let in_trash = app.location().is_trash();
+    actions.terminal.set_visible(true);
     actions
         .terminal
-        .set_visible(entry.is_directory() && app.location().accepts_new_files());
+        .set_sensitive(entry.is_directory() && app.location().accepts_new_files());
 
     relabel(&actions.cut, if in_trash { "Restore" } else { "Cut" });
     relabel(&actions.trash, if in_trash { "Delete" } else { "Trash" });

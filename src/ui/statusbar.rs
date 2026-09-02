@@ -15,7 +15,6 @@ pub struct StatusBar {
     pub size: gtk::Label,
     pub message: gtk::Label,
     pub zoom: gtk::Scale,
-    pub zoom_value: gtk::Label,
     pub zoom_out: gtk::Button,
     pub zoom_in: gtk::Button,
     pub settings: gtk::Button,
@@ -92,7 +91,7 @@ pub fn build_console() -> Console {
 /// navigation column carries Teral's own controls, the file column carries Quick
 /// Command at exactly the width of the file list, and the details column carries the
 /// selection and storage readout.
-pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBar {
+pub fn build(icon_size: i32, sidebar_width: i32, _details_width: i32) -> StatusBar {
     // ---- navigation column -------------------------------------------------
     let settings = super::icon_button(
         crate::icons::ui(crate::icons::names::SETTINGS),
@@ -171,12 +170,9 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
     zoom.set_draw_value(false);
     zoom.set_value(f64::from(icon_size));
     zoom.set_hexpand(true);
+    zoom.set_size_request(36, -1);
     zoom.set_valign(gtk::Align::Center);
-    zoom.set_tooltip_text(Some("Icon size (Ctrl+0 resets)"));
-
-    let zoom_value = gtk::Label::new(Some(&format!("{icon_size} px")));
-    zoom_value.add_css_class("teral-status-item");
-    zoom_value.set_width_chars(6);
+    zoom.set_tooltip_text(Some(&format!("Icon size: {icon_size} px (Ctrl+0 resets)")));
 
     let zoom_group = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     zoom_group.add_css_class("teral-zoom-group");
@@ -186,11 +182,9 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
     zoom_group.append(&zoom_out);
     zoom_group.append(&zoom);
     zoom_group.append(&zoom_in);
-    zoom_group.append(&zoom_value);
 
     let right = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     right.add_css_class("teral-footer-details");
-    right.set_size_request(details_width, -1);
     right.set_hexpand(false);
     right.append(&selection);
     right.append(&size);
@@ -211,7 +205,6 @@ pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBa
         size,
         message,
         zoom,
-        zoom_value,
         zoom_out,
         zoom_in,
         settings,
@@ -229,6 +222,8 @@ fn divider() -> gtk::Separator {
 fn status_label() -> gtk::Label {
     let label = gtk::Label::new(None);
     label.add_css_class("teral-status-item");
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.set_max_width_chars(8);
     label
 }
 
@@ -473,7 +468,6 @@ pub fn run_command(app: &App, text: &str) {
     app.clear_message();
     app.state.running_command.set(true);
     app.state.command_stop_requested.set(false);
-    app.state.command_close_requested.set(false);
     console
         .stop
         .set_tooltip_text(Some("Interrupt the running command"));

@@ -504,6 +504,11 @@ pub fn system_prefers_dark() -> bool {
     // GTK mirrors the desktop/portal preference and emits notify signals when it
     // changes. A synchronous portal round-trip here used to block every interactive
     // theme application for up to 400 ms per setting.
+    if !gtk::is_initialized() {
+        // Theme resolution is also used by headless tests and tooling. There is no
+        // desktop preference to consult there, so retain Teral's safe dark baseline.
+        return true;
+    }
     gtk::Settings::default().is_some_and(|settings| {
         settings.is_gtk_application_prefer_dark_theme()
             || settings

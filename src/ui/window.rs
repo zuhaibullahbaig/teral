@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
-use vte::prelude::*;
 
 /// Every widget Teral needs to reach again after construction.
 pub struct Widgets {
@@ -76,7 +75,6 @@ pub struct Widgets {
     pub status_size: gtk::Label,
     pub status_message: gtk::Label,
     pub zoom: gtk::Scale,
-    pub zoom_value: gtk::Label,
     pub zoom_out: gtk::Button,
     pub zoom_in: gtk::Button,
     pub settings: gtk::Button,
@@ -259,7 +257,6 @@ pub fn build_window_at(
         status_size: status.size,
         status_message: status.message,
         zoom: status.zoom,
-        zoom_value: status.zoom_value,
         zoom_out: status.zoom_out,
         zoom_in: status.zoom_in,
         settings: status.settings,
@@ -306,7 +303,6 @@ pub fn build_window_at(
         running_command: Cell::new(false),
         running_pid: Cell::new(None),
         command_stop_requested: Cell::new(false),
-        command_close_requested: Cell::new(false),
         command_history_index: Cell::new(command_history.len()),
         command_history: RefCell::new(command_history),
         running_transfer: RefCell::new(None),
@@ -519,21 +515,13 @@ fn connect_window(app: &App) {
     app.widgets.window.connect_close_request({
         let app = Rc::clone(app);
         move |_| {
-            if !app.state.running_command.get() {
-                return glib::Propagation::Proceed;
-            }
-            if !app.state.command_close_requested.replace(true) {
-                app.widgets.console.terminal.feed_child(&[0x03]);
-                app.set_message(
-                    "Interrupting the running command; close again to force it to stop",
-                    false,
-                );
-                return glib::Propagation::Stop;
-            }
-            if let Some(pid) = app.state.running_pid.get()
-                && let Err(error) = crate::command::force_stop(pid)
-            {
-                eprintln!("Teral: could not force-stop Quick Command: {error}");
+            if let Some(pid) = app.state.running_pid.get() {
+                match crate::command::force_stop(pid) {
+                    Ok(()) => app.state.running_pid.set(None),
+                    Err(error) => {
+                        eprintln!("Teral: could not stop Quick Command while closing: {error}");
+                    }
+                }
             }
             glib::Propagation::Proceed
         }

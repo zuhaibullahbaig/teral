@@ -4,7 +4,27 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- `teral-update` installs the newest published release through the package manager when
+  possible, verifies its checksum, and always removes its temporary download.
+- `teral --version` and `teral -V` report the installed build version.
+
+### Changed
+
+- New configurations follow the system appearance by default. Existing saved appearance
+  choices are preserved.
+- Details-panel action rows wrap as the window narrows, and the footer zoom control can
+  contract without extending past a tiled window's edge.
+
+### Fixed
+
+- Closing the last window now cancels active work, stops an attached Quick Command,
+  releases the application instance, and exits the process on the first close.
+- The Terminal action keeps its place for selected files and is disabled instead of
+  disappearing and leaving a hole in the action row.
+- System-theme resolution now falls back safely when GTK is unavailable, and partial
+  file metadata no longer produces GLib critical warnings.
 
 ## 0.1.0
 

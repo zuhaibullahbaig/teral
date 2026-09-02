@@ -11,7 +11,7 @@ pkgdesc="A modern native Linux file manager written in Rust with GTK4"
 arch=('x86_64')
 url="https://github.com/zuhaibullahbaig/teral"
 license=('MIT')
-depends=('gtk4>=4.12' 'vte4>=0.66' 'glib2')
+depends=('gtk4>=4.12' 'vte4>=0.66' 'glib2' 'curl')
 makedepends=('rust' 'cargo' 'pkgconf')
 options=('!lto')  # the release profile already does full LTO
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
@@ -34,6 +34,7 @@ check() {
 package() {
   cd "$pkgname-$pkgver"
   install -Dm755 target/release/teral "$pkgdir/usr/bin/teral"
+  install -Dm755 scripts/teral-update.sh "$pkgdir/usr/bin/teral-update"
   install -Dm644 packaging/dev.zuhaibullahbaig.Teral.desktop \
     "$pkgdir/usr/share/applications/dev.zuhaibullahbaig.Teral.desktop"
   install -Dm644 packaging/dev.zuhaibullahbaig.Teral.svg \

@@ -104,16 +104,16 @@ sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh
 
 ## Update
 
-Teral does not silently update itself. To update a `.deb` installation, download the
-new package from the latest release and install it over the existing version, replacing
-`VERSION` with the downloaded version number:
+Teral does not download updates in the background. Install this release once, then close
+Teral and update to the newest published release with:
 
 ```bash
-sudo apt install ./teral_VERSION_amd64.deb
+teral-update
 ```
 
-For a tarball installation, extract the newer tarball and run its included installer
-again. For a source installation, pull the new version, rebuild, and run the installer:
+The updater verifies the release checksum, uses `apt` or an available Arch AUR helper
+when Teral is managed by one of them, and removes its temporary download when it exits.
+For a source checkout that you want to keep building locally, update it directly instead:
 
 ```bash
 git pull --ff-only
@@ -163,7 +163,7 @@ with `Ctrl+,`. Bookmarks are in `~/.local/share/teral/places.toml` and tags in
 version = 1
 
 [appearance]
-mode = "teral"        # "teral" or "system"
+mode = "system"       # "system" (default) or "teral"
 accent = "#e0a63c"    # optional palette override
 
 [layout]

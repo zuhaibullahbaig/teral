@@ -29,7 +29,7 @@ cp README.md LICENSE "$STAGE/"
 mkdir -p "$STAGE/packaging" "$STAGE/scripts"
 cp "packaging/$APP_ID.desktop" "packaging/$APP_ID.svg" \
   "packaging/$APP_ID.metainfo.xml" "$STAGE/packaging/"
-cp scripts/install.sh "$STAGE/scripts/"
+cp scripts/install.sh scripts/teral-update.sh "$STAGE/scripts/"
 
 tar -czf "$DIST/teral-$VERSION-$ARCH-linux.tar.gz" -C "$DIST" "teral-$VERSION"
 rm -rf "$STAGE"
@@ -44,6 +44,7 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 
   DEB_ROOT="$DIST/deb"
   install -Dm755 target/release/teral "$DEB_ROOT/usr/bin/teral"
+  install -Dm755 scripts/teral-update.sh "$DEB_ROOT/usr/bin/teral-update"
   install -Dm644 "packaging/$APP_ID.desktop" "$DEB_ROOT/usr/share/applications/$APP_ID.desktop"
   install -Dm644 "packaging/$APP_ID.svg" \
     "$DEB_ROOT/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
@@ -58,7 +59,7 @@ Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: $DEB_ARCH
-Depends: libgtk-4-1 (>= 4.12), libvte-2.91-gtk4-0
+Depends: libgtk-4-1 (>= 4.12), libvte-2.91-gtk4-0, curl
 Maintainer: Zuhaib Ullah Baig <zuhaibullahbaig@users.noreply.github.com>
 Homepage: https://github.com/zuhaibullahbaig/teral
 Description: A modern native Linux file manager

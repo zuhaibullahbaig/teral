@@ -128,7 +128,6 @@ pub struct State {
     pub running_command: Cell<bool>,
     pub running_pid: Cell<Option<glib::Pid>>,
     pub command_stop_requested: Cell<bool>,
-    pub command_close_requested: Cell<bool>,
     pub command_history: RefCell<Vec<String>>,
     pub command_history_index: Cell<usize>,
     pub running_transfer: RefCell<Option<CancelFlag>>,
@@ -1281,7 +1280,9 @@ impl AppInner {
             self.state.updating.set(true);
             self.widgets.zoom.set_value(f64::from(icon_size));
             self.state.updating.set(false);
-            self.widgets.zoom_value.set_text(&format!("{icon_size} px"));
+            self.widgets
+                .zoom
+                .set_tooltip_text(Some(&format!("Icon size: {icon_size} px (Ctrl+0 resets)")));
             self.queue_icon_refresh();
         }
     }
@@ -1372,7 +1373,9 @@ impl AppInner {
             return;
         }
         self.state.icon_size.set(size);
-        self.widgets.zoom_value.set_text(&format!("{size} px"));
+        self.widgets
+            .zoom
+            .set_tooltip_text(Some(&format!("Icon size: {size} px (Ctrl+0 resets)")));
         self.queue_icon_refresh();
 
         let pending = self.state.icon_size_save.replace(None);

@@ -18,9 +18,9 @@ pub const CONFIG_VERSION: u32 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeMode {
     /// Teral's own palette, identical on every desktop.
-    #[default]
     Teral,
     /// Follow the desktop's own appearance, including the active Omarchy theme.
+    #[default]
     System,
 }
 
@@ -389,6 +389,6 @@ mod tests {
     #[test]
     fn an_unknown_mode_falls_back_to_the_default() {
         let raw = toml::from_str::<RawConfig>("[appearance]\nmode = \"nonsense\"\n").expect("toml");
-        assert_eq!(Config::from_raw(raw).mode, ThemeMode::Teral);
+        assert_eq!(Config::from_raw(raw).mode, ThemeMode::System);
     }
 }

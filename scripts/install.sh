@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Teral: the binary, desktop entry, icon, AppStream metadata and license.
+# Install Teral: the binary, updater, desktop entry, icon, metadata and license.
 #
 #   sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh
 #   PREFIX=~/.local ./scripts/install.sh # install for one user, no root needed
@@ -22,6 +22,7 @@ APP_ID="dev.zuhaibullahbaig.Teral"
 
 uninstall() {
   rm -f "$BIN_DIR/teral" \
+        "$BIN_DIR/teral-update" \
         "$DESKTOP_DIR/$APP_ID.desktop" \
         "$ICON_DIR/$APP_ID.svg" \
         "$METAINFO_DIR/$APP_ID.metainfo.xml" \
@@ -80,6 +81,7 @@ if [[ ! -x "$BINARY" ]]; then
 fi
 
 install -Dm755 "$BINARY" "$BIN_DIR/teral"
+install -Dm755 "$ROOT/scripts/teral-update.sh" "$BIN_DIR/teral-update"
 install -Dm644 "$ROOT/packaging/$APP_ID.desktop" "$DESKTOP_DIR/$APP_ID.desktop"
 install -Dm644 "$ROOT/packaging/$APP_ID.svg" "$ICON_DIR/$APP_ID.svg"
 install -Dm644 "$ROOT/packaging/$APP_ID.metainfo.xml" "$METAINFO_DIR/$APP_ID.metainfo.xml"
@@ -87,7 +89,7 @@ install -Dm644 "$ROOT/LICENSE" "$LICENSE_DIR/LICENSE"
 
 refresh_caches
 
-echo "Installed Teral into $PREFIX. Re-run this installer to update it."
+echo "Installed Teral into $PREFIX. Run teral-update to install future releases."
 if [[ ":$PATH:" != *":$PREFIX/bin:"* ]]; then
   echo "Note: $PREFIX/bin is not on your PATH."
 fi
