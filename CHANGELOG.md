@@ -6,6 +6,23 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 No changes yet.
 
+## 0.1.2 - 2026-09-02
+
+### Changed
+
+- Narrow tiled windows switch to an adaptive one-pane workspace with Navigation, Files
+  and Details controls. Paths collapse to the current folder, secondary toolbar and
+  footer controls yield space, and search, Quick Command and console controls shrink
+  without hiding their close buttons. Wide windows retain the full three-pane layout.
+
+### Fixed
+
+- The title-bar close button now keeps a compact circular hover plate instead of
+  inheriting an oversized or square hover background from the active desktop theme.
+- Footer columns once again track the Navigation, Files and Details pane widths exactly;
+  the full zoom slider, current pixel value and selection summary remain available in
+  the Details footer without widening Quick Command beyond the file pane.
+
 ## 0.1.1 - 2026-09-02
 
 ### Added
@@ -19,7 +36,7 @@ No changes yet.
 - New configurations follow the system appearance by default. Existing saved appearance
   choices are preserved.
 - Details-panel action rows wrap as the window narrows, and the footer zoom control can
-  contract without extending past a tiled window's edge.
+  contract without overflowing its pane.
 
 ### Fixed
 

@@ -82,7 +82,7 @@ const ROW_KEYS: [&str; 7] = [
     "Path",
 ];
 
-pub fn build(_preferred_width: i32) -> Details {
+pub fn build(preferred_width: i32) -> Details {
     let title = gtk::Label::new(Some("Details"));
     title.set_xalign(0.0);
     title.set_hexpand(true);
@@ -247,9 +247,10 @@ pub fn build(_preferred_width: i32) -> Details {
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.add_css_class("teral-details");
-    // The pane takes its natural width on a roomy window, but its children all have
-    // small minimum widths so a tiling compositor can shrink it without clipping.
+    // This is the pane's maximum working width on a roomy window. Responsive layout
+    // lowers the request when the compositor gives the whole application less room.
     root.set_hexpand(false);
+    root.set_size_request(preferred_width, -1);
     root.append(&header);
     root.append(&stack);
 

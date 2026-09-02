@@ -111,6 +111,11 @@ pub mod names {
         "view-paged-symbolic",
         "edit-select-all-symbolic",
     ];
+    pub const SIDEBAR: &[&str] = &[
+        "sidebar-show-left-symbolic",
+        "view-dual-symbolic",
+        "open-menu-symbolic",
+    ];
     pub const RESTORE: &[&str] = &[
         "edit-undo-symbolic",
         "document-revert-symbolic",

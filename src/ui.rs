@@ -1275,14 +1275,13 @@ impl AppInner {
         crate::style::apply(&theme);
         crate::command::style_terminal(&self.widgets.console.terminal, &theme);
         *self.theme.borrow_mut() = theme;
+        window::apply_responsive_layout(self);
         if icon_size != self.state.icon_size.get() {
             self.state.icon_size.set(icon_size);
             self.state.updating.set(true);
             self.widgets.zoom.set_value(f64::from(icon_size));
             self.state.updating.set(false);
-            self.widgets
-                .zoom
-                .set_tooltip_text(Some(&format!("Icon size: {icon_size} px (Ctrl+0 resets)")));
+            self.widgets.zoom_value.set_text(&format!("{icon_size} px"));
             self.queue_icon_refresh();
         }
     }
@@ -1373,9 +1372,7 @@ impl AppInner {
             return;
         }
         self.state.icon_size.set(size);
-        self.widgets
-            .zoom
-            .set_tooltip_text(Some(&format!("Icon size: {size} px (Ctrl+0 resets)")));
+        self.widgets.zoom_value.set_text(&format!("{size} px"));
         self.queue_icon_refresh();
 
         let pending = self.state.icon_size_save.replace(None);

@@ -25,10 +25,16 @@
   </provides>
   <url type="homepage">https://github.com/zuhaibullahbaig/teral</url>
   <releases>
+    <release version="0.1.2" date="2026-09-02">
+      <description>
+        <p>Adds an adaptive one-pane workspace for narrow tiled windows and keeps the
+        title-bar close-button hover treatment compact across desktop themes.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-09-02">
       <description>
-        <p>Adds verified command-line updates, responsive narrow-window layouts, clean
-        shutdown, and system appearance as the default for new configurations.</p>
+        <p>Adds verified command-line updates, responsive details actions, clean shutdown,
+        and system appearance as the default for new configurations.</p>
       </description>
     </release>
     <release version="0.1.0" date="2026-09-01">

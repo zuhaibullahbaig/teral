@@ -21,6 +21,9 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
+const COMPACT_WIDTH: i32 = 1080;
+const MINIMAL_HEADER_WIDTH: i32 = 680;
+
 /// Every widget Teral needs to reach again after construction.
 pub struct Widgets {
     pub window: gtk::ApplicationWindow,
@@ -30,6 +33,11 @@ pub struct Widgets {
     pub global_search_box: gtk::Box,
     pub global_search_entry: gtk::SearchEntry,
     pub global_search_close: gtk::Button,
+    pub compact_group: gtk::Box,
+    pub compact_navigation: gtk::ToggleButton,
+    pub compact_files: gtk::ToggleButton,
+    pub compact_details: gtk::ToggleButton,
+    pub compact_title: gtk::Label,
     pub back: gtk::Button,
     pub forward: gtk::Button,
     pub up: gtk::Button,
@@ -51,6 +59,7 @@ pub struct Widgets {
     pub new_folder: gtk::Button,
 
     pub content: gtk::Box,
+    pub sidebar_root: gtk::Box,
     pub file_paned: gtk::Paned,
     pub search: search::Search,
     pub view_stack: gtk::Stack,
@@ -71,10 +80,16 @@ pub struct Widgets {
 
     pub console: statusbar::Console,
     pub command_entry: gtk::Entry,
+    pub footer_left: gtk::Box,
+    pub footer_middle: gtk::Box,
+    pub footer_right: gtk::Box,
+    pub footer_left_divider: gtk::Separator,
+    pub footer_right_divider: gtk::Separator,
     pub status_selection: gtk::Label,
     pub status_size: gtk::Label,
     pub status_message: gtk::Label,
     pub zoom: gtk::Scale,
+    pub zoom_value: gtk::Label,
     pub zoom_out: gtk::Button,
     pub zoom_in: gtk::Button,
     pub settings: gtk::Button,
@@ -218,6 +233,11 @@ pub fn build_window_at(
         global_search_box: head.global_search_box,
         global_search_entry: head.global_search_entry,
         global_search_close: head.global_search_close,
+        compact_group: head.compact_group,
+        compact_navigation: head.compact_navigation,
+        compact_files: head.compact_files,
+        compact_details: head.compact_details,
+        compact_title: head.compact_title,
         back: head.back,
         forward: head.forward,
         up: head.up,
@@ -236,6 +256,7 @@ pub fn build_window_at(
         folder_subtitle,
         new_folder,
         content,
+        sidebar_root: side.root,
         file_paned,
         search: search_field,
         view_stack,
@@ -253,10 +274,16 @@ pub fn build_window_at(
         details: detail,
         console,
         command_entry: status.command_entry,
+        footer_left: status.left,
+        footer_middle: status.middle,
+        footer_right: status.right,
+        footer_left_divider: status.left_divider,
+        footer_right_divider: status.right_divider,
         status_selection: status.selection,
         status_size: status.size,
         status_message: status.message,
         zoom: status.zoom,
+        zoom_value: status.zoom_value,
         zoom_out: status.zoom_out,
         zoom_in: status.zoom_in,
         settings: status.settings,
@@ -512,6 +539,43 @@ fn queue_configuration_reload(app: &App) {
 }
 
 fn connect_window(app: &App) {
+    for button in [
+        &app.widgets.compact_navigation,
+        &app.widgets.compact_files,
+        &app.widgets.compact_details,
+    ] {
+        button.connect_toggled({
+            let app = Rc::clone(app);
+            move |button| {
+                if button.is_active() {
+                    apply_responsive_layout(&app);
+                }
+            }
+        });
+    }
+
+    app.widgets.window.connect_map({
+        let app = Rc::clone(app);
+        move |_| apply_responsive_layout(&app)
+    });
+    // GTK4 has no size-allocation signal for application code. A tick callback is the
+    // supported way to observe compositor-driven allocation changes; the layout work
+    // only runs when the integer width actually changes.
+    let last_width = Cell::new(-1);
+    let _ = app.widgets.window.add_tick_callback({
+        let weak = Rc::downgrade(app);
+        move |window, _| {
+            let width = window.width();
+            if last_width.replace(width) == width {
+                return glib::ControlFlow::Continue;
+            }
+            if let Some(app) = weak.upgrade() {
+                apply_responsive_layout(&app);
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+
     app.widgets.window.connect_close_request({
         let app = Rc::clone(app);
         move |_| {
@@ -627,6 +691,160 @@ fn connect_window(app: &App) {
     app.widgets.view_stack.add_controller(drop);
 }
 
+/// Reflow the application around the width the compositor actually allocated.
+///
+/// Wide windows retain the complete three-column workspace. Compact windows show one
+/// useful pane at a time and expose explicit Navigation, Files and Details controls,
+/// instead of shrinking all three panes until none of them can be operated.
+pub fn apply_responsive_layout(app: &App) {
+    let width = app.widgets.window.width();
+    if width <= 0 {
+        return;
+    }
+
+    let compact = width < COMPACT_WIDTH;
+    let searching = app.widgets.global_search_box.get_visible();
+    let filtering = app.widgets.search.root.reveals_child();
+    app.widgets
+        .global_search_entry
+        .set_width_chars(if compact { 1 } else { 42 });
+    app.widgets
+        .global_search_entry
+        .set_max_width_chars(if compact { 18 } else { 56 });
+    app.widgets
+        .search
+        .entry
+        .set_width_chars(if compact { 1 } else { 16 });
+    app.widgets
+        .search
+        .entry
+        .set_max_width_chars(if compact { 12 } else { 24 });
+
+    if compact {
+        app.widgets.sidebar_root.set_size_request(-1, -1);
+        app.widgets.sidebar_root.set_hexpand(true);
+        app.widgets.details.root.set_hexpand(false);
+        app.widgets
+            .details
+            .root
+            .set_size_request(width.min(app.theme.borrow().details_width()), -1);
+
+        let navigation = app.widgets.compact_navigation.is_active();
+        let details = app.widgets.compact_details.is_active();
+        app.widgets.sidebar_root.set_visible(navigation);
+        app.widgets.content.set_visible(!navigation && !details);
+        app.widgets.details.root.set_visible(details);
+
+        app.widgets.footer_left.set_visible(navigation);
+        app.widgets.footer_left.set_size_request(
+            if navigation {
+                width.min(app.theme.borrow().sidebar_width())
+            } else {
+                -1
+            },
+            -1,
+        );
+        app.widgets.footer_left_divider.set_visible(false);
+        app.widgets
+            .footer_middle
+            .set_visible(!navigation && !details);
+        app.widgets.footer_right_divider.set_visible(false);
+        app.widgets.footer_right.set_visible(details);
+        app.widgets.footer_right.set_size_request(
+            if details {
+                width.min(app.theme.borrow().details_width())
+            } else {
+                -1
+            },
+            -1,
+        );
+        app.widgets
+            .command_entry
+            .set_placeholder_text(Some("Quick Command (Ctrl+K)"));
+
+        let editing_location = app.widgets.location.has_focus();
+        app.widgets
+            .compact_group
+            .set_visible(!searching && !filtering);
+        app.widgets
+            .compact_title
+            .set_visible(!searching && !filtering && !editing_location);
+        app.widgets
+            .path_stack
+            .set_visible(!searching && editing_location);
+        app.widgets.brand.set_visible(false);
+        app.widgets.forward.set_visible(false);
+        app.widgets.view_group.set_visible(false);
+        app.widgets
+            .global_search_button
+            .set_visible(!searching && !filtering);
+        app.widgets
+            .search_button
+            .set_visible(!searching && !filtering);
+        app.widgets
+            .menu_button
+            .set_visible(!searching && !filtering);
+        app.widgets.search.root.set_visible(!searching);
+
+        let show_secondary = width >= MINIMAL_HEADER_WIDTH && !searching && !filtering;
+        app.widgets.back.set_visible(show_secondary);
+        app.widgets.up.set_visible(show_secondary);
+        app.widgets.sort_button.set_visible(show_secondary);
+        app.widgets.location.set_width_request(-1);
+    } else {
+        app.widgets
+            .sidebar_root
+            .set_size_request(app.theme.borrow().sidebar_width(), -1);
+        app.widgets.sidebar_root.set_hexpand(false);
+        app.widgets.details.root.set_hexpand(false);
+        app.widgets
+            .details
+            .root
+            .set_size_request(app.theme.borrow().details_width(), -1);
+        app.widgets.sidebar_root.set_visible(true);
+        app.widgets.content.set_visible(true);
+        app.widgets
+            .details
+            .root
+            .set_visible(app.config.borrow().details_visible);
+
+        app.widgets.footer_left.set_visible(true);
+        app.widgets
+            .footer_left
+            .set_size_request(app.theme.borrow().sidebar_width(), -1);
+        app.widgets.footer_left_divider.set_visible(true);
+        app.widgets.footer_middle.set_visible(true);
+        app.widgets.footer_right_divider.set_visible(true);
+        app.widgets.footer_right.set_visible(true);
+        app.widgets
+            .footer_right
+            .set_size_request(app.theme.borrow().details_width(), -1);
+        app.widgets
+            .command_entry
+            .set_placeholder_text(Some("Quick command in this folder (Ctrl+K)"));
+
+        app.widgets.compact_group.set_visible(false);
+        app.widgets.compact_title.set_visible(false);
+        app.widgets.brand.set_visible(!searching);
+        app.widgets.back.set_visible(!searching);
+        app.widgets.forward.set_visible(!searching);
+        app.widgets.up.set_visible(!searching);
+        app.widgets.path_stack.set_visible(!searching);
+        app.widgets.search.root.set_visible(!searching);
+        app.widgets.search_button.set_visible(!searching);
+        app.widgets.view_group.set_visible(!searching);
+        app.widgets.sort_button.set_visible(!searching);
+        app.widgets.menu_button.set_visible(!searching);
+        app.widgets.global_search_button.set_visible(!searching);
+        app.widgets.location.set_width_request(360);
+    }
+}
+
+pub fn is_compact_layout(app: &App) -> bool {
+    let width = app.widgets.window.width();
+    width > 0 && width < COMPACT_WIDTH
+}
+
 fn connect_search_paging(app: &App) {
     for adjustment in [
         app.widgets.grid_scroller.vadjustment(),
@@ -688,6 +906,9 @@ fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propa
         }
         gdk::Key::w | gdk::Key::W if control => app.close_tab(app.state.active_tab.get()),
         gdk::Key::Tab | gdk::Key::ISO_Left_Tab if control => app.cycle_tab(!shift),
+        gdk::Key::_1 if control => app.widgets.compact_navigation.set_active(true),
+        gdk::Key::_2 if control => app.widgets.compact_files.set_active(true),
+        gdk::Key::_3 if control => app.widgets.compact_details.set_active(true),
         gdk::Key::d | gdk::Key::D if control => duplicate_selection(app),
         gdk::Key::comma if control => settings::present(app),
         gdk::Key::F1 => help::present_shortcuts(app),

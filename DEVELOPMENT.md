@@ -238,6 +238,11 @@ these checks. Never use a real profile containing valuable tags, bookmarks or se
 - [ ] Select files with single-component names near the filesystem limit, paths with
   long components, and long MIME descriptions. The Details panel must keep one width;
   names wrap or ellipsize inside it rather than resizing the file view.
+- [ ] Resize through 1080 px while browsing, filtering, globally searching and running
+  Quick Command. Compact mode must show one complete Navigation, Files or Details pane;
+  Ctrl+1/2/3 and the header controls must switch panes; paths reduce to the current
+  folder; every search and console close button stays reachable. Growing the window must
+  restore the complete three-pane layout and the saved Details preference.
 
 ## Commands, previews, sessions and accessibility checks
 
@@ -279,8 +284,8 @@ with a local GVfs FUSE path works.
 
 Builds the release binary with the committed lockfile and writes
 `dist/teral-<version>-<arch>-linux.tar.gz` and `dist/teral_<version>_<arch>.deb`.
-`scripts/install.sh` installs a built binary, its desktop entry, icon and AppStream
-metadata under `PREFIX` (default `/usr/local`, `DESTDIR` honoured). In a source checkout
+`scripts/install.sh` installs a built binary, `teral-update`, its desktop entry, icon and
+AppStream metadata under `PREFIX` (default `/usr/local`, `DESTDIR` honoured). In a source checkout
 it always rebuilds with the lockfile before installing, so running it again after a pull
 upgrades the installation rather than reusing a stale binary. A release tarball installs
 the checked binary it contains.

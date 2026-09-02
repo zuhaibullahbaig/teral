@@ -18,6 +18,11 @@ pub struct Header {
     pub global_search_box: gtk::Box,
     pub global_search_entry: gtk::SearchEntry,
     pub global_search_close: gtk::Button,
+    pub compact_group: gtk::Box,
+    pub compact_navigation: gtk::ToggleButton,
+    pub compact_files: gtk::ToggleButton,
+    pub compact_details: gtk::ToggleButton,
+    pub compact_title: gtk::Label,
     pub back: gtk::Button,
     pub forward: gtk::Button,
     pub up: gtk::Button,
@@ -47,6 +52,7 @@ pub fn build(search: &gtk::Revealer) -> Header {
     );
     let global_search_entry = gtk::SearchEntry::new();
     global_search_entry.add_css_class("teral-search-entry");
+    global_search_entry.set_hexpand(true);
     global_search_entry.set_width_chars(42);
     global_search_entry.set_max_width_chars(56);
     global_search_entry.set_placeholder_text(Some("Search Home and subfolders"));
@@ -58,6 +64,29 @@ pub fn build(search: &gtk::Revealer) -> Header {
     global_search_box.append(&global_search_entry);
     global_search_box.append(&global_search_close);
     global_search_box.set_visible(false);
+
+    let compact_navigation =
+        icon_toggle(icons::ui(icons::names::SIDEBAR), "Navigation pane (Ctrl+1)");
+    let compact_files = icon_toggle(icons::ui(icons::names::OPEN_FOLDER), "Files pane (Ctrl+2)");
+    let compact_details = icon_toggle(icons::ui(icons::names::PANEL), "Details pane (Ctrl+3)");
+    compact_files.set_group(Some(&compact_navigation));
+    compact_details.set_group(Some(&compact_navigation));
+    compact_files.set_active(true);
+
+    let compact_group = gtk::Box::new(gtk::Orientation::Horizontal, 1);
+    compact_group.add_css_class("teral-button-group");
+    compact_group.append(&compact_navigation);
+    compact_group.append(&compact_files);
+    compact_group.append(&compact_details);
+    compact_group.set_visible(false);
+
+    let compact_title = gtk::Label::new(Some("Home"));
+    compact_title.set_xalign(0.0);
+    compact_title.set_hexpand(true);
+    compact_title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    compact_title.set_max_width_chars(1);
+    compact_title.add_css_class("teral-details-title");
+    compact_title.set_visible(false);
 
     let back = icon_button(icons::ui(icons::names::BACK), "Back (Alt+Left)");
     let forward = icon_button(icons::ui(icons::names::FORWARD), "Forward (Alt+Right)");
@@ -76,6 +105,8 @@ pub fn build(search: &gtk::Revealer) -> Header {
 
     let location = gtk::Entry::new();
     location.add_css_class("teral-location");
+    location.set_width_chars(1);
+    location.set_max_width_chars(1);
     location.set_width_request(360);
 
     let path_stack = gtk::Stack::new();
@@ -105,10 +136,12 @@ pub fn build(search: &gtk::Revealer) -> Header {
 
     bar.pack_start(&global_search_button);
     bar.pack_start(&brand);
+    bar.pack_start(&compact_group);
     bar.pack_start(&back);
     bar.pack_start(&forward);
     bar.pack_start(&up);
     bar.pack_start(&path_stack);
+    bar.pack_start(&compact_title);
 
     bar.pack_end(&menu_button);
     bar.pack_end(&sort_button);
@@ -126,6 +159,11 @@ pub fn build(search: &gtk::Revealer) -> Header {
         global_search_box,
         global_search_entry,
         global_search_close,
+        compact_group,
+        compact_navigation,
+        compact_files,
+        compact_details,
+        compact_title,
         back,
         forward,
         up,
@@ -289,7 +327,7 @@ pub fn close_global_search(app: &App) {
 
 pub fn hide_global_search_controls(app: &App) {
     app.widgets.global_search_box.set_visible(false);
-    set_normal_controls_visible(app, true);
+    super::window::apply_responsive_layout(app);
 }
 
 fn submit_global_search(app: &App) {
@@ -311,6 +349,8 @@ fn set_normal_controls_visible(app: &App, visible: bool) {
     for widget in [
         app.widgets.global_search_button.upcast_ref::<gtk::Widget>(),
         app.widgets.brand.upcast_ref::<gtk::Widget>(),
+        app.widgets.compact_group.upcast_ref::<gtk::Widget>(),
+        app.widgets.compact_title.upcast_ref::<gtk::Widget>(),
         app.widgets.back.upcast_ref::<gtk::Widget>(),
         app.widgets.forward.upcast_ref::<gtk::Widget>(),
         app.widgets.up.upcast_ref::<gtk::Widget>(),
@@ -327,6 +367,7 @@ fn set_normal_controls_visible(app: &App, visible: bool) {
 
 /// Replace breadcrumbs with the root and query of a recursive search.
 pub fn show_search_crumb(app: &App, query: &str) {
+    app.widgets.compact_title.set_text("Search results");
     let crumbs = &app.widgets.crumbs;
     while let Some(child) = crumbs.first_child() {
         crumbs.remove(&child);
@@ -344,16 +385,29 @@ pub fn show_location(app: &App) {
     app.widgets.location.set_text(&current.to_string_lossy());
     app.widgets.location.select_region(0, -1);
     app.widgets.path_stack.set_visible_child_name("location");
+    app.widgets.compact_title.set_visible(false);
+    app.widgets.path_stack.set_visible(true);
+    if super::window::is_compact_layout(app) {
+        app.widgets.compact_group.set_visible(false);
+        app.widgets.global_search_button.set_visible(false);
+        app.widgets.back.set_visible(false);
+        app.widgets.up.set_visible(false);
+        app.widgets.search_button.set_visible(false);
+        app.widgets.sort_button.set_visible(false);
+        app.widgets.menu_button.set_visible(false);
+    }
     app.widgets.location.grab_focus();
 }
 
 pub fn hide_location(app: &App) {
     app.widgets.path_stack.set_visible_child_name("crumbs");
+    super::window::apply_responsive_layout(app);
     super::window::focus_file_view(app);
 }
 
 /// Replace the breadcrumbs with a single crumb naming the tag being shown.
 pub fn show_tag_crumb(app: &App, tag: &str) {
+    app.widgets.compact_title.set_text(tag);
     let crumbs = &app.widgets.crumbs;
     while let Some(child) = crumbs.first_child() {
         crumbs.remove(&child);
@@ -378,6 +432,9 @@ pub fn show_tag_crumb(app: &App, tag: &str) {
 
 /// Rebuild the clickable path components.
 pub fn rebuild_breadcrumbs(app: &App, path: &Path) {
+    app.widgets
+        .compact_title
+        .set_text(&crate::places::display_label(path));
     let crumbs = &app.widgets.crumbs;
     while let Some(child) = crumbs.first_child() {
         crumbs.remove(&child);

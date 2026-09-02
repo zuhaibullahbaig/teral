@@ -108,6 +108,7 @@ pub fn connect(app: &App) {
 pub fn open(app: &App) {
     app.widgets.search.root.set_reveal_child(true);
     sync_toggle(app, true);
+    super::window::apply_responsive_layout(app);
     app.widgets.search.entry.grab_focus();
 }
 
@@ -120,6 +121,7 @@ pub fn type_ahead(app: &App, character: char) {
     if !is_open(app) {
         app.widgets.search.root.set_reveal_child(true);
         sync_toggle(app, true);
+        super::window::apply_responsive_layout(app);
     }
 
     let entry = &app.widgets.search.entry;
@@ -135,6 +137,7 @@ pub fn close(app: &App) {
     let was_open = app.widgets.search.root.reveals_child();
     app.widgets.search.root.set_reveal_child(false);
     sync_toggle(app, false);
+    super::window::apply_responsive_layout(app);
 
     if !app.state.query.borrow().is_empty() {
         app.state.query.borrow_mut().clear();

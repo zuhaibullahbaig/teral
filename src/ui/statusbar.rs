@@ -10,11 +10,17 @@ use vte::prelude::*;
 /// Widgets of the bottom bar and the Quick Command console above it.
 pub struct StatusBar {
     pub root: gtk::Box,
+    pub left: gtk::Box,
+    pub middle: gtk::Box,
+    pub right: gtk::Box,
+    pub left_divider: gtk::Separator,
+    pub right_divider: gtk::Separator,
     pub command_entry: gtk::Entry,
     pub selection: gtk::Label,
     pub size: gtk::Label,
     pub message: gtk::Label,
     pub zoom: gtk::Scale,
+    pub zoom_value: gtk::Label,
     pub zoom_out: gtk::Button,
     pub zoom_in: gtk::Button,
     pub settings: gtk::Button,
@@ -39,6 +45,7 @@ pub fn build_console() -> Console {
     title.set_xalign(0.0);
     title.set_hexpand(true);
     title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    title.set_max_width_chars(1);
     title.add_css_class("teral-status-item");
     title.add_css_class("strong");
 
@@ -91,7 +98,7 @@ pub fn build_console() -> Console {
 /// navigation column carries Teral's own controls, the file column carries Quick
 /// Command at exactly the width of the file list, and the details column carries the
 /// selection and storage readout.
-pub fn build(icon_size: i32, sidebar_width: i32, _details_width: i32) -> StatusBar {
+pub fn build(icon_size: i32, sidebar_width: i32, details_width: i32) -> StatusBar {
     // ---- navigation column -------------------------------------------------
     let settings = super::icon_button(
         crate::icons::ui(crate::icons::names::SETTINGS),
@@ -129,6 +136,8 @@ pub fn build(icon_size: i32, sidebar_width: i32, _details_width: i32) -> StatusB
     let command_entry = gtk::Entry::new();
     command_entry.add_css_class("teral-command-entry");
     command_entry.set_hexpand(true);
+    command_entry.set_width_chars(1);
+    command_entry.set_max_width_chars(1);
     command_entry.set_has_frame(false);
     command_entry.set_placeholder_text(Some("Quick command in this folder (Ctrl+K)"));
 
@@ -170,9 +179,12 @@ pub fn build(icon_size: i32, sidebar_width: i32, _details_width: i32) -> StatusB
     zoom.set_draw_value(false);
     zoom.set_value(f64::from(icon_size));
     zoom.set_hexpand(true);
-    zoom.set_size_request(36, -1);
     zoom.set_valign(gtk::Align::Center);
-    zoom.set_tooltip_text(Some(&format!("Icon size: {icon_size} px (Ctrl+0 resets)")));
+    zoom.set_tooltip_text(Some("Icon size (Ctrl+0 resets)"));
+
+    let zoom_value = gtk::Label::new(Some(&format!("{icon_size} px")));
+    zoom_value.add_css_class("teral-status-item");
+    zoom_value.set_width_chars(6);
 
     let zoom_group = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     zoom_group.add_css_class("teral-zoom-group");
@@ -182,9 +194,11 @@ pub fn build(icon_size: i32, sidebar_width: i32, _details_width: i32) -> StatusB
     zoom_group.append(&zoom_out);
     zoom_group.append(&zoom);
     zoom_group.append(&zoom_in);
+    zoom_group.append(&zoom_value);
 
     let right = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     right.add_css_class("teral-footer-details");
+    right.set_size_request(details_width, -1);
     right.set_hexpand(false);
     right.append(&selection);
     right.append(&size);
@@ -192,19 +206,27 @@ pub fn build(icon_size: i32, sidebar_width: i32, _details_width: i32) -> StatusB
 
     let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     root.add_css_class("teral-status-bar");
+    let left_divider = divider();
+    let right_divider = divider();
     root.append(&left);
-    root.append(&divider());
+    root.append(&left_divider);
     root.append(&middle);
-    root.append(&divider());
+    root.append(&right_divider);
     root.append(&right);
 
     StatusBar {
         root,
+        left,
+        middle,
+        right,
+        left_divider,
+        right_divider,
         command_entry,
         selection,
         size,
         message,
         zoom,
+        zoom_value,
         zoom_out,
         zoom_in,
         settings,
@@ -222,8 +244,6 @@ fn divider() -> gtk::Separator {
 fn status_label() -> gtk::Label {
     let label = gtk::Label::new(None);
     label.add_css_class("teral-status-item");
-    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    label.set_max_width_chars(8);
     label
 }
 
@@ -272,13 +292,20 @@ pub fn connect(app: &App) {
     app.widgets.details_toggle.connect_toggled({
         let app = Rc::clone(app);
         move |button| {
-            app.widgets.details.root.set_visible(button.is_active());
-            if app.state.updating.get() {
-                return;
+            let active = button.is_active();
+            if !app.state.updating.get() {
+                let mut config = app.config.borrow().clone();
+                config.details_visible = active;
+                app.apply_config(config, true);
             }
-            let mut config = app.config.borrow().clone();
-            config.details_visible = button.is_active();
-            app.apply_config(config, true);
+            if super::window::is_compact_layout(&app) {
+                if active {
+                    app.widgets.compact_details.set_active(true);
+                } else if app.widgets.compact_details.is_active() {
+                    app.widgets.compact_files.set_active(true);
+                }
+            }
+            super::window::apply_responsive_layout(&app);
         }
     });
 

@@ -38,13 +38,30 @@ headerbar.teral-toolbar windowcontrols button {
   color: @teral_muted;
 }
 
+/* Some desktop themes give the destructive title button a large rectangular plate.
+ * Keep Teral's close affordance centred on the glyph in every palette. */
+headerbar.teral-toolbar windowcontrols button.close {
+  min-width: 24px;
+  min-height: 24px;
+  margin: 1px 2px;
+  background: transparent;
+  background-image: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  box-shadow: none;
+}
+
 headerbar.teral-toolbar windowcontrols button:hover {
   background-color: @teral_surface_alt;
   color: @teral_text;
 }
 
 headerbar.teral-toolbar windowcontrols button.close:hover {
-  background-color: @teral_danger;
+  background: @teral_danger;
+  background-image: none;
+  border-radius: 999px;
+  border-color: transparent;
+  box-shadow: none;
   color: @teral_text_bright;
 }
 
