@@ -936,15 +936,10 @@ pub fn apply_responsive_layout(app: &App) {
         app.widgets.content.set_margin_end(0);
         app.widgets.footer_middle.set_margin_start(0);
         app.widgets.footer_middle.set_margin_end(0);
-        app.widgets
-            .sidebar_root
-            .set_size_request(sidebar_width, -1);
+        app.widgets.sidebar_root.set_size_request(sidebar_width, -1);
         app.widgets.sidebar_root.set_hexpand(false);
         app.widgets.details.root.set_hexpand(false);
-        app.widgets
-            .details
-            .root
-            .set_size_request(details_width, -1);
+        app.widgets.details.root.set_size_request(details_width, -1);
         app.widgets.footer_left.set_size_request(sidebar_width, -1);
         app.widgets.footer_right.set_size_request(details_width, -1);
         app.widgets.sidebar_root.set_visible(true);
@@ -969,7 +964,9 @@ pub fn apply_responsive_layout(app: &App) {
         app.widgets
             .compact_title
             .set_visible(!searching && !filtering && !editing_location);
-        app.widgets.path_stack.set_visible(!searching && editing_location);
+        app.widgets
+            .path_stack
+            .set_visible(!searching && editing_location);
         app.widgets.brand.set_visible(false);
         app.widgets.forward.set_visible(false);
         app.widgets.view_group.set_visible(false);
@@ -1007,30 +1004,23 @@ pub fn apply_responsive_layout(app: &App) {
         app.widgets
             .footer_middle
             .set_margin_end(if details_visible { details_width } else { 0 });
-        app.widgets
-            .sidebar_root
-            .set_size_request(sidebar_width, -1);
+        app.widgets.sidebar_root.set_size_request(sidebar_width, -1);
         app.widgets.sidebar_root.set_hexpand(false);
         app.widgets.details.root.set_hexpand(false);
-        app.widgets
-            .details
-            .root
-            .set_size_request(details_width, -1);
+        app.widgets.details.root.set_size_request(details_width, -1);
         app.widgets.sidebar_root.set_visible(true);
         app.widgets.content.set_visible(true);
         app.widgets.details.root.set_visible(true);
         app.widgets.sidebar_revealer.set_reveal_child(true);
-        app.widgets.details_revealer.set_reveal_child(details_visible);
+        app.widgets
+            .details_revealer
+            .set_reveal_child(details_visible);
 
         app.widgets.footer_left.set_visible(true);
-        app.widgets
-            .footer_left
-            .set_size_request(sidebar_width, -1);
+        app.widgets.footer_left.set_size_request(sidebar_width, -1);
         app.widgets.footer_middle.set_visible(true);
         app.widgets.footer_right.set_visible(true);
-        app.widgets
-            .footer_right
-            .set_size_request(details_width, -1);
+        app.widgets.footer_right.set_size_request(details_width, -1);
         app.widgets.footer_left_revealer.set_reveal_child(true);
         app.widgets
             .footer_right_revealer
@@ -1064,9 +1054,8 @@ fn position_details_handle(app: &App) {
     // spacing and separator. Account for that 22 px, then leave the requested 11 px
     // of clear file canvas before the handle begins.
     const FILE_CANVAS_INSET: i32 = 33;
-    let top = app.widgets.tabs.root.height()
-        + app.widgets.content_header.height()
-        + FILE_CANVAS_INSET;
+    let top =
+        app.widgets.tabs.root.height() + app.widgets.content_header.height() + FILE_CANVAS_INSET;
     app.widgets.details_handle.set_margin_top(top);
 }
 
