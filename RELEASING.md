@@ -22,22 +22,16 @@ release. When a key is replaced, keep reading the old one as an alias — the wa
 `mode = "omarchy"` is still read as `mode = "system"` — rather than breaking a file
 somebody hand-edited.
 
-## Before the first release
-
-Teral is currently an unreleased `0.1.0` application. Keep `CHANGELOG.md` under
-`Unreleased`; do not create release badges, download links, tags, or GitHub releases until
-the public 0.1 release gate in the local roadmap has passed.
-
 ## Cutting a release
 
 1. `./scripts/check.sh` — version consistency, formatting, Clippy, tests, and a build.
-2. For the first release, keep the already-reserved `0.1.0` version. For every later
-   release, bump `version` in `Cargo.toml` and `pkgver` in `packaging/PKGBUILD`.
-3. When the version changed, run `cargo check` once to update the root package version in
+2. Bump `version` in `Cargo.toml` and `pkgver` in `packaging/PKGBUILD`.
+3. Run `cargo check` once to update the root package version in
    `Cargo.lock`, then run `./scripts/check.sh` again. Commit all three version files
    together.
-4. Replace `Unreleased` with a `## <version>` section in `CHANGELOG.md`, written for people who use
-   Teral rather than for people who wrote it.
+4. Move the relevant `Unreleased` notes into a `## <version>` section in `CHANGELOG.md`,
+   written for people who use Teral rather than for people who wrote it. Leave a fresh
+   `Unreleased` section at the top for subsequent work.
 5. Commit: `Release <version>`.
 6. Tag and push:
 

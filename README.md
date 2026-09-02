@@ -5,6 +5,8 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/zuhaibullahbaig/teral/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/zuhaibullahbaig/teral"></a>
+  <a href="https://github.com/zuhaibullahbaig/teral/actions/workflows/ci.yml"><img alt="Build status" src="https://github.com/zuhaibullahbaig/teral/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux-informational">
 </p>
@@ -13,8 +15,8 @@ Teral is a three-pane file manager: locations on the left, files in the middle, 
 and actions for the selection on the right, and a terminal rooted in the folder you are
 browsing. It is one application for Ubuntu, Arch, Omarchy and other Linux desktops.
 
-> **Teral is early software under active development.** There has been no release, and it
-> is not ready to be your only file manager. Use it with files you can afford to lose.
+> **Teral 0.1.0 is an early public release under active development.** Keep another file
+> manager installed, back up important files, and report anything that behaves incorrectly.
 
 ## Features
 
@@ -39,8 +41,38 @@ browsing. It is one application for Ubuntu, Arch, Omarchy and other Linux deskto
 
 ## Install
 
-There are no packaged releases yet, so build from source. You will need
-[Rust](https://rustup.rs) and GTK 4.12 or newer:
+Prebuilt packages for x86_64 Linux are available from the
+[latest GitHub release](https://github.com/zuhaibullahbaig/teral/releases/latest).
+
+### Ubuntu and Debian
+
+Download `teral_0.1.0_amd64.deb`, then install it with the system package manager so its
+GTK and VTE dependencies are resolved automatically:
+
+```bash
+sudo apt install ./teral_0.1.0_amd64.deb
+```
+
+### Other x86_64 Linux distributions
+
+Download `teral-0.1.0-x86_64-linux.tar.gz`, extract it, and run the included installer:
+
+```bash
+tar -xzf teral-0.1.0-x86_64-linux.tar.gz
+cd teral-0.1.0
+sudo ./scripts/install.sh
+```
+
+The tarball expects GTK 4.12 or newer and VTE for GTK4 to already be installed. For a
+user-only installation that needs no root privileges, use:
+
+```bash
+PREFIX="$HOME/.local" ./scripts/install.sh
+```
+
+### Build from source
+
+Install [Rust](https://rustup.rs) and the development packages for GTK and VTE:
 
 ```bash
 # Ubuntu 24.04+ / Debian with GTK 4.12+
@@ -62,7 +94,7 @@ cd teral
 cargo run --release
 ```
 
-To build as your normal user and install the binary, desktop entry, icon and application
+Build as your normal user, then install the binary, desktop entry, icon and application
 metadata system-wide:
 
 ```bash
@@ -70,25 +102,24 @@ cargo build --release --locked
 sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh
 ```
 
-For a user-only installation that needs no root privileges:
+## Update
+
+Teral does not silently update itself. To update a `.deb` installation, download the
+new package from the latest release and install it over the existing version, replacing
+`VERSION` with the downloaded version number:
 
 ```bash
-PREFIX="$HOME/.local" ./scripts/install.sh
+sudo apt install ./teral_VERSION_amd64.deb
 ```
 
-To update a source installation later, pull the new version and run the same installer
-again. It rebuilds the current checkout and replaces the installed files; uninstalling
-first is unnecessary:
+For a tarball installation, extract the newer tarball and run its included installer
+again. For a source installation, pull the new version, rebuild, and run the installer:
 
 ```bash
 git pull --ff-only
 cargo build --release --locked
 sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh
 ```
-
-Release tarballs work the same way: extract the newer tarball and run its installer.
-A newer `.deb` can be installed over the existing version with
-`sudo apt install ./teral_<version>_amd64.deb`. Teral does not silently update itself.
 
 ## Shortcuts
 
@@ -178,6 +209,9 @@ breaking the window.
 
 Read [DEVELOPMENT.md](DEVELOPMENT.md) first. Filesystem changes need failure tests, not
 only happy-path tests.
+
+Bug reports and tested distribution results belong in
+[GitHub Issues](https://github.com/zuhaibullahbaig/teral/issues).
 
 ## License
 
