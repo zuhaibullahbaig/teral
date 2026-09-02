@@ -4,6 +4,10 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.1 - 2026-09-02
+
 ### Added
 
 - `teral-update` installs the newest published release through the package manager when

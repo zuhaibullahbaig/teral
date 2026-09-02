@@ -56,8 +56,8 @@ publishes them.
 
 | Artifact | For |
 | --- | --- |
-| `teral-<version>-x86_64-linux.tar.gz` | any distribution — binary, desktop entry, icon and `scripts/install.sh` |
-| `teral_<version>_amd64.deb` | Debian and Ubuntu |
+| `teral-<version>-x86_64-linux.tar.gz` | any distribution — binary, updater, desktop integration and installer |
+| `teral_<version>_amd64.deb` | Debian and Ubuntu — binary, updater and desktop integration |
 | `packaging/PKGBUILD` (in the repo) | Arch and Omarchy, via `makepkg -si` |
 
 `scripts/check-version.sh` verifies the three version files agree before checks or CI

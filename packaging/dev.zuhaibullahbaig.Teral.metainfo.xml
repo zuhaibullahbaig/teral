@@ -24,5 +24,18 @@
     <mediatype>inode/directory</mediatype>
   </provides>
   <url type="homepage">https://github.com/zuhaibullahbaig/teral</url>
+  <releases>
+    <release version="0.1.1" date="2026-09-02">
+      <description>
+        <p>Adds verified command-line updates, responsive narrow-window layouts, clean
+        shutdown, and system appearance as the default for new configurations.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-09-01">
+      <description>
+        <p>First public release.</p>
+      </description>
+    </release>
+  </releases>
   <content_rating type="oars-1.1"/>
 </component>
