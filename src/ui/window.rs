@@ -619,24 +619,7 @@ fn connect_window(app: &App) {
         let app = Rc::clone(app);
         move |_| apply_responsive_layout(&app)
     });
-    // The GDK surface reports compositor-driven size changes directly. Unlike a GTK
-    // tick callback this leaves the frame clock asleep while the file manager is idle.
-    app.widgets.window.connect_realize({
-        let weak = Rc::downgrade(app);
-        move |window| {
-            let Some(surface) = window.surface() else {
-                return;
-            };
-            surface.connect_width_notify({
-                let weak = weak.clone();
-                move |_| {
-                    if let Some(app) = weak.upgrade() {
-                        apply_responsive_layout(&app);
-                    }
-                }
-            });
-        }
-    });
+    watch_window_width(app);
 
     app.widgets.window.connect_close_request({
         let app = Rc::clone(app);
@@ -751,6 +734,31 @@ fn connect_window(app: &App) {
         }
     });
     app.widgets.view_stack.add_controller(drop);
+}
+
+/// Follow the width Hyprland actually allocates to the window.
+///
+/// Some Wayland compositors update GTK's allocation without producing the GDK surface
+/// width notification Teral previously relied on. A deliberately slow watcher is more
+/// dependable: it reads one integer eight times per second and only touches the layout
+/// when that integer changed. Unlike a frame callback it does no work at render speed.
+fn watch_window_width(app: &App) {
+    let weak = Rc::downgrade(app);
+    let last_width = Cell::new(app.widgets.window.width());
+    glib::timeout_add_local(Duration::from_millis(120), move || {
+        let Some(app) = weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if !app.widgets.window.is_mapped() {
+            return glib::ControlFlow::Continue;
+        }
+
+        let width = app.widgets.window.width();
+        if width > 0 && last_width.replace(width) != width {
+            apply_responsive_layout(&app);
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 fn attach_details_hover(app: &App, widget: &impl IsA<gtk::Widget>) {

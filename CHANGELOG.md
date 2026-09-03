@@ -4,7 +4,10 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 ## Unreleased
 
-No changes yet.
+### Fixed
+
+- Responsive layout now notices compositor-driven width changes under Hyprland without
+  waiting for navigation or another user interaction.
 
 ## 0.1.3 - 2026-09-02
 
