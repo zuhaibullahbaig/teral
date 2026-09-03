@@ -4,6 +4,10 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.4 - 2026-09-03
+
 ### Changed
 
 - Omarchy themes can provide the file-manager-neutral `files.toml` appearance contract;
