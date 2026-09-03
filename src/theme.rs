@@ -403,15 +403,18 @@ fn omarchy_prefers_dark(directory: &Path) -> bool {
     !directory.join("light.mode").exists()
 }
 
-/// The Omarchy overlay: the active theme's `teral.toml`, or its palette.
+/// The Omarchy overlay: the active theme's portable `files.toml`, or its palette.
+///
+/// `files.toml` deliberately describes a file-manager appearance rather than naming
+/// Teral, allowing another file manager to implement the same semantic colour roles.
 fn omarchy_overlay(directory: &Path) -> Option<ThemeConfig> {
-    let teral_theme = directory.join("teral.toml");
+    let files_theme = directory.join("files.toml");
     let colors_theme = directory.join("colors.toml");
 
-    if teral_theme.is_file() {
-        match read_theme(&teral_theme) {
+    if files_theme.is_file() {
+        match read_theme(&files_theme) {
             Ok(overlay) => return Some(overlay),
-            Err(error) => eprintln!("Teral: could not load {}: {error}", teral_theme.display()),
+            Err(error) => eprintln!("Teral: could not load {}: {error}", files_theme.display()),
         }
     }
 

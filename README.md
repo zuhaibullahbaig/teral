@@ -191,9 +191,10 @@ terminal = ""         # empty: detected from PATH
 ## Themes
 
 Teral ships dark and light palettes. In system mode it takes its colors from GTK. Under
-Omarchy it reads the active theme's `teral.toml`, and derives a palette from `colors.toml`
-when there is no Teral-specific file. A theme with missing keys falls back rather than
-breaking the window.
+Omarchy it reads the active theme's portable `files.toml`, and derives a palette from
+`colors.toml` when that file is absent. `files.toml` uses semantic file-manager colors
+so other file managers can implement the same format. A theme with missing keys falls
+back rather than breaking the window.
 
 ## Current boundaries
 

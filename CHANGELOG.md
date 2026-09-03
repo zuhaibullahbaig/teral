@@ -4,6 +4,11 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 ## Unreleased
 
+### Changed
+
+- Omarchy themes can provide the file-manager-neutral `files.toml` appearance contract;
+  Teral falls back to the theme's `colors.toml` when it is absent.
+
 ### Fixed
 
 - Responsive layout now notices compositor-driven width changes under Hyprland without

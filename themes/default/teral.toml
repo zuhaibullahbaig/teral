@@ -3,8 +3,8 @@ name = "Teral Midnight"
 
 # Teral's built-in appearance. It is deliberately complete so Teral looks like Teral on
 # any Linux desktop without requiring a theme file. Every value below can be overridden
-# by an Omarchy theme or by ~/.config/teral/teral.toml, and any key left out simply
-# inherits the value from the layer beneath it.
+# by an Omarchy theme's files.toml or by ~/.config/teral/teral.toml, and any key left
+# out simply inherits the value from the layer beneath it.
 
 [colors]
 background = "#0e0e11"

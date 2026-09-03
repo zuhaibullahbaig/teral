@@ -229,7 +229,7 @@ these checks. Never use a real profile containing valuable tags, bookmarks or se
   to unmount and eject it. Exercise authentication cancellation, refusal, a busy mount,
   and physical removal while its directory is open.
 - [ ] Switch GTK light/dark and icon themes while running. On Omarchy, replace the active
-  theme symlink and edit `teral.toml` and `colors.toml`, including malformed and partial
+  theme symlink and edit `files.toml` and `colors.toml`, including malformed and partial
   files. Confirm the window stays readable and cache changes appear live.
 - [ ] Drag and repeatedly click the bottom-right icon-size controls in a 10,000-entry
   folder, then leave the window idle for one minute. Repeat while changing between Teral
