@@ -72,7 +72,8 @@ pub struct Actions {
 }
 
 /// Metadata rows, in display order.
-const ROW_KEYS: [&str; 7] = [
+const ROW_KEYS: [&str; 8] = [
+    "Dimensions",
     "Modified",
     "Created",
     "Accessed",
@@ -901,7 +902,8 @@ pub fn update(app: &App) {
     details.stack.set_visible_child_name("details");
     details.title.set_text(entry.display_name());
     details.name.set_text(entry.display_name());
-    details.kind.set_text(&data.kind);
+    details.name.set_tooltip_text(Some(entry.display_name()));
+    details.kind.set_text(&type_label(data));
 
     details.size.set_text(&if entry.is_directory() {
         let count = entry.child_count();
@@ -1051,6 +1053,7 @@ pub fn update(app: &App) {
 
     for (key, row) in &details.rows {
         let value = match *key {
+            "Dimensions" => String::new(),
             "Modified" => data.modified.as_ref().map(format_time).unwrap_or_default(),
             "Created" => data.created.as_ref().map(format_time).unwrap_or_default(),
             "Accessed" => data.accessed.as_ref().map(format_time).unwrap_or_default(),
@@ -1065,6 +1068,8 @@ pub fn update(app: &App) {
         row.root.set_visible(!value.is_empty());
         row.value.set_text(&value);
     }
+
+    load_image_dimensions(app, entry, data);
 
     rebuild_tag_chips(app, entry);
 
@@ -1123,6 +1128,66 @@ pub fn update(app: &App) {
     // A broken link has nothing behind it, and a FIFO or device would hang whatever
     // opened it, so the action is refused up front rather than failing on the click.
     actions.open.set_sensitive(entry.is_openable());
+}
+
+fn type_label(data: &crate::files::EntryData) -> String {
+    if data.is_directory {
+        return data.kind.clone();
+    }
+    let extension = data
+        .path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| ext.to_ascii_uppercase());
+    match extension {
+        Some(ext) if !data.kind.to_ascii_uppercase().contains(&ext) => {
+            format!("{} ({ext})", data.kind)
+        }
+        _ => data.kind.clone(),
+    }
+}
+
+fn load_image_dimensions(app: &App, entry: &FileEntry, data: &crate::files::EntryData) {
+    if entry.is_directory()
+        || !data
+            .content_type
+            .as_deref()
+            .is_some_and(|content_type| content_type.starts_with("image/"))
+    {
+        return;
+    }
+
+    let app = Rc::clone(app);
+    let path = entry.path().to_path_buf();
+    gtk::glib::spawn_future_local(async move {
+        let dimensions = gtk::gio::spawn_blocking({
+            let path = path.clone();
+            move || crate::files::preview::image_dimensions(&path)
+        })
+        .await
+        .ok()
+        .flatten();
+        if app
+            .single_selection()
+            .is_none_or(|entry| entry.path() != path)
+        {
+            return;
+        }
+        let value = dimensions
+            .map(|(width, height)| format!("{width} × {height}"))
+            .unwrap_or_default();
+        if let Some((_, row)) = app
+            .widgets
+            .details
+            .rows
+            .iter()
+            .find(|(key, _)| *key == "Dimensions")
+        {
+            row.root.set_visible(!value.is_empty());
+            row.value.set_text(&value);
+        }
+    });
 }
 
 fn is_text_preview(content_type: Option<&str>) -> bool {

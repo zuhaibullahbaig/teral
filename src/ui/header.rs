@@ -211,6 +211,56 @@ pub fn connect(app: &App) {
         move |_| app.go_up()
     });
 
+    let edit_path = gtk::GestureClick::new();
+    edit_path.set_button(gtk::gdk::BUTTON_PRIMARY);
+    edit_path.connect_released({
+        let app = Rc::clone(app);
+        move |gesture, _, x, y| {
+            if let Some(widget) = gesture.widget()
+                && let Some(hit) = widget.pick(x, y, gtk::PickFlags::DEFAULT)
+                && let Some(button) = hit.ancestor(gtk::Button::static_type())
+                && !button.has_css_class("current")
+            {
+                return;
+            }
+            show_location(&app);
+        }
+    });
+    widgets.crumbs.add_controller(edit_path);
+
+    let edit_compact = gtk::GestureClick::new();
+    edit_compact.set_button(gtk::gdk::BUTTON_PRIMARY);
+    edit_compact.connect_released({
+        let app = Rc::clone(app);
+        move |_, _, _, _| show_location(&app)
+    });
+    widgets.compact_title.add_controller(edit_compact);
+    widgets
+        .compact_title
+        .set_tooltip_text(Some("Edit the location (Ctrl+L)"));
+
+    let dismiss = gtk::GestureClick::new();
+    dismiss.set_button(gtk::gdk::BUTTON_PRIMARY);
+    dismiss.set_propagation_phase(gtk::PropagationPhase::Capture);
+    dismiss.connect_pressed({
+        let app = Rc::clone(app);
+        move |gesture, _, x, y| {
+            if !is_editing_location(&app) {
+                return;
+            }
+            let Some(root) = gesture.widget() else {
+                return;
+            };
+            if let Some(hit) = root.pick(x, y, gtk::PickFlags::DEFAULT)
+                && widget_is_in_location(&hit, &app.widgets.location)
+            {
+                return;
+            }
+            hide_location(&app);
+        }
+    });
+    app.widgets.window.add_controller(dismiss);
+
     widgets.location.connect_activate({
         let app = Rc::clone(app);
         move |entry| {
@@ -233,6 +283,7 @@ pub fn connect(app: &App) {
                     Ok(info) if info.file_type() == gio::FileType::Directory => {
                         app.navigate(&expanded);
                         hide_location(&app);
+                        super::window::focus_file_view(&app);
                     }
                     Ok(_) => app.show_error(&format!("{} is not a folder", expanded.display())),
                     Err(error) => app.show_error(&format!(
@@ -251,6 +302,7 @@ pub fn connect(app: &App) {
         move |_, key, _, _| {
             if key == gtk::gdk::Key::Escape {
                 hide_location(&app);
+                super::window::focus_file_view(&app);
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
@@ -258,6 +310,20 @@ pub fn connect(app: &App) {
         }
     });
     widgets.location.add_controller(escape);
+
+    let focus = gtk::EventControllerFocus::new();
+    focus.connect_leave({
+        let app = Rc::clone(app);
+        move |_| {
+            let app = Rc::clone(&app);
+            glib::idle_add_local_once(move || {
+                if is_editing_location(&app) && !location_contains_focus(&app) {
+                    hide_location(&app);
+                }
+            });
+        }
+    });
+    widgets.location.add_controller(focus);
 
     widgets.search_button.connect_toggled({
         let app = Rc::clone(app);
@@ -367,6 +433,7 @@ pub fn show_search_crumb(app: &App, query: &str) {
     button.add_css_class("teral-crumb");
     button.add_css_class("current");
     button.set_has_frame(false);
+    button.set_tooltip_text(Some("Edit the location (Ctrl+L)"));
     crumbs.append(&button);
 }
 
@@ -391,10 +458,26 @@ pub fn show_location(app: &App) {
     app.widgets.location.grab_focus();
 }
 
+pub fn is_editing_location(app: &App) -> bool {
+    app.widgets.path_stack.visible_child_name().as_deref() == Some("location")
+}
+
 pub fn hide_location(app: &App) {
+    if !is_editing_location(app) {
+        return;
+    }
     app.widgets.path_stack.set_visible_child_name("crumbs");
     super::window::apply_responsive_layout(app);
-    super::window::focus_file_view(app);
+}
+
+fn location_contains_focus(app: &App) -> bool {
+    gtk::prelude::GtkWindowExt::focus(&app.widgets.window)
+        .is_some_and(|focus| widget_is_in_location(&focus, &app.widgets.location))
+}
+
+fn widget_is_in_location(widget: &gtk::Widget, location: &gtk::Entry) -> bool {
+    let location = location.upcast_ref::<gtk::Widget>();
+    widget == location || widget.is_ancestor(location)
 }
 
 /// Replace the breadcrumbs with a single crumb naming the tag being shown.
@@ -418,6 +501,7 @@ pub fn show_tag_crumb(app: &App, tag: &str) {
     button.add_css_class("teral-crumb");
     button.add_css_class("current");
     button.set_has_frame(false);
+    button.set_tooltip_text(Some("Edit the location (Ctrl+L)"));
     button.set_child(Some(&content));
     crumbs.append(&button);
 }
@@ -466,11 +550,14 @@ pub fn rebuild_breadcrumbs(app: &App, path: &Path) {
 
         if index == last {
             button.add_css_class("current");
+            button.set_tooltip_text(Some("Edit the location (Ctrl+L)"));
+            let app = Rc::clone(app);
+            button.connect_clicked(move |_| show_location(&app));
+        } else {
+            let app = Rc::clone(app);
+            let target = ancestor.clone();
+            button.connect_clicked(move |_| app.navigate(&target));
         }
-
-        let app = Rc::clone(app);
-        let target = ancestor.clone();
-        button.connect_clicked(move |_| app.navigate(&target));
         crumbs.append(&button);
     }
 }

@@ -131,6 +131,7 @@ sudo TERAL_BINARY="$PWD/target/release/teral" ./scripts/install.sh
 Enter               Open
 Backspace           Parent folder
 Alt+Left/Right      Back / Forward
+Mouse Back/Forward  Back / Forward
 Ctrl+L              Edit the location
 Ctrl+F              Filter this folder
 Ctrl+Shift+F        Search Home and subfolders

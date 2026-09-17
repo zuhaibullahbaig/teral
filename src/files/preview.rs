@@ -247,6 +247,12 @@ fn wait_with_timeout(child: &mut std::process::Child) -> io::Result<ExitStatus> 
     }
 }
 
+/// Pixel size from the image header, without decoding the pixels.
+pub fn image_dimensions(path: &Path) -> Option<(i32, i32)> {
+    let (_, width, height) = gdk_pixbuf::Pixbuf::file_info(path)?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
 fn decode_image(path: &Path) -> io::Result<DecodedImage> {
     if path.metadata()?.len() > MAX_RENDER_BYTES {
         return Err(io::Error::other("rendered preview exceeded its size limit"));
@@ -309,4 +315,26 @@ mod tests {
         assert_eq!(MAX_TEXT_BYTES, 2 * 1024 * 1024);
         assert!(matches!(TextPreview::Binary, TextPreview::Binary));
     }
+
+    #[test]
+    fn image_dimensions_come_from_the_file_header() {
+        let dir = std::env::temp_dir().join(format!("teral-preview-dim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tiny.png");
+        std::fs::write(&path, TINY_PNG).unwrap();
+        assert_eq!(image_dimensions(&path), Some((2, 3)));
+        std::fs::write(dir.join("notes.txt"), b"not an image").unwrap();
+        assert_eq!(image_dimensions(&dir.join("notes.txt")), None);
+        assert_eq!(image_dimensions(&dir.join("missing.png")), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A 2×3 RGB PNG, enough to prove header reads do not need a full decode.
+    const TINY_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
+        0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 16, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 0, 68,
+        12, 40, 20, 0, 68, 208, 5, 251, 164, 207, 222, 128, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+        96, 130,
+    ];
 }

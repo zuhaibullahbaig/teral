@@ -647,6 +647,7 @@ fn connect_window(app: &App) {
         move |_, key, _, modifiers| on_key(&app, key, modifiers)
     });
     app.widgets.window.add_controller(keys);
+    attach_pointer_history(app);
 
     // The console runs a real terminal, which swallows almost every key so that
     // interactive programs work. One shortcut therefore has to be caught before the
@@ -965,7 +966,7 @@ pub fn apply_responsive_layout(app: &App) {
             .command_entry
             .set_placeholder_text(Some("Quick Command (Ctrl+K)"));
 
-        let editing_location = app.widgets.location.has_focus();
+        let editing_location = header::is_editing_location(app);
         app.widgets
             .compact_group
             .set_visible(!searching && !filtering);
@@ -1089,6 +1090,42 @@ fn connect_search_paging(app: &App) {
             }
         });
     }
+}
+
+/// Extra mouse buttons used for Back and Forward on most pointers.
+const POINTER_BACK: u32 = 8;
+const POINTER_FORWARD: u32 = 9;
+
+fn attach_pointer_history(app: &App) {
+    attach_pointer_history_button(app, POINTER_BACK, AppInner::go_back);
+    attach_pointer_history_button(app, POINTER_FORWARD, AppInner::go_forward);
+}
+
+fn attach_pointer_history_button(app: &App, button: u32, action: fn(&App)) {
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(button);
+    gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+    gesture.connect_pressed({
+        let app = Rc::clone(app);
+        move |gesture, _, _, _| {
+            if pointer_history_blocked(&app) {
+                return;
+            }
+            action(&app);
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+        }
+    });
+    app.widgets.window.add_controller(gesture);
+}
+
+/// Side buttons stay with the widget that is actually typing or running a command.
+fn pointer_history_blocked(app: &App) -> bool {
+    let Some(focus) = gtk::prelude::GtkWindowExt::focus(&app.widgets.window) else {
+        return false;
+    };
+    focus.is::<gtk::Editable>()
+        || focus.is::<gtk::TextView>()
+        || app.widgets.console.terminal.has_focus()
 }
 
 fn on_key(app: &App, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {

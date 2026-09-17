@@ -4,7 +4,15 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- Mouse Back and Forward buttons use the existing folder history, matching the toolbar
+  and Alt+Left / Alt+Right. They are ignored while a text field, Quick Command, or the
+  console is focused.
+- Clicking the current breadcrumb (or Ctrl+L) edits the path. Enter opens an existing
+  folder; clicking outside or Escape restores the breadcrumbs; an invalid path stays
+  put and reports a simple error.
+- The details panel shows image width × height when the file header can be read cheaply.
 
 ## 0.1.4 - 2026-09-03
 

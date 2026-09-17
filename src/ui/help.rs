@@ -11,6 +11,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("Enter", "Open the selection"),
             ("Backspace", "Go to the parent folder"),
             ("Alt+Left / Alt+Right", "Back / Forward"),
+            ("Mouse Back / Forward", "Back / Forward"),
             ("Ctrl+L", "Edit the location"),
             ("F5 / Ctrl+R", "Refresh"),
         ],
