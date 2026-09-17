@@ -25,6 +25,12 @@
   </provides>
   <url type="homepage">https://github.com/zuhaibullahbaig/teral</url>
   <releases>
+    <release version="0.1.5" date="2026-09-17">
+      <description>
+        <p>Adds mouse Back/Forward buttons, an editable location bar that restores
+        breadcrumbs on click-outside, and image dimensions in the details panel.</p>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-09-03">
       <description>
         <p>Makes responsive layout changes reliable under Hyprland and introduces the

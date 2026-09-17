@@ -4,6 +4,10 @@ Teral follows semantic versioning. See `RELEASING.md` for the release process.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.5 - 2026-09-17
+
 ### Added
 
 - Mouse Back and Forward buttons use the existing folder history, matching the toolbar
